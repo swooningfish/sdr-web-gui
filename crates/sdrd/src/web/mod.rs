@@ -116,6 +116,9 @@ pub fn router(state: AppState) -> Router {
         .route("/passes/{id}/audio", get(schedule_routes::audio))
         .route("/passes/{id}", axum::routing::delete(schedule_routes::delete_pass))
         .route("/sstv/image/{id}", get(sstv_routes::image).delete(sstv_routes::delete_image))
+        .route("/sstv/images/delete", post(sstv_routes::delete_images))
+        .route("/sstv/images.zip", get(sstv_routes::zip))
+        .route("/devices/delete", post(sensors::delete_devices))
         .route("/ws", get(ws::handler))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "not found") })
         .layer(SetResponseHeaderLayer::if_not_present(

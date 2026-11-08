@@ -5,3 +5,6 @@ export const SSTV_MODES: Record<number, string> = {
 };
 
 export const imageUrl = (id: number, thumb = false) => `/api/sstv/image/${id}${thumb ? '?thumb=true' : ''}`;
+
+/** ZIP of several images (the browser downloads it directly). */
+export const zipUrl = (ids: number[]) => `/api/sstv/images.zip?ids=${ids.join(',')}`;

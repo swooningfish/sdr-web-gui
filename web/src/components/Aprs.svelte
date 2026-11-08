@@ -14,6 +14,8 @@
   import { formatMHz, relTime } from '../lib/format';
   import { CHART_FIELDS, series } from '../lib/sensors';
   import AprsMap from './AprsMap.svelte';
+  import { Selection } from '../lib/selection.svelte';
+  import { indeterminate } from '../lib/actions';
   import TimeChart from './TimeChart.svelte';
 
   let { isAdmin, radio }: { isAdmin: boolean; radio: RadioState | null } = $props();
@@ -140,6 +142,28 @@
     }
   }
 
+  // Multi-select (admins) for bulk delete.
+  const sel = new Selection();
+  const order = $derived(visible.map((d) => d.id));
+  $effect(() => sel.keepOnly(stations.map((d) => d.id)));
+
+  async function removeSelected() {
+    const ids = sel.list();
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} station${ids.length === 1 ? '' : 's'} and their packets? This cannot be undone.`)) return;
+    try {
+      await api.deleteDevices(ids);
+      const gone = new Set(ids);
+      stations = stations.filter((d) => !gone.has(d.id));
+      packets = packets.filter((p) => !gone.has(p.device.id));
+      tracks = tracks.filter((t) => !gone.has(t.device_id));
+      if (selectedId !== null && gone.has(selectedId)) selectedId = null;
+      sel.clear();
+    } catch (e) {
+      fail(e);
+    }
+  }
+
   async function remove(d: Device) {
     if (!confirm(`Delete ${stationName(d)} and its ${d.count} packets?`)) return;
     try {
@@ -259,13 +283,45 @@
           {/each}
         </ul>
       {:else}
-        <h2>Stations</h2>
+        <div class="list-head">
+          <h2>Stations</h2>
+          {#if isAdmin && visible.length}
+            <label class="check small-text">
+              <input
+                type="checkbox"
+                checked={sel.allOf(order)}
+                use:indeterminate={sel.someOf(order) && !sel.allOf(order)}
+                onchange={() => sel.toggleAll(order)}
+              />
+              Select all
+            </label>
+          {/if}
+        </div>
+        {#if isAdmin && sel.size > 0}
+          <div class="bulk small-text" role="toolbar" aria-label="Selected stations">
+            <strong>{sel.size} selected</strong>
+            <button type="button" class="small danger" onclick={removeSelected}>Delete</button>
+            <button type="button" class="small" onclick={() => sel.clear()}>Clear</button>
+          </div>
+        {/if}
         {#if visible.length === 0}
           <p class="muted small-text">No stations heard in this window yet.</p>
         {/if}
         <ul class="stations">
           {#each visible as d (d.id)}
-            <li>
+            <li class:with-pick={isAdmin} class:picked={sel.has(d.id)}>
+              {#if isAdmin}
+                <input
+                  type="checkbox"
+                  class="pick"
+                  checked={sel.has(d.id)}
+                  aria-label="Select {stationName(d)}"
+                  onclick={(e) => {
+                    e.preventDefault();
+                    sel.toggle(d.id, e.shiftKey, order);
+                  }}
+                />
+              {/if}
               <button type="button" class="station" onclick={() => select(d.id)}>
                 <span class="row">
                   <strong>{stationName(d)}</strong>
@@ -370,6 +426,35 @@
     list-style: none;
     margin: 0;
     padding: 0;
+  }
+  .list-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .bulk {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    margin: 0 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-2);
+  }
+  li.with-pick {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  li.with-pick .pick {
+    margin-top: 11px;
+    flex: none;
+  }
+  li.picked {
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
   }
   .station {
     display: grid;

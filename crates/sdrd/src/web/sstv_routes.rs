@@ -94,6 +94,76 @@ pub async fn delete_image(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// Delete several images at once.
+pub async fn delete_images(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Json(req): Json<super::sensors::IdList>,
+) -> Result<Json<Value>, ApiError> {
+    if req.ids.is_empty() || req.ids.len() > super::sensors::MAX_BULK {
+        return Err(ApiError::bad_request("too many or no ids"));
+    }
+    let mut deleted = 0;
+    for id in req.ids {
+        // Ids that aren't SSTV images (or are already gone) are skipped.
+        let Ok((full, thumb)) = image_files(&state, id).await else { continue };
+        for name in [full, thumb].into_iter().flatten() {
+            let _ = tokio::fs::remove_file(state.sstv.images_dir.join(name)).await;
+        }
+        events::delete_event(&state.db, id).await.map_err(ApiError::internal)?;
+        deleted += 1;
+    }
+    tracing::info!(by = %admin.user.username, deleted, "SSTV images deleted in bulk");
+    Ok(Json(json!({ "deleted": deleted })))
+}
+
+#[derive(Deserialize)]
+pub struct ZipQuery {
+    /// Comma-separated event ids.
+    ids: String,
+}
+
+/// Download several images as one ZIP (stored, not compressed: PNGs already are).
+pub async fn zip(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Query(q): Query<ZipQuery>,
+) -> Result<Response, ApiError> {
+    let ids: Vec<i64> = q.ids.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    if ids.is_empty() || ids.len() > 500 {
+        return Err(ApiError::bad_request("give 1–500 image ids"));
+    }
+    let mut files = Vec::new();
+    for id in ids {
+        if let Ok((Some(name), _)) = image_files(&state, id).await {
+            if let Ok(bytes) = tokio::fs::read(state.sstv.images_dir.join(&name)).await {
+                files.push((name, bytes));
+            }
+        }
+    }
+    if files.is_empty() {
+        return Err(not_found());
+    }
+    let zipped = tokio::task::spawn_blocking(move || -> zip::result::ZipResult<Vec<u8>> {
+        use std::io::Write;
+        let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (name, bytes) in files {
+            z.start_file(name, opts)?;
+            z.write_all(&bytes)?;
+        }
+        Ok(z.finish()?.into_inner())
+    })
+    .await
+    .map_err(ApiError::internal)?
+    .map_err(ApiError::internal)?;
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/zip")
+        .header(header::CONTENT_DISPOSITION, "attachment; filename=\"sstv-images.zip\"")
+        .body(Body::from(zipped))
+        .map_err(ApiError::internal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

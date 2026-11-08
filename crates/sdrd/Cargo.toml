@@ -19,6 +19,7 @@ bytes = "1"
 hex = "0.4"
 num-complex = "0.4"
 png = "0.17"
+zip = { version = "2", default-features = false }
 rand = "0.8"
 rumqttc = { version = "0.24", default-features = false }
 rustfft = "6"

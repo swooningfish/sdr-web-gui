@@ -200,6 +200,44 @@ pub async fn delete_device(
     Ok(Json(json!({ "ok": true })))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdList {
+    pub ids: Vec<i64>,
+}
+
+/// Most items one bulk request may touch.
+pub const MAX_BULK: usize = 1000;
+
+/// Delete several sensors / APRS stations (and their history) at once.
+/// SSTV channels and pass logs are skipped: their images and recordings are
+/// managed from their own pages.
+pub async fn delete_devices(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Json(req): Json<IdList>,
+) -> Result<Json<Value>, ApiError> {
+    if req.ids.is_empty() || req.ids.len() > MAX_BULK {
+        return Err(ApiError::bad_request(format!("give 1–{MAX_BULK} ids")));
+    }
+    let mut deleted = 0;
+    for id in req.ids {
+        let Some(d) = events::get_device(&state.db, id).await.map_err(ApiError::internal)? else {
+            continue;
+        };
+        if d.decoder == crate::decoders::sstv::NAME || d.decoder == crate::scheduler::PASSES {
+            continue;
+        }
+        events::delete_device(&state.db, id).await.map_err(ApiError::internal)?;
+        if let (Some(m), true) = (&state.mqtt, d.tracked) {
+            m.retract(&d);
+        }
+        deleted += 1;
+    }
+    tracing::info!(by = %admin.user.username, deleted, "devices deleted in bulk");
+    Ok(Json(json!({ "deleted": deleted })))
+}
+
 pub async fn get_rtl433(State(state): State<AppState>, AuthUser(s): AuthUser) -> Result<Json<Value>, ApiError> {
     ism_user(&state, &s)?;
     Ok(Json(json!({

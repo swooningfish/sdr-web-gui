@@ -4,7 +4,8 @@
   import type { SstvRows } from '../lib/stream';
   import { unsupported } from '../lib/coverage';
   import { formatMHz, relTime } from '../lib/format';
-  import { imageUrl, SSTV_MODES } from '../lib/sstv';
+  import { imageUrl, SSTV_MODES, zipUrl } from '../lib/sstv';
+  import { Selection } from '../lib/selection.svelte';
 
   let { isAdmin, radio }: { isAdmin: boolean; radio: RadioState | null } = $props();
   const vhfWhy = $derived(unsupported(radio, 145_300_000));
@@ -109,6 +110,37 @@
     return () => clearInterval(t);
   });
 
+  // Gallery multi-select: download several as a ZIP, or (admins) delete them.
+  let selecting = $state(false);
+  const sel = new Selection();
+  const order = $derived(images.map((e) => e.id));
+  $effect(() => sel.keepOnly(order));
+
+  function stopSelecting() {
+    selecting = false;
+    sel.clear();
+  }
+
+  function onCard(e: EventRow, ev: MouseEvent) {
+    if (selecting) sel.toggle(e.id, ev.shiftKey, order);
+    else show(e);
+  }
+
+  async function removeSelected() {
+    const ids = sel.list();
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} image${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    try {
+      const r = await api.deleteSstvImages(ids);
+      const gone = new Set(ids);
+      images = images.filter((x) => !gone.has(x.id));
+      sel.clear();
+      if (r.deleted < ids.length) err = `${ids.length - r.deleted} could not be deleted`;
+    } catch (x) {
+      err = x instanceof Error ? x.message : String(x);
+    }
+  }
+
   function show(e: EventRow) {
     open = e;
     dialog?.showModal();
@@ -135,6 +167,8 @@
 
   const when = (ms: number) => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 </script>
+
+<svelte:window onkeydown={(e) => selecting && e.key === 'Escape' && !dialog?.open && stopSelecting()} />
 
 <div class="sstv">
   <section class="panel">
@@ -193,8 +227,32 @@
   <section class="panel">
     <div class="head">
       <h2>Gallery</h2>
-      <span class="muted small-text">{images.length} images</span>
+      <span class="gallery-tools small-text">
+        <span class="muted">{images.length} images</span>
+        {#if images.length}
+          <button type="button" class="small" aria-pressed={selecting} onclick={() => (selecting ? stopSelecting() : (selecting = true))}
+            >{selecting ? 'Done' : 'Select'}</button
+          >
+        {/if}
+      </span>
     </div>
+    {#if selecting}
+      <div class="bulk small-text" role="toolbar" aria-label="Selected images">
+        <strong>{sel.size} selected</strong>
+        <button type="button" class="small" onclick={() => sel.toggleAll(order)}>{sel.allOf(order) ? 'Select none' : 'Select all'}</button>
+        <a
+          class="button small"
+          class:disabled={sel.size === 0}
+          aria-disabled={sel.size === 0}
+          href={sel.size ? zipUrl(sel.list()) : undefined}
+          download="sstv-images.zip">Download ZIP</a
+        >
+        {#if isAdmin}
+          <button type="button" class="small danger" disabled={sel.size === 0} onclick={removeSelected}>Delete</button>
+        {/if}
+        <span class="muted hint">Click images to select; Shift+click selects a range.</span>
+      </div>
+    {/if}
     {#if images.length === 0}
       <p class="muted small-text">No images yet.</p>
     {/if}
@@ -202,7 +260,14 @@
       {#each images as e (e.id)}
         {@const d = data(e)}
         <li>
-          <button type="button" class="card" onclick={() => show(e)}>
+          <button
+            type="button"
+            class="card"
+            class:picked={selecting && sel.has(e.id)}
+            aria-pressed={selecting ? sel.has(e.id) : undefined}
+            onclick={(ev) => onCard(e, ev)}
+          >
+            {#if selecting}<span class="tick" aria-hidden="true">{sel.has(e.id) ? '✓' : ''}</span>{/if}
             <img src={imageUrl(e.id, true)} alt="{d.mode} image from {d.id}" loading="lazy" width="160" />
             <span class="meta small-text">
               <strong>{d.mode}</strong>
@@ -306,6 +371,59 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
     gap: 12px;
+  }
+  .gallery-tools {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .bulk {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    margin: 0 0 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-2);
+    position: sticky;
+    top: 60px;
+    z-index: 2;
+  }
+  .bulk .hint {
+    flex-basis: 100%;
+  }
+  a.button.disabled {
+    opacity: 0.55;
+    pointer-events: none;
+  }
+  .card {
+    position: relative;
+  }
+  .card.picked {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .tick {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    width: 22px;
+    height: 22px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--accent-text);
+    background: var(--surface);
+    border: 2px solid var(--text);
+    z-index: 1;
+  }
+  .card.picked .tick {
+    background: var(--accent);
+    border-color: var(--accent);
   }
   .card {
     display: grid;

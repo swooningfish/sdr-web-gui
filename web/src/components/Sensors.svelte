@@ -6,6 +6,8 @@
   import DeviceIdent from './DeviceIdent.svelte';
   import { unsupported } from '../lib/coverage';
   import { formatMHz, formatRate, relTime } from '../lib/format';
+  import { Selection } from '../lib/selection.svelte';
+  import { indeterminate } from '../lib/actions';
 
   let { isAdmin, radio }: { isAdmin: boolean; radio: RadioState | null } = $props();
   const canCopy = typeof navigator !== 'undefined' && !!navigator.clipboard;
@@ -42,6 +44,69 @@
     );
   });
   const tpmsCount = $derived(devices.filter((d) => d.kind === 'TPMS').length);
+
+  // Sorting (remembered per browser).
+  type SortKey = 'name' | 'signal' | 'seen' | 'count';
+  const SORT_PREF = 'sdr.sensors.sort';
+  const savedSort = (() => {
+    try {
+      return JSON.parse(localStorage.getItem(SORT_PREF) ?? 'null') as { key: SortKey; dir: 1 | -1 } | null;
+    } catch {
+      return null;
+    }
+  })();
+  let sortKey = $state<SortKey>(savedSort?.key ?? 'seen');
+  let sortDir = $state<1 | -1>(savedSort?.dir ?? -1);
+  function sortBy(k: SortKey) {
+    if (sortKey === k) sortDir = sortDir === 1 ? -1 : 1;
+    else {
+      sortKey = k;
+      sortDir = k === 'name' ? 1 : -1; // names A→Z, numbers biggest/newest first
+    }
+    try {
+      localStorage.setItem(SORT_PREF, JSON.stringify({ key: sortKey, dir: sortDir }));
+    } catch {
+      /* not available */
+    }
+  }
+  const rssi = (d: Device) => (typeof d.last_data.rssi === 'number' ? d.last_data.rssi : null);
+  const sorted = $derived.by(() => {
+    const key = (d: Device): number | string | null =>
+      sortKey === 'name' ? deviceTitle(d).toLowerCase() : sortKey === 'signal' ? rssi(d) : sortKey === 'count' ? d.count : d.last_seen;
+    return [...shown].sort((a, b) => {
+      const x = key(a);
+      const y = key(b);
+      // Devices without a value (e.g. no signal level) always go last.
+      if (x === null || y === null) return x === y ? 0 : x === null ? 1 : -1;
+      const c = typeof x === 'string' ? x.localeCompare(y as string) : (x as number) - (y as number);
+      return c * sortDir || b.last_seen - a.last_seen;
+    });
+  });
+  const ariaSort = (k: SortKey) => (sortKey === k ? (sortDir === 1 ? 'ascending' : 'descending') : 'none');
+  const arrow = (k: SortKey) => (sortKey === k ? (sortDir === 1 ? '▲' : '▼') : '');
+
+  // Multi-select (admins) for bulk delete.
+  const sel = new Selection();
+  const order = $derived(sorted.map((d) => d.id));
+  $effect(() => sel.keepOnly(devices.map((d) => d.id)));
+
+  async function removeSelected() {
+    const ids = sel.list();
+    if (!ids.length) return;
+    const readingsTotal = devices.filter((d) => sel.has(d.id)).reduce((n, d) => n + d.count, 0);
+    if (!confirm(`Delete ${ids.length} device${ids.length === 1 ? '' : 's'} and ${readingsTotal} readings? This cannot be undone.`))
+      return;
+    try {
+      await api.deleteDevices(ids);
+      const gone = new Set(ids);
+      devices = devices.filter((d) => !gone.has(d.id));
+      feed = feed.filter((f) => !gone.has(f.device.id));
+      if (selectedId !== null && gone.has(selectedId)) selectedId = null;
+      sel.clear();
+    } catch (e) {
+      fail(e);
+    }
+  }
   const charts = $derived(
     CHART_FIELDS.map((f) => ({ ...f, points: series(history, f.key) })).filter((c) => c.points.length > 0),
   );
@@ -247,6 +312,14 @@
 
       {#if err}<p class="error">{err}</p>{/if}
 
+      {#if isAdmin && sel.size > 0}
+        <div class="bulk small-text" role="toolbar" aria-label="Selected devices">
+          <strong>{sel.size} selected</strong>
+          <button type="button" class="small danger" onclick={removeSelected}>Delete</button>
+          <button type="button" class="small" onclick={() => sel.clear()}>Clear</button>
+        </div>
+      {/if}
+
       {#if devices.length === 0}
         <p class="muted empty">
           No devices heard yet. rtl_433 only runs while {info ? formatMHz(info.config.frequency_hz, 2) : '433.92 MHz'} is
@@ -257,18 +330,47 @@
           <table>
             <thead>
               <tr>
-                <th>Device</th>
+                {#if isAdmin}
+                  <th class="pick">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all shown devices"
+                      checked={sel.allOf(order)}
+                      use:indeterminate={sel.someOf(order) && !sel.allOf(order)}
+                      onchange={() => sel.toggleAll(order)}
+                    />
+                  </th>
+                {/if}
+                <th aria-sort={ariaSort('name')}><button type="button" class="sort" onclick={() => sortBy('name')}>Device {arrow('name')}</button></th>
                 <th>Readings</th>
-                <th class="num hide-sm">Signal</th>
-                <th>Last heard</th>
-                <th class="num hide-sm">Count</th>
+                <th class="num hide-sm" aria-sort={ariaSort('signal')}
+                  ><button type="button" class="sort" onclick={() => sortBy('signal')}>Signal {arrow('signal')}</button></th
+                >
+                <th aria-sort={ariaSort('seen')}><button type="button" class="sort" onclick={() => sortBy('seen')}>Last heard {arrow('seen')}</button></th>
+                <th class="num hide-sm" aria-sort={ariaSort('count')}
+                  ><button type="button" class="sort" onclick={() => sortBy('count')}>Count {arrow('count')}</button></th
+                >
                 <th title="Tracked devices are kept forever and published to Home Assistant">Track</th>
               </tr>
             </thead>
             <tbody>
-              {#each shown as d (d.id)}
+              {#each sorted as d (d.id)}
                 {@const r = d.last_data}
-                <tr class:sel={d.id === selectedId} onclick={() => select(d)}>
+                <tr class:sel={d.id === selectedId} class:picked={sel.has(d.id)} onclick={() => select(d)}>
+                  {#if isAdmin}
+                    <td class="pick">
+                      <input
+                        type="checkbox"
+                        checked={sel.has(d.id)}
+                        aria-label="Select {deviceLabel(d)}"
+                        onclick={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          sel.toggle(d.id, e.shiftKey, order);
+                        }}
+                      />
+                    </td>
+                  {/if}
                   <td>
                     <button type="button" class="link" onclick={(e) => { e.stopPropagation(); select(d); }}>
                       {deviceTitle(d)}
@@ -452,6 +554,36 @@
   }
   .empty {
     margin: 24px 0;
+  }
+  .bulk {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    margin: 0 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-2);
+  }
+  th.pick,
+  td.pick {
+    width: 1%;
+    padding-right: 0;
+  }
+  tr.picked td {
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+  button.sort {
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    white-space: nowrap;
+  }
+  button.sort:hover {
+    color: var(--text);
   }
   .table-wrap {
     overflow-x: auto;

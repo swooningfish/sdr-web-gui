@@ -85,6 +85,55 @@ test('waterfall colour choice is remembered', async ({ page }) => {
   await page.getByLabel('Waterfall colours').selectOption('turbo');
 });
 
+test('sensor list sorts by column', async ({ page }) => {
+  const devices = await (await page.request.get('/api/devices?decoder=rtl_433')).json();
+  test.skip(!Array.isArray(devices) || devices.length < 2, 'needs at least two sensors');
+  await openTab(page, 'Sensors');
+  const header = page.locator('th[aria-sort]').filter({ hasText: 'Device' });
+  await header.getByRole('button').click();
+  await expect(header).toHaveAttribute('aria-sort', /ascending|descending/);
+  const names = async () => page.locator('tbody tr td:nth-child(2) button.link').allInnerTexts();
+  const a = await names();
+  await header.getByRole('button').click(); // reverse
+  const b = await names();
+  expect(b).toEqual([...a].reverse());
+  expect(await overflow(page)).toBeLessThanOrEqual(0);
+});
+
+test('sensor and APRS lists can select several items', async ({ page }) => {
+  const sensors = await (await page.request.get('/api/devices?decoder=rtl_433')).json();
+  const aprs = await (await page.request.get('/api/devices?decoder=aprs')).json();
+  test.skip(!sensors.length && !aprs.length, 'no sensors or APRS stations yet');
+  if (sensors.length) {
+    await openTab(page, 'Sensors');
+    await page.getByLabel('Select all shown devices').check();
+    await expect(page.getByRole('toolbar', { name: 'Selected devices' })).toContainText(`${sensors.length} selected`);
+    await page.getByRole('toolbar', { name: 'Selected devices' }).getByRole('button', { name: 'Clear' }).click();
+    await expect(page.getByRole('toolbar', { name: 'Selected devices' })).toHaveCount(0);
+  }
+  if (aprs.length) {
+    await openTab(page, 'APRS');
+    await page.locator('.list-head').getByText('Select all').click();
+    await expect(page.getByRole('toolbar', { name: 'Selected stations' })).toContainText('selected');
+    expect(await overflow(page)).toBeLessThanOrEqual(0);
+  }
+});
+
+test('SSTV gallery select mode offers ZIP download', async ({ page }) => {
+  const images = await (await page.request.get('/api/events?decoder=sstv')).json();
+  test.skip(!images.length, 'no SSTV images yet');
+  await openTab(page, 'SSTV');
+  await page.getByRole('button', { name: 'Select', exact: true }).click();
+  const bar = page.getByRole('toolbar', { name: 'Selected images' });
+  await expect(bar).toContainText('0 selected');
+  await page.locator('.grid .card').first().click();
+  await expect(bar).toContainText('1 selected');
+  await expect(bar.getByRole('link', { name: 'Download ZIP' })).toHaveAttribute('href', /\/api\/sstv\/images\.zip\?ids=\d+/);
+  expect(await overflow(page)).toBeLessThanOrEqual(0);
+  await page.keyboard.press('Escape');
+  await expect(bar).toHaveCount(0);
+});
+
 test('APRS map shows home and can centre on it', async ({ page }) => {
   // The dev stack has a station location set (Settings → Passes).
   const loc = (await (await page.request.get('/api/schedule')).json()).status.location;
