@@ -15,9 +15,6 @@
   let profFreq = $state<string[]>([]);
   let satFreq = $state<string[]>([]);
   let satRec = $state<string[]>([]);
-  let lat = $state('');
-  let lon = $state('');
-  let alt = $state('0');
   let tleText = $state('');
   let testSecs = $state(60);
   let msg = $state<{ ok: boolean; text: string } | null>(null);
@@ -32,17 +29,23 @@
     profFreq = i.config.profiles.map((p) => mhz(p.center_hz));
     satFreq = i.config.satellites.map((s) => mhz(s.center_hz));
     satRec = i.config.satellites.map((s) => mhz(s.record_hz));
-    const l = i.status.location;
-    if (l) {
-      lat = String(l.lat_deg);
-      lon = String(l.lon_deg);
-      alt = String(l.alt_m);
-    }
   }
 
   onMount(() => {
     api.schedule().then(fill, (e) => (msg = { ok: false, text: String(e.message ?? e) }));
+    // Keep pass/TLE status current (e.g. so Stop appears while a test runs).
+    const t = setInterval(async () => {
+      try {
+        const i = await api.schedule();
+        if (info) info = { ...info, status: i.status };
+      } catch {
+        /* keep last */
+      }
+    }, 3000);
+    return () => clearInterval(t);
   });
+
+  const active = $derived(info?.status.active ?? null);
 
   async function act(f: () => Promise<unknown>, ok: string) {
     busy = true;
@@ -57,33 +60,6 @@
     } finally {
       busy = false;
     }
-  }
-
-  function saveLocation(e: SubmitEvent) {
-    e.preventDefault();
-    const obs = { lat_deg: Number(lat), lon_deg: Number(lon), alt_m: Number(alt || 0) };
-    if (![obs.lat_deg, obs.lon_deg, obs.alt_m].every(Number.isFinite) || lat === '' || lon === '') {
-      msg = { ok: false, text: 'Enter latitude and longitude in decimal degrees' };
-      return;
-    }
-    act(() => api.setLocation(obs), 'Location saved; passes recalculated');
-  }
-
-  function useDevice() {
-    if (!navigator.geolocation) {
-      msg = { ok: false, text: 'This browser has no location service' };
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (p) => {
-        lat = p.coords.latitude.toFixed(4);
-        lon = p.coords.longitude.toFixed(4);
-        if (p.coords.altitude !== null) alt = String(Math.round(p.coords.altitude));
-        msg = { ok: true, text: 'Filled in from this device; press Save location' };
-      },
-      (e) => (msg = { ok: false, text: `Couldn't get location: ${e.message}` }),
-      { enableHighAccuracy: false, timeout: 10_000 },
-    );
   }
 
   function saveSchedule(e: SubmitEvent) {
@@ -139,21 +115,10 @@
 </script>
 
 <section class="panel">
-  <h2>Passes &amp; schedule</h2>
+  <h2>Satellites &amp; schedule</h2>
   {#if !cfg || !info}
     <p class="muted">{msg?.text ?? 'Loading…'}</p>
   {:else}
-    <h3>Station location</h3>
-    <form class="loc" onsubmit={saveLocation}>
-      <label>Latitude <input bind:value={lat} inputmode="decimal" placeholder="51.5074" /></label>
-      <label>Longitude <input bind:value={lon} inputmode="decimal" placeholder="-0.1278" /></label>
-      <label>Altitude (m) <input bind:value={alt} inputmode="decimal" /></label>
-      <div class="buttons">
-        <button type="button" class="small" onclick={useDevice}>Use this device's location</button>
-        <button type="submit" class="small primary" disabled={busy}>Save location</button>
-      </div>
-    </form>
-
     <form onsubmit={saveSchedule}>
       <h3>Satellites</h3>
       <p class="muted small-text hint">
@@ -243,7 +208,17 @@
     </details>
 
     <h3>Test</h3>
-    <div class="row">
+    {#if active}
+      <div class="row">
+        <span class="small-text">
+          {active.test ? 'Test pass' : `${active.satellite} pass`} in progress{active.recording ? ', recording' : ''}.
+        </span>
+        <button type="button" class="small danger" disabled={busy} onclick={() => act(() => api.stopPass(), 'Pass stopped')}
+          >Stop</button
+        >
+      </div>
+    {/if}
+    <div class="row" hidden={!!active}>
       <span class="small-text">Run a pretend pass now for</span>
       <input class="n" type="number" bind:value={testSecs} min="10" max="900" aria-label="Test pass length in seconds" />
       <span class="small-text">s</span>
@@ -270,21 +245,6 @@
   form {
     display: grid;
     gap: 6px;
-  }
-  .loc {
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    align-items: end;
-  }
-  .loc label {
-    display: grid;
-    gap: 2px;
-    font-size: 13px;
-  }
-  .loc input {
-    min-width: 0;
-  }
-  .loc .buttons {
-    grid-column: 1 / -1;
   }
   .buttons {
     display: flex;

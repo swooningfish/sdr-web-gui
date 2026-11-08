@@ -24,7 +24,7 @@ use crate::decoders::rtl433::Rtl433Handle;
 use crate::decoders::sstv::SstvHandle;
 use crate::events::EventFeed;
 use crate::mqtt::MqttHandle;
-use crate::radio::RadioHandle;
+use crate::radio::{IqBlock, RadioHandle};
 use crate::scheduler::SchedulerHandle;
 
 mod aprs_routes;
@@ -33,6 +33,7 @@ mod radio_routes;
 mod schedule_routes;
 mod sensors;
 mod sstv_routes;
+mod system_routes;
 mod users;
 mod ws;
 
@@ -50,6 +51,9 @@ pub struct AppState {
     pub sstv: SstvHandle,
     /// Live SSTV rows (binary frames) for WebSocket clients.
     pub sstv_rows_tx: broadcast::Sender<Bytes>,
+    /// Raw IQ, for live-audio listeners to subscribe to.
+    pub iq_tx: broadcast::Sender<Arc<IqBlock>>,
+    pub audio_listeners: Arc<std::sync::atomic::AtomicUsize>,
     pub schedule: SchedulerHandle,
     pub event_feed: EventFeed,
     pub mqtt: Option<MqttHandle>,
@@ -105,6 +109,9 @@ pub fn router(state: AppState) -> Router {
         .route("/schedule/tle", axum::routing::put(schedule_routes::set_tle))
         .route("/schedule/tle/refresh", post(schedule_routes::refresh_tle))
         .route("/schedule/test", post(schedule_routes::test_pass))
+        .route("/schedule/stop", post(schedule_routes::stop_pass))
+        .route("/system", get(system_routes::get))
+        .route("/schedule/geocode", get(schedule_routes::geocode))
         .route("/passes/{id}/audio", get(schedule_routes::audio))
         .route("/passes/{id}", axum::routing::delete(schedule_routes::delete_pass))
         .route("/sstv/image/{id}", get(sstv_routes::image).delete(sstv_routes::delete_image))

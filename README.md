@@ -6,7 +6,7 @@ monitoring: TPMS/ISM sensors (rtl_433), APRS, and SSTV, including automatic ISS/
 
 See [SPEC.md](SPEC.md) for the full design and roadmap.
 
-## Status: milestone 5 (passes and scheduling)
+## Status: milestone 6 (live audio)
 
 - [x] Rust core (`sdrd`) owns the dongle via librtlsdr (rtl-sdr-blog fork: V4, V3, generic)
 - [x] Live spectrum and waterfall in the browser over WebSocket
@@ -18,7 +18,7 @@ See [SPEC.md](SPEC.md) for the full design and roadmap.
 - [x] M3: APRS (Direwolf) with a live map, station tracks, packet log and weather charts
 - [x] M4: native SSTV decoder (13 modes, slant correction) with live view and image gallery
 - [x] M5: ISS pass prediction (SGP4, CelesTrak TLEs), automatic pass tuning, Doppler tracking, pass recordings, profile rotation
-- [ ] M6: live audio
+- [x] M6: live audio in the browser (NFM/AM/WFM/USB/LSB, squelch, noise reduction), tabbed settings, profile page, browser layout tests
 
 ## Prerequisites
 
@@ -149,10 +149,40 @@ Every line's sync pulse is tracked, so slant from clock differences is corrected
 - During ISS passes, channels marked **Doppler** follow the satellite's Doppler shift
   (±3.5 kHz at 145.8 MHz, ±10 kHz at 437.55 MHz).
 
+## Live audio
+
+Press **Play** in the *Listen* panel on the Spectrum tab, then click the waterfall (or type a
+frequency) to listen anywhere inside the tuned band. The channel is shaded on the spectrum.
+
+- Modes: **NFM**, **AM**, **WFM** (broadcast, 50 µs de-emphasis), **USB**, **LSB**.
+- **Squelch**, **noise reduction** (spectral; removes steady hiss), **volume** and **mute**.
+  Settings are remembered per browser; clicks snap to the mode's channel raster.
+- Audio is demodulated per listener in sdrd and streamed over the existing WebSocket as
+  IMA ADPCM (about 70 kb/s for voice modes), played through an AudioWorklet with a
+  250 ms jitter buffer. No codec libraries are needed on the Pi.
+- Up to 4 listeners at once (`SDRD_AUDIO_MAX_LISTENERS`); admins only unless
+  `SDRD_AUDIO_VIEWERS=true`.
+
+## Settings
+
+Admins get **Settings**, split into tabs: Receiver (SDR devices), Decoders (rtl_433, APRS,
+SSTV), Passes (location, satellites, rotation, TLEs, test pass), Integrations (MQTT / Home
+Assistant), Users and System (read-only server settings). Everyone can open their
+**profile** from their username in the header to change their password or sign out.
+
+## Browser tests
+
+`scripts/ui-test.sh` runs Playwright (in its official Docker image) against the dev stack at
+1920, 1366, 820 and 375 px wide. It checks that no page scrolls sideways, that the spectrum
+toolbar doesn't move on hover, and checks the settings tabs, the profile page and remembered
+waterfall colours.
+
 ## Passes and scheduling
 
-Set the station location under **Settings → Passes & schedule** (or press *Use this device's
-location*). sdrd then predicts passes for 48 hours ahead with SGP4. Orbit data (TLE) comes
+Set the station location under **Settings → Passes**: search for a town or postcode, type a
+Maidenhead locator (e.g. `IO91wm`), enter coordinates, or press *Use this device's location*
+(browsers only allow that over HTTPS or on `localhost`, not on a plain-HTTP LAN address).
+A pass in progress (real or test) can be stopped from the Passes tab or Settings. sdrd then predicts passes for 48 hours ahead with SGP4. Orbit data (TLE) comes
 from CelesTrak and is refreshed every 12 h; it can also be pasted in by hand for offline
 setups. Predictions were cross-checked against skyfield: AOS/LOS within a second, look
 angles and range-rate matching to 0.001.
@@ -217,6 +247,8 @@ All settings are `SDRD_*` environment variables. See [.env.example](.env.example
 | `SDRD_MQTT_HOST` | (off) | MQTT broker; also `_PORT`, `_USER`, `_PASSWORD`, `_PREFIX`, `_DISCOVERY_PREFIX` |
 | `SDRD_EVENT_RETENTION_DAYS` | `30` | Delete older events and untracked devices |
 | `SDRD_ISM_VIEWERS` | `false` | Let viewer accounts see sensors / TPMS |
+| `SDRD_AUDIO_MAX_LISTENERS` | `4` | Concurrent live-audio listeners (0 turns live audio off) |
+| `SDRD_AUDIO_VIEWERS` | `false` | Let viewer accounts listen to live audio |
 | `SDRD_MAP_TILE_URL` | OpenStreetMap | Map tile URL template with `{z}`, `{x}`, `{y}` (and optional `{s}`) |
 
 ## Architecture

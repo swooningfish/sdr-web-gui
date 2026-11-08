@@ -17,6 +17,7 @@ use tokio::sync::broadcast;
 use tracing_subscriber::EnvFilter;
 
 mod aprs;
+mod audio;
 mod sstv;
 mod auth;
 mod config;
@@ -147,6 +148,8 @@ async fn serve() -> Result<()> {
         aprs,
         sstv,
         sstv_rows_tx,
+        iq_tx: iq_tx.clone(),
+        audio_listeners: Default::default(),
         schedule,
         event_feed,
         mqtt,

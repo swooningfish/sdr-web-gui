@@ -1,3 +1,4 @@
+import { FRAME_AUDIO, parseAudioFrame, type AudioFrame } from './audio';
 import { api, ApiError, type Device, type EventRow, type RadioState } from './api';
 
 export interface WaterfallFrame {
@@ -14,6 +15,9 @@ export interface StreamHandlers {
   onRadio: (s: RadioState) => void;
   onEvent: (device: Device, event: EventRow) => void;
   onSstvRows: (f: SstvRows) => void;
+  onAudio: (f: AudioFrame) => void;
+  /** audio_started / audio_stopped / audio_error replies. */
+  onAudioStatus: (kind: string, message: string | null) => void;
   onConnection: (connected: boolean) => void;
   onAuthLost: () => void;
 }
@@ -91,6 +95,11 @@ export class Stream {
     this.ws = null;
   }
 
+  /** Send a JSON control message (dropped while disconnected). */
+  send(msg: unknown) {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
+  }
+
   private connect() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${location.host}/api/ws`);
@@ -106,13 +115,17 @@ export class Stream {
           const m = JSON.parse(ev.data);
           if (m.type === 'radio') this.h.onRadio(m.state as RadioState);
           else if (m.type === 'event') this.h.onEvent(m.device as Device, m.event as EventRow);
+          else if (typeof m.type === 'string' && m.type.startsWith('audio_')) this.h.onAudioStatus(m.type, m.message ?? null);
         } catch {
           /* ignore malformed */
         }
       } else {
         const buf = ev.data as ArrayBuffer;
         const kind = buf.byteLength ? new DataView(buf).getUint8(0) : 0;
-        if (kind === FRAME_SSTV_ROWS) {
+        if (kind === FRAME_AUDIO) {
+          const a = parseAudioFrame(buf);
+          if (a) this.h.onAudio(a);
+        } else if (kind === FRAME_SSTV_ROWS) {
           const r = parseSstvRows(buf);
           if (r) this.h.onSstvRows(r);
         } else {

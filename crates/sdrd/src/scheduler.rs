@@ -211,6 +211,8 @@ pub struct ScheduleStatus {
 enum Cmd {
     RefreshTle,
     TestPass(u32),
+    /// End the pass in progress (test or real) now.
+    Stop,
     Reload,
 }
 
@@ -262,6 +264,11 @@ impl SchedulerHandle {
 
     pub async fn refresh_tle(&self) {
         let _ = self.cmd_tx.send(Cmd::RefreshTle).await;
+    }
+
+    /// Stop the pass in progress; a real pass is then skipped, not restarted.
+    pub async fn stop_pass(&self) {
+        let _ = self.cmd_tx.send(Cmd::Stop).await;
     }
 
     pub async fn test_pass(&self, seconds: u32) {
@@ -328,6 +335,7 @@ pub async fn spawn(
         active: None,
         before_pass: None,
         pending: HashMap::new(),
+        skipped: Vec::new(),
         tune_error: false,
     };
     tokio::spawn(run.main(cmd_rx, recorder.done));
@@ -370,6 +378,8 @@ struct Run {
     /// Recordings being finalised → the pass they belong to.
     pending: HashMap<PathBuf, (SatConfig, Pass, bool)>,
     tune_error: bool,
+    /// AOS times of real passes stopped by hand (so they aren't restarted).
+    skipped: Vec<i64>,
 }
 
 fn slug(s: &str) -> String {
@@ -410,6 +420,15 @@ impl Run {
                         self.rot_until = 0;
                     }
                     Cmd::TestPass(secs) => self.start_test(secs),
+                    Cmd::Stop => {
+                        if let Some(a) = self.active.as_ref() {
+                            if !a.test {
+                                self.skipped.push(a.pass.aos_ms);
+                            }
+                            tracing::info!("{} pass stopped by hand", a.sat.name);
+                            self.end().await;
+                        }
+                    }
                 },
                 Some(done) = done_rx.recv() => self.recorded(done).await,
             }
@@ -638,9 +657,11 @@ impl Run {
         }
         if self.active.is_none() {
             let lead = cfg.lead_s as i64 * 1000;
+            self.skipped.retain(|aos| now - aos < 3 * 3_600_000);
             let next = self.passes.iter().find(|(id, p)| {
                 now >= p.aos_ms - lead
                     && now < p.los_ms
+                    && !self.skipped.contains(&p.aos_ms)
                     && cfg
                         .satellites
                         .iter()

@@ -288,6 +288,21 @@ export interface SstvInfo {
   status: { enabled: boolean; channels: SstvChannelStatus[] };
 }
 
+export interface SystemInfo {
+  version: string;
+  source: string;
+  event_retention_days: number;
+  ism_viewers: boolean;
+  audio_viewers: boolean;
+  audio_max_listeners: number;
+  audio_listeners: number;
+  session_hours: number;
+  trust_proxy: boolean;
+  map_tiles: string;
+  mqtt: { prefix: string; discovery_prefix: string; events: boolean } | null;
+  mqtt_status: MqttStatus | null;
+}
+
 export type RadioPatch = Partial<RadioSettings> & { auto_gain?: boolean };
 
 export class ApiError extends Error {
@@ -375,6 +390,13 @@ export const api = {
     req<{ norad_id: number }>('PUT', '/schedule/tle', { name, line1, line2 }),
   refreshTle: () => req('POST', '/schedule/tle/refresh'),
   testPass: (seconds: number) => req('POST', '/schedule/test', { seconds }),
+  stopPass: () => req('POST', '/schedule/stop'),
+  geocode: (q: string) =>
+    req<{ places: { name: string; lat_deg: number; lon_deg: number }[] }>(
+      'GET',
+      `/schedule/geocode?q=${encodeURIComponent(q)}`,
+    ),
+  system: () => req<SystemInfo>('GET', '/system'),
   deletePass: (id: number) => req('DELETE', `/passes/${id}`),
   aprsTracks: (since: number) => req<Track[]>('GET', `/aprs/tracks?since=${Math.floor(since)}`),
   rtl433: () => req<Rtl433Info>('GET', '/decoders/rtl_433'),

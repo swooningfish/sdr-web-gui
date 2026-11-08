@@ -64,6 +64,10 @@ pub struct Config {
     pub event_retention_days: i64,
     /// Let viewer accounts see ISM/TPMS devices (other people's data).
     pub ism_viewers: bool,
+    /// Let viewer accounts listen to live audio.
+    pub audio_viewers: bool,
+    /// Concurrent live-audio listeners (0 turns live audio off).
+    pub audio_max_listeners: usize,
     pub mqtt: Option<MqttConfig>,
 }
 
@@ -183,6 +187,8 @@ impl Config {
                 .unwrap_or_else(|| "https://tile.openstreetmap.org/{z}/{x}/{y}.png".into()),
             event_retention_days: parse("SDRD_EVENT_RETENTION_DAYS", 30)?,
             ism_viewers: parse_bool("SDRD_ISM_VIEWERS", false)?,
+            audio_viewers: parse_bool("SDRD_AUDIO_VIEWERS", false)?,
+            audio_max_listeners: parse("SDRD_AUDIO_MAX_LISTENERS", 4)?,
             mqtt: match var("SDRD_MQTT_HOST") {
                 None => None,
                 Some(host) => Some(MqttConfig {

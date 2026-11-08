@@ -4,27 +4,30 @@
   import { Stream } from './lib/stream';
   import { formatMHz } from './lib/format';
   import Login from './components/Login.svelte';
+  import Settings, { type SettingsTab } from './components/Settings.svelte';
+  import Profile from './components/Profile.svelte';
   import Waterfall from './components/Waterfall.svelte';
   import RadioPanel from './components/RadioPanel.svelte';
-  import Account from './components/Account.svelte';
-  import Users from './components/Users.svelte';
+  import ListenPanel from './components/ListenPanel.svelte';
+  import { snap, type Listen } from './lib/audio';
   import Sensors from './components/Sensors.svelte';
   import Dashboard from './components/Dashboard.svelte';
-  import DecoderSettings from './components/DecoderSettings.svelte';
   import Aprs from './components/Aprs.svelte';
-  import AprsSettings from './components/AprsSettings.svelte';
   import Sstv from './components/Sstv.svelte';
-  import SstvSettings from './components/SstvSettings.svelte';
   import Passes from './components/Passes.svelte';
-  import ScheduleSettings from './components/ScheduleSettings.svelte';
-  import SdrDevices from './components/SdrDevices.svelte';
 
   let user = $state<User | null>(null);
   let checking = $state(true);
   let radio = $state<RadioState | null>(null);
   let wsUp = $state(false);
-  let view = $state<'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'sstv' | 'passes' | 'settings'>('spectrum');
+  let view = $state<'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'sstv' | 'passes' | 'settings' | 'profile'>(
+    'spectrum',
+  );
+  let settingsTab = $state<SettingsTab>('receiver');
   let waterfall = $state<ReturnType<typeof Waterfall> | undefined>();
+  let listenPanel = $state<ReturnType<typeof ListenPanel> | undefined>();
+  let listen = $state<Listen>({ on: false, hz: 145_800_000, mode: 'nfm' });
+  let stream: Stream | null = null;
   let sensors = $state<ReturnType<typeof Sensors> | undefined>();
   let dashboard = $state<ReturnType<typeof Dashboard> | undefined>();
   let aprs = $state<ReturnType<typeof Aprs> | undefined>();
@@ -60,14 +63,23 @@
         }
       },
       onSstvRows: (r) => sstv?.rows(r),
-      onConnection: (c) => (wsUp = c),
+      onAudio: (f) => listenPanel?.feed(f),
+      onAudioStatus: (kind, message) => listenPanel?.status(kind, message),
+      onConnection: (c) => {
+        wsUp = c;
+        if (c) listenPanel?.reconnected();
+      },
       onAuthLost: () => {
         user = null;
         radio = null;
       },
     });
     s.start();
-    return () => s.stop();
+    stream = s;
+    return () => {
+      s.stop();
+      stream = null;
+    };
   });
 
   async function logout() {
@@ -120,7 +132,9 @@
       <button type="button" class="tab" class:active={view === 'aprs'} onclick={() => (view = 'aprs')}>APRS</button>
       <button type="button" class="tab" class:active={view === 'sstv'} onclick={() => (view = 'sstv')}>SSTV</button>
       <button type="button" class="tab" class:active={view === 'passes'} onclick={() => (view = 'passes')}>Passes</button>
-      <button type="button" class="tab" class:active={view === 'settings'} onclick={() => (view = 'settings')}>Settings</button>
+      {#if isAdmin}
+        <button type="button" class="tab" class:active={view === 'settings'} onclick={() => (view = 'settings')}>Settings</button>
+      {/if}
     </nav>
     <div class="status-bar">
       <span class="pill" title={wsUp ? 'Live stream connected' : 'Reconnecting…'}>
@@ -133,7 +147,13 @@
           {radio.connected ? formatMHz(radio.settings.center_hz, 3) : 'No SDR'}
         </span>
       {/if}
-      <span class="user hide-sm">{user.username}</span>
+      <button
+        type="button"
+        class="user"
+        class:active={view === 'profile'}
+        title="Your profile and password"
+        onclick={() => (view = 'profile')}>{user.username}</button
+      >
       <button type="button" class="small" onclick={logout}>Sign out</button>
     </div>
   </header>
@@ -141,9 +161,18 @@
   <main class="content">
     <div class="spectrum-view" hidden={view !== 'spectrum'}>
       <div class="panel wf-panel">
-        <Waterfall bind:this={waterfall} canTune={isAdmin && !!radio?.can_tune} ontune={tuneTo} />
+        <Waterfall
+          bind:this={waterfall}
+          canTune={isAdmin && !!radio?.can_tune}
+          ontune={tuneTo}
+          {listen}
+          onpick={(hz) => (listen.hz = snap(hz, listen.mode))}
+        />
       </div>
-      <RadioPanel {radio} {isAdmin} />
+      <div class="side">
+        <ListenPanel bind:this={listenPanel} {radio} bind:listen send={(m) => stream?.send(m)} />
+        <RadioPanel {radio} {isAdmin} />
+      </div>
     </div>
     <!-- Kept mounted so live events keep arriving while another tab is open. -->
     <div hidden={view !== 'dashboard'}>
@@ -159,18 +188,15 @@
       <Sstv bind:this={sstv} {isAdmin} {radio} />
     </div>
     <div hidden={view !== 'passes'}>
-      <Passes bind:this={passes} {isAdmin} {radio} onsettings={() => (view = 'settings')} />
+      <Passes bind:this={passes} {isAdmin} {radio} onsettings={() => {
+          settingsTab = 'passes';
+          view = 'settings';
+        }} />
     </div>
-    {#if view === 'settings'}
-      <div class="settings-view">
-        <Account {user} />
-        {#if isAdmin}<SdrDevices {radio} {isAdmin} />{/if}
-        {#if isAdmin}<DecoderSettings {radio} />{/if}
-        {#if isAdmin}<AprsSettings {radio} />{/if}
-        {#if isAdmin}<SstvSettings {radio} />{/if}
-        {#if isAdmin}<ScheduleSettings {radio} />{/if}
-        {#if isAdmin}<Users me={user} />{/if}
-      </div>
+    {#if view === 'settings' && isAdmin}
+      <Settings {radio} me={user} bind:tab={settingsTab} />
+    {:else if view === 'profile'}
+      <Profile {user} onlogout={logout} />
     {/if}
   </main>
 {/if}
@@ -228,6 +254,18 @@
   }
   .user {
     color: var(--muted);
+    background: transparent;
+    border-color: transparent;
+    padding: 4px 8px;
+    max-width: 12em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .user:hover,
+  .user.active {
+    color: var(--text);
+    border-color: var(--border);
   }
   .content {
     padding: 16px;
@@ -243,14 +281,13 @@
   .spectrum-view[hidden] {
     display: none;
   }
-  .wf-panel {
+  .side {
+    display: grid;
+    gap: 16px;
     min-width: 0;
   }
-  .settings-view {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
-    gap: 16px;
-    align-items: start;
+  .wf-panel {
+    min-width: 0;
   }
   .center {
     min-height: 100vh;

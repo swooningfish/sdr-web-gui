@@ -89,7 +89,10 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
    SGP4 pass prediction (cross-checked against skyfield), automatic pass tuning, Doppler
    tracking for flagged decoder channels, Doppler-corrected WAV recording per pass, sky plot,
    test passes.
-6. **Live audio + polish** — Opus streaming, settings UI, health/diagnostics, docs.
+6. **Live audio + polish** ✅ — per-listener demod (NFM/AM/WFM/USB/LSB) with squelch, spectral
+   noise reduction and AGC, streamed as IMA ADPCM over the WebSocket (no Opus/libopus
+   dependency) into an AudioWorklet jitter buffer; click-to-listen on the waterfall; tabbed
+   admin settings, profile page, system info, waterfall palettes; Playwright layout tests.
 
 ## Open items
 - Observer location (lat/lon/alt) for pass prediction — set in UI/env at deploy time.

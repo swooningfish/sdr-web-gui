@@ -1,4 +1,10 @@
-//! WebSocket stream: binary waterfall frames plus JSON status messages.
+//! WebSocket stream: binary waterfall / SSTV / audio frames plus JSON status
+//! messages. Clients send JSON only to control live audio:
+//!
+//! - `{"type":"audio","freq_hz":145800000,"mode":"nfm","squelch_db":-60}`
+//!   starts listening, or retunes the listener (`squelch_db` may be null;
+//!   add `"nr":true` for noise reduction)
+//! - `{"type":"audio_stop"}`
 
 use std::time::Duration;
 
@@ -6,12 +12,15 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Response;
+use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
 
 use super::{check_origin, ApiError, AppState, AuthUser};
-use crate::auth;
-use crate::radio::RadioState;
+use crate::audio::demod::{Mode, Params};
+use crate::audio::{self, Listener};
+use crate::auth::{self, Role};
+use crate::radio::{RadioState, MAX_FREQ_HZ, MIN_FREQ_HZ};
 
 pub async fn handler(
     ws: WebSocketUpgrade,
@@ -23,16 +32,67 @@ pub async fn handler(
     check_origin(&state.cfg, &headers)?;
     let token_hash = session.token_hash.clone();
     let ism = super::sensors::can_see_ism(&state, &session);
+    let can_listen = session.user.role == Role::Admin || state.cfg.audio_viewers;
     Ok(ws
         .max_message_size(64 * 1024)
-        .on_upgrade(move |socket| client(socket, state, token_hash, ism)))
+        .on_upgrade(move |socket| client(socket, state, token_hash, ism, can_listen)))
 }
 
 fn radio_msg(s: &RadioState) -> String {
     json!({ "type": "radio", "state": s }).to_string()
 }
 
-async fn client(mut socket: WebSocket, state: AppState, token_hash: String, ism: bool) {
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum ClientMsg {
+    Audio {
+        freq_hz: u64,
+        mode: Mode,
+        squelch_db: Option<f32>,
+        #[serde(default)]
+        nr: bool,
+    },
+    AudioStop,
+}
+
+fn audio_msg(kind: &str, message: Option<&str>) -> Message {
+    Message::Text(json!({ "type": kind, "message": message }).to_string().into())
+}
+
+/// Apply an audio control message. Returns a reply for the client, if any.
+fn handle_audio(state: &AppState, listener: &mut Option<Listener>, can_listen: bool, text: &str) -> Option<Message> {
+    match serde_json::from_str::<ClientMsg>(text) {
+        Ok(ClientMsg::AudioStop) => {
+            *listener = None;
+            Some(audio_msg("audio_stopped", None))
+        }
+        Ok(ClientMsg::Audio { freq_hz, mode, squelch_db, nr }) => {
+            if !can_listen {
+                return Some(audio_msg("audio_error", Some("live audio is limited to admins on this server")));
+            }
+            if !(MIN_FREQ_HZ..=MAX_FREQ_HZ).contains(&freq_hz)
+                || squelch_db.is_some_and(|s| !(-140.0..=0.0).contains(&s) || !s.is_finite())
+            {
+                return Some(audio_msg("audio_error", Some("bad frequency or squelch")));
+            }
+            let params = Params { freq_hz, mode, squelch_db, nr };
+            if let Some(l) = listener.as_ref() {
+                l.params.send_replace(params);
+                return None;
+            }
+            match audio::start(&state.audio_listeners, state.cfg.audio_max_listeners, state.iq_tx.subscribe(), params) {
+                Ok(l) => {
+                    *listener = Some(l);
+                    Some(audio_msg("audio_started", None))
+                }
+                Err(e) => Some(audio_msg("audio_error", Some(&e))),
+            }
+        }
+        Err(_) => None, // ignore anything we don't understand
+    }
+}
+
+async fn client(mut socket: WebSocket, state: AppState, token_hash: String, ism: bool, can_listen: bool) {
     let mut wf = state.waterfall_tx.subscribe();
     let mut sstv = state.sstv_rows_tx.subscribe();
     let mut events = state.event_feed.subscribe();
@@ -41,6 +101,7 @@ async fn client(mut socket: WebSocket, state: AppState, token_hash: String, ism:
     if socket.send(Message::Text(initial.into())).await.is_err() {
         return;
     }
+    let mut listener: Option<Listener> = None;
 
     // Re-check the session periodically so logout / user deletion / password
     // change also ends open streams.
@@ -48,6 +109,12 @@ async fn client(mut socket: WebSocket, state: AppState, token_hash: String, ism:
     recheck.tick().await;
 
     loop {
+        let audio_frame = async {
+            match listener.as_mut() {
+                Some(l) => l.frames.recv().await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
             frame = wf.recv() => match frame {
                 Ok(f) => {
@@ -64,6 +131,12 @@ async fn client(mut socket: WebSocket, state: AppState, token_hash: String, ism:
                 Err(RecvError::Lagged(_)) => continue,
                 Err(RecvError::Closed) => break,
             },
+            f = audio_frame => match f {
+                Some(f) => {
+                    if socket.send(Message::Binary(f)).await.is_err() { break; }
+                }
+                None => listener = None,
+            },
             ev = events.recv() => match ev {
                 Ok(msg) if ism || msg.public => {
                     if socket.send(Message::Text((&*msg.json).into())).await.is_err() { break; }
@@ -79,7 +152,12 @@ async fn client(mut socket: WebSocket, state: AppState, token_hash: String, ism:
             }
             incoming = socket.recv() => match incoming {
                 None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
-                Some(Ok(_)) => {} // control goes via REST; ignore client messages
+                Some(Ok(Message::Text(t))) => {
+                    if let Some(reply) = handle_audio(&state, &mut listener, can_listen, t.as_str()) {
+                        if socket.send(reply).await.is_err() { break; }
+                    }
+                }
+                Some(Ok(_)) => {}
             },
             _ = recheck.tick() => {
                 if !auth::session_valid(&state.db, &token_hash).await {
@@ -89,4 +167,5 @@ async fn client(mut socket: WebSocket, state: AppState, token_hash: String, ism:
             }
         }
     }
+    // Dropping the listener frees its slot and stops its thread.
 }

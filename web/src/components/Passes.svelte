@@ -73,6 +73,17 @@
     return () => clearInterval(t);
   });
 
+  async function stopPass() {
+    const what = active?.test ? 'the test pass' : `this ${active?.satellite} pass (it won't restart)`;
+    if (!confirm(`Stop ${what}? Any recording so far is kept.`)) return;
+    try {
+      await api.stopPass();
+      setTimeout(refresh, 800);
+    } catch (e) {
+      err = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   async function remove(e: EventRow) {
     if (!confirm('Delete this pass recording? This cannot be undone.')) return;
     try {
@@ -154,6 +165,11 @@
             <dt>Ends</dt><dd>{countdown(active.los_ms, now)}</dd>
             <dt>Recording</dt><dd>{active.recording ? `yes, ${formatMHz(active.record_hz, 3)} FM` : 'no'}</dd>
           </dl>
+          {#if isAdmin}
+            <button type="button" class="small danger stop" onclick={stopPass}
+              >{active.test ? 'Stop test pass' : 'Stop this pass'}</button
+            >
+          {/if}
         {:else if shown}
           <h3>{selected === null ? 'Next pass' : 'Selected pass'}: {shown.satellite}</h3>
           <dl>
@@ -302,6 +318,9 @@
   }
   dd {
     margin: 0;
+  }
+  .stop {
+    margin-top: 10px;
   }
   .table-wrap {
     overflow-x: auto;

@@ -171,17 +171,6 @@
       <pre class="log">{info.status.log.join('\n')}</pre>
     {/if}
 
-    <h3>MQTT / Home Assistant</h3>
-    {#if info.mqtt}
-      <p class="small-text">
-        <span class="dot" class:ok={info.mqtt.connected} class:bad={!info.mqtt.connected}></span>
-        {info.mqtt.connected ? 'Connected to' : 'Not connected to'}
-        {info.mqtt.server}{info.mqtt.error ? `: ${info.mqtt.error}` : ''}
-      </p>
-      <p class="muted small-text">Devices you mark as tracked on the Sensors page appear in Home Assistant.</p>
-    {:else}
-      <p class="muted small-text">Not configured. Set <code>SDRD_MQTT_HOST</code> (and optionally user/password) in <code>.env</code>.</p>
-    {/if}
   {/if}
 </section>
 

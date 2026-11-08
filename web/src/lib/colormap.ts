@@ -15,3 +15,37 @@ export function turbo(): Uint8ClampedArray {
   }
   return out;
 }
+
+/** Linear gradient through evenly spaced RGB stops, 256 entries. */
+function gradient(stops: [number, number, number][]): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(256 * 3);
+  const n = stops.length - 1;
+  for (let i = 0; i < 256; i++) {
+    const t = (i / 255) * n;
+    const k = Math.min(n - 1, Math.floor(t));
+    const f = t - k;
+    for (let c = 0; c < 3; c++) out[i * 3 + c] = stops[k][c] + (stops[k + 1][c] - stops[k][c]) * f;
+  }
+  return out;
+}
+
+export const PALETTES: { id: string; label: string; make: () => Uint8ClampedArray }[] = [
+  { id: 'turbo', label: 'Turbo', make: turbo },
+  {
+    id: 'classic',
+    label: 'Classic SDR',
+    make: () => gradient([[0, 0, 0], [0, 0, 140], [0, 120, 255], [0, 255, 255], [255, 255, 0], [255, 60, 0], [255, 255, 255]]),
+  },
+  {
+    id: 'viridis',
+    label: 'Viridis',
+    make: () => gradient([[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]]),
+  },
+  {
+    id: 'inferno',
+    label: 'Inferno',
+    make: () => gradient([[0, 0, 4], [87, 16, 110], [188, 55, 84], [249, 142, 9], [252, 255, 164]]),
+  },
+  { id: 'green', label: 'Green screen', make: () => gradient([[0, 0, 0], [0, 70, 20], [0, 190, 60], [180, 255, 180]]) },
+  { id: 'grey', label: 'Greyscale', make: () => gradient([[0, 0, 0], [255, 255, 255]]) },
+];

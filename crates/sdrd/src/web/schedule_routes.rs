@@ -86,6 +86,67 @@ pub struct TestReq {
 }
 
 /// Run a pretend pass now: tunes, records and logs it like a real one.
+/// End the pass in progress now (a real pass is skipped, not restarted).
+pub async fn stop_pass(State(state): State<AppState>, AdminUser(admin): AdminUser) -> Result<Json<Value>, ApiError> {
+    if state.schedule.status().active.is_none() {
+        return Err(ApiError::bad_request("no pass in progress"));
+    }
+    state.schedule.stop_pass().await;
+    tracing::info!(by = %admin.user.username, "pass stopped");
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub struct GeoQuery {
+    q: String,
+}
+
+/// Place / postcode → coordinates via OpenStreetMap Nominatim, for setting
+/// the station location when the browser can't share it. Nominatim's usage
+/// policy allows at most one request a second, so we enforce that here.
+pub async fn geocode(
+    _admin: AdminUser,
+    axum::extract::Query(q): axum::extract::Query<GeoQuery>,
+) -> Result<Json<Value>, ApiError> {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let q = q.q.trim().to_string();
+    if q.is_empty() || q.chars().count() > 200 {
+        return Err(ApiError::bad_request("search must be 1–200 characters"));
+    }
+    {
+        let mut last = LAST.lock().unwrap();
+        if last.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1)) {
+            return Err(ApiError::too_many(1));
+        }
+        *last = Some(std::time::Instant::now());
+    }
+    let body = tokio::task::spawn_blocking(move || -> Result<String, String> {
+        ureq::get("https://nominatim.openstreetmap.org/search")
+            .query("format", "jsonv2")
+            .query("limit", "5")
+            .query("q", &q)
+            .set("User-Agent", "sdrd (sdr-web-gui)")
+            .timeout(std::time::Duration::from_secs(10))
+            .call()
+            .map_err(|e| e.to_string())?
+            .into_string()
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(ApiError::internal)?
+    .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, format!("place search failed: {e}")))?;
+    let found: Vec<Value> = serde_json::from_str(&body).unwrap_or_default();
+    let places: Vec<Value> = found
+        .iter()
+        .filter_map(|p| {
+            let lat: f64 = p.get("lat")?.as_str()?.parse().ok()?;
+            let lon: f64 = p.get("lon")?.as_str()?.parse().ok()?;
+            Some(json!({ "name": p.get("display_name")?.as_str()?, "lat_deg": lat, "lon_deg": lon }))
+        })
+        .collect();
+    Ok(Json(json!({ "places": places })))
+}
+
 pub async fn test_pass(
     State(state): State<AppState>,
     AdminUser(admin): AdminUser,

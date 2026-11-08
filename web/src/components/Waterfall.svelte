@@ -1,10 +1,23 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { WaterfallFrame } from '../lib/stream';
-  import { turbo } from '../lib/colormap';
+  import { PALETTES } from '../lib/colormap';
   import { formatMHz, MARKERS } from '../lib/format';
+  import { channelEdges, type Listen } from '../lib/audio';
 
-  let { canTune = false, ontune }: { canTune?: boolean; ontune?: (hz: number) => void } = $props();
+  let {
+    canTune = false,
+    ontune,
+    listen = null,
+    onpick,
+  }: {
+    canTune?: boolean;
+    ontune?: (hz: number) => void;
+    /** Channel being listened to, shaded on the spectrum. */
+    listen?: Listen | null;
+    /** Single click: pick a frequency to listen to. */
+    onpick?: (hz: number) => void;
+  } = $props();
 
   const SPEC_CSS_H = 200;
   const WF_ROWS = 400;
@@ -21,7 +34,18 @@
   let info = $state<{ centerHz: number; sampleRate: number; bins: number } | null>(null);
   let fps = $state(0);
 
-  const cmap = turbo();
+  // Colour scheme, remembered per browser.
+  let palette = $state<string>(
+    (() => {
+      try {
+        return localStorage.getItem('sdr.palette') ?? 'turbo';
+      } catch {
+        return 'turbo';
+      }
+    })(),
+  );
+  let cmap = PALETTES[0].make();
+  let cmapId = '';
   const lut = new Uint8ClampedArray(256 * 4);
   let lutKey = '';
   let avg: Float32Array | null = null;
@@ -34,7 +58,11 @@
   let fpsT0 = performance.now();
 
   function ensureLut(minDb: number, maxDb: number) {
-    const key = `${minDb},${maxDb},${floorDb},${ceilDb}`;
+    if (cmapId !== palette) {
+      cmap = (PALETTES.find((p) => p.id === palette) ?? PALETTES[0]).make();
+      cmapId = palette;
+    }
+    const key = `${minDb},${maxDb},${floorDb},${ceilDb},${palette}`;
     if (key === lutKey) return;
     lutKey = key;
     const step = (maxDb - minDb) / 255;
@@ -225,6 +253,22 @@
         ctx.fill();
       }
     };
+    // Listening channel: shaded band plus a line at the dial frequency.
+    if (listen) {
+      const [lo, hi] = channelEdges(listen.hz, listen.mode);
+      const x0 = xOf(lo);
+      const x1 = Math.max(x0 + 2 * dpr, xOf(hi));
+      ctx.fillStyle = listen.on ? 'rgba(34,197,94,0.18)' : 'rgba(148,163,184,0.12)';
+      ctx.fillRect(x0, 0, x1 - x0, plotH);
+      const xx = Math.round(xOf(listen.hz)) + 0.5;
+      ctx.strokeStyle = listen.on ? 'rgba(34,197,94,0.95)' : 'rgba(148,163,184,0.6)';
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(xx, 0);
+      ctx.lineTo(xx, plotH);
+      ctx.stroke();
+      ctx.lineWidth = 1;
+    }
     if (peakHold && peak) trace(peak, 'rgba(244,114,182,0.7)', null);
     if (avg) trace(avg, '#38bdf8', 'rgba(56,189,248,0.12)');
 
@@ -248,6 +292,10 @@
     hover = { frac, hz, db: avg ? avg[bin] : NaN };
   }
 
+  function onClick() {
+    if (onpick && hover) onpick(Math.round(hover.hz / 100) * 100);
+  }
+
   function onDblClick() {
     if (canTune && hover && ontune) ontune(Math.round(hover.hz / 1000) * 1000);
   }
@@ -256,7 +304,11 @@
     // Redraw when display settings change.
     void floorDb;
     void ceilDb;
+    void palette;
     void hover;
+    void listen?.hz;
+    void listen?.mode;
+    void listen?.on;
     if (!peakHold) peak = null;
     queueDraw();
   });
@@ -284,9 +336,10 @@
       {:else}
         <span class="muted">Waiting for data…</span>
       {/if}
-      {#if hover}
-        <span class="cursor">{formatMHz(hover.hz, 4)} · {Number.isFinite(hover.db) ? hover.db.toFixed(1) : '–'} dB</span>
-      {/if}
+      <!-- Always present (placeholder when not hovering) so the row height is stable. -->
+      <span class="cursor" class:idle={!hover}
+        >{hover ? `${formatMHz(hover.hz, 4)} · ${Number.isFinite(hover.db) ? hover.db.toFixed(1) : '–'} dB` : '–––.–––– MHz · – dB'}</span
+      >
     </div>
     <div class="controls">
       <label title="Noise floor (bottom of the colour scale)">
@@ -297,15 +350,31 @@
       </label>
       <button type="button" class="small" onclick={autoLevel}>Auto</button>
       <label class="check"><input type="checkbox" bind:checked={peakHold} /> Peak</label>
+      <select
+        bind:value={palette}
+        aria-label="Waterfall colours"
+        onchange={() => {
+          try {
+            localStorage.setItem('sdr.palette', palette);
+          } catch {
+            /* not available */
+          }
+        }}
+      >
+        {#each PALETTES as p (p.id)}<option value={p.id}>{p.label}</option>{/each}
+      </select>
     </div>
   </div>
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- Pointer shortcuts only: the same actions are available as form fields in the
+       Listen and Receiver panels for keyboard users. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
   <div
     class="plots"
     onmousemove={onMove}
     onmouseleave={() => (hover = null)}
+    onclick={onClick}
     ondblclick={onDblClick}
-    title={canTune ? 'Double-click to centre here' : ''}
+    title={[onpick ? 'Click to listen here' : '', canTune ? 'double-click to centre here' : ''].filter(Boolean).join(' · ')}
   >
     <canvas class="spectrum" bind:this={specCanvas} style:height="{SPEC_CSS_H}px"></canvas>
     <canvas class="waterfall" bind:this={wfCanvas} width="1024" height={WF_ROWS}></canvas>
@@ -319,12 +388,13 @@
     gap: 8px;
     min-width: 0;
   }
+  /* Readout on the first row, controls always on the second, so the hover
+     readout appearing never re-wraps the controls (checked by
+     web/tests/layout.spec.ts). */
   .toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-between;
-    gap: 8px 16px;
-    align-items: center;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
     font-size: 13px;
   }
   .readout {
@@ -336,6 +406,10 @@
   .cursor {
     font-variant-numeric: tabular-nums;
     color: var(--accent);
+    white-space: nowrap;
+  }
+  .cursor.idle {
+    color: var(--muted);
   }
   .controls {
     display: flex;
