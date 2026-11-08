@@ -10,6 +10,22 @@ pub fn decimation_for(in_rate: u32, min_out: u32) -> usize {
     (in_rate / min_out.max(1)).max(1) as usize
 }
 
+/// Decimation giving an exact integer audio rate between 44 and 64 kHz (as
+/// close to 48 kHz as possible), so external decoders get a true rate.
+/// Falls back to the nearest rate at or above 44 kHz.
+pub fn audio_decimation(in_rate: u32) -> (usize, u32) {
+    let lo = (in_rate / 64_000).max(1);
+    let hi = (in_rate / 44_000).max(1);
+    (lo..=hi)
+        .filter(|d| in_rate.is_multiple_of(*d))
+        .map(|d| (d as usize, in_rate / d))
+        .min_by_key(|(_, r)| r.abs_diff(48_000))
+        .unwrap_or_else(|| {
+            let d = hi.max(1);
+            (d as usize, in_rate / d)
+        })
+}
+
 /// Whether a channel `bw_hz` wide at `target_hz` fits inside the capture,
 /// staying clear of the band edges where the dongle's own filter rolls off.
 pub fn fits(center_hz: u64, sample_rate: u32, target_hz: u64, bw_hz: f64) -> bool {
@@ -34,12 +50,17 @@ impl Ddc {
     /// `offset_hz` is the frequency (relative to the capture centre) to move to
     /// 0 Hz. The output is filtered to ±40 % of the output rate.
     pub fn new(in_rate: u32, offset_hz: f64, decim: usize) -> Self {
+        let out_rate = in_rate as f64 / decim.max(1) as f64;
+        Self::with_cutoff(in_rate, offset_hz, decim, 0.4 * out_rate)
+    }
+
+    /// Like `new`, but filtered to ±`cutoff_hz` (e.g. a 12.5 kHz NFM channel).
+    pub fn with_cutoff(in_rate: u32, offset_hz: f64, decim: usize, cutoff_hz: f64) -> Self {
         let decim = decim.max(1);
         let taps = if decim == 1 {
             vec![1.0]
         } else {
-            let out_rate = in_rate as f64 / decim as f64;
-            lowpass(16 * decim + 1, 0.4 * out_rate / in_rate as f64)
+            lowpass(16 * decim + 1, cutoff_hz / in_rate as f64)
         };
         let w = -std::f64::consts::TAU * offset_hz / in_rate as f64;
         let mut lut = [0f32; 256];
@@ -164,6 +185,18 @@ mod tests {
         for (x, y) in a.iter().zip(&b) {
             assert!((x - y).norm() < 1e-4);
         }
+    }
+
+    #[test]
+    fn audio_rates_are_exact() {
+        for &r in crate::radio::SAMPLE_RATES {
+            let (d, a) = audio_decimation(r);
+            assert_eq!(r % d as u32, 0, "{r}");
+            assert_eq!(r / d as u32, a);
+            assert!((44_000..=64_000).contains(&a), "{r} -> {a}");
+        }
+        assert_eq!(audio_decimation(2_048_000), (40, 51_200));
+        assert_eq!(audio_decimation(2_400_000), (50, 48_000));
     }
 
     #[test]

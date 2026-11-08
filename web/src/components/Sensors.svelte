@@ -61,7 +61,7 @@
 
   async function load() {
     try {
-      const [d, ev, i] = await Promise.all([api.devices(), api.events(50), api.rtl433()]);
+      const [d, ev, i] = await Promise.all([api.devices('rtl_433'), api.events(50, 'rtl_433'), api.rtl433()]);
       devices = d;
       info = i;
       const byId = new Map(d.map((x) => [x.id, x]));

@@ -47,6 +47,39 @@ export interface Device {
   last_seen: number;
   count: number;
   last_data: Json;
+  lat: number | null;
+  lon: number | null;
+  pos_ts: number | null;
+  symbol: string | null;
+}
+
+export interface AprsChannel {
+  label: string;
+  frequency_hz: number;
+  enabled: boolean;
+}
+
+export interface AprsConfig {
+  enabled: boolean;
+  channels: AprsChannel[];
+}
+
+export interface AprsChannelStatus extends AprsChannel {
+  in_band: boolean;
+  running: boolean;
+  packets: number;
+  error: string | null;
+}
+
+export interface AprsInfo {
+  config: AprsConfig;
+  status: { enabled: boolean; audio_rate: number; channels: AprsChannelStatus[]; log: string[] };
+  map_tiles: string;
+}
+
+export interface Track {
+  device_id: number;
+  points: [number, number, number][]; // [ts, lat, lon]
 }
 
 export interface EventRow {
@@ -155,7 +188,7 @@ export const api = {
   createUser: (username: string, password: string, role: Role) =>
     req<{ id: number }>('POST', '/users', { username, password, role }),
   deleteUser: (id: number) => req('DELETE', `/users/${id}`),
-  devices: () => req<Device[]>('GET', '/devices'),
+  devices: (decoder?: string) => req<Device[]>('GET', `/devices${decoder ? `?decoder=${decoder}` : ''}`),
   deviceEvents: (id: number, opts: { limit?: number; since?: number } = {}) => {
     const q = new URLSearchParams({ limit: String(opts.limit ?? 200) });
     if (opts.since !== undefined) q.set('since', String(Math.floor(opts.since)));
@@ -164,7 +197,11 @@ export const api = {
   updateDevice: (id: number, patch: { name?: string; tracked?: boolean }) =>
     req<Device>('PATCH', `/devices/${id}`, patch),
   deleteDevice: (id: number) => req('DELETE', `/devices/${id}`),
-  events: (limit = 100) => req<EventRow[]>('GET', `/events?limit=${limit}`),
+  events: (limit = 100, decoder?: string) =>
+    req<EventRow[]>('GET', `/events?limit=${limit}${decoder ? `&decoder=${decoder}` : ''}`),
+  aprs: () => req<AprsInfo>('GET', '/aprs'),
+  setAprs: (config: AprsConfig) => req<{ config: AprsConfig }>('PUT', '/aprs', config),
+  aprsTracks: (since: number) => req<Track[]>('GET', `/aprs/tracks?since=${Math.floor(since)}`),
   rtl433: () => req<Rtl433Info>('GET', '/decoders/rtl_433'),
   setRtl433: (config: Rtl433Config) => req<{ config: Rtl433Config }>('PUT', '/decoders/rtl_433', config),
   checkSpec: (spec: string) => req<{ ok: boolean; message?: string }>('POST', '/decoders/rtl_433/check', { spec }),

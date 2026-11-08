@@ -15,10 +15,25 @@ use crate::db;
 use crate::decoders::DecodedEvent;
 use crate::mqtt::MqttHandle;
 
-/// Fields that vary between repeats of the same transmission.
-const LEVEL_FIELDS: &[&str] = &["rssi", "snr", "noise", "freq", "freq1", "freq2", "mod"];
-/// Many sensors repeat a message several times per transmission.
-const DEDUPE_WINDOW: Duration = Duration::from_secs(3);
+/// Fields that vary between repeats of the same transmission (for APRS, the
+/// digipeater path differs between copies of one packet).
+const LEVEL_FIELDS: &[&str] = &["rssi", "snr", "noise", "freq", "freq1", "freq2", "mod", "path", "raw"];
+
+/// Window in which an identical message from the same device is a repeat:
+/// sensors send bursts; APRS packets come back via digipeaters for a while.
+fn dedupe_window(decoder: &str) -> Duration {
+    if decoder == crate::decoders::aprs::NAME {
+        Duration::from_secs(30)
+    } else {
+        Duration::from_secs(3)
+    }
+}
+
+/// Amateur radio traffic is public; everything else (TPMS, neighbours'
+/// sensors) is shown to admins only unless configured otherwise.
+pub fn is_public(decoder: &str) -> bool {
+    decoder == crate::decoders::aprs::NAME
+}
 
 #[derive(Clone, Debug, Serialize, sqlx::FromRow)]
 pub struct Device {
@@ -36,6 +51,11 @@ pub struct Device {
     pub count: i64,
     #[serde(serialize_with = "raw_json")]
     pub last_data: String,
+    /// Last reported position (kept when later packets have none).
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub pos_ts: Option<i64>,
+    pub symbol: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, sqlx::FromRow)]
@@ -60,6 +80,12 @@ impl Device {
     pub fn label(&self) -> String {
         if let Some(n) = &self.name {
             return n.clone();
+        }
+        // APRS stations and objects are best known by their callsign/name.
+        if is_public(&self.decoder) {
+            if let Some(id) = &self.dev_id {
+                return id.clone();
+            }
         }
         let mut s = self.model.clone();
         if let Some(id) = &self.dev_id {
@@ -110,13 +136,29 @@ fn fingerprint(data: &Map<String, Value>) -> String {
 }
 
 const DEVICE_COLS: &str = "id, decoder, key, model, dev_id, channel, kind, name, tracked, \
-    first_seen, last_seen, count, last_data";
+    first_seen, last_seen, count, last_data, lat, lon, pos_ts, symbol";
 
-pub async fn list_devices(db: &SqlitePool, limit: i64) -> Result<Vec<Device>> {
+pub async fn list_devices(db: &SqlitePool, decoder: Option<&str>, limit: i64) -> Result<Vec<Device>> {
     Ok(sqlx::query_as(&format!(
-        "SELECT {DEVICE_COLS} FROM devices ORDER BY last_seen DESC LIMIT ?"
+        "SELECT {DEVICE_COLS} FROM devices WHERE (?1 IS NULL OR decoder = ?1) \
+         ORDER BY last_seen DESC LIMIT ?2"
     ))
+    .bind(decoder)
     .bind(limit)
+    .fetch_all(db)
+    .await?)
+}
+
+/// Positions per device since `since`, oldest first: (device_id, ts, lat, lon).
+pub async fn tracks(db: &SqlitePool, decoder: &str, since: i64) -> Result<Vec<(i64, i64, f64, f64)>> {
+    Ok(sqlx::query_as(
+        "SELECT e.device_id, e.ts, json_extract(e.data, '$.lat'), json_extract(e.data, '$.lon') \
+         FROM events e JOIN devices d ON d.id = e.device_id \
+         WHERE d.decoder = ? AND e.ts >= ? AND json_extract(e.data, '$.lat') IS NOT NULL \
+         ORDER BY e.device_id, e.ts LIMIT 50000",
+    )
+    .bind(decoder)
+    .bind(since)
     .fetch_all(db)
     .await?)
 }
@@ -177,10 +219,13 @@ pub async fn device_events(
     .await?)
 }
 
-pub async fn recent_events(db: &SqlitePool, limit: i64) -> Result<Vec<EventRow>> {
+pub async fn recent_events(db: &SqlitePool, decoder: Option<&str>, limit: i64) -> Result<Vec<EventRow>> {
     Ok(sqlx::query_as(
-        "SELECT id, device_id, ts, freq_hz, rssi, snr, data FROM events ORDER BY ts DESC LIMIT ?",
+        "SELECT e.id, e.device_id, e.ts, e.freq_hz, e.rssi, e.snr, e.data FROM events e \
+         JOIN devices d ON d.id = e.device_id WHERE (?1 IS NULL OR d.decoder = ?1) \
+         ORDER BY e.ts DESC LIMIT ?2",
     )
+    .bind(decoder)
     .bind(limit)
     .fetch_all(db)
     .await?)
@@ -201,12 +246,22 @@ async fn store(db: &SqlitePool, ev: &DecodedEvent) -> Result<(Device, EventRow)>
     let (key, model, dev_id, channel) = identity(ev);
     let kind = field_str(&ev.data, "type");
     let data = Value::Object(ev.data.clone()).to_string();
+    let lat = ev.data.get("lat").and_then(Value::as_f64);
+    let lon = ev.data.get("lon").and_then(Value::as_f64);
+    let (lat, lon, pos_ts) = match (lat, lon) {
+        (Some(a), Some(o)) => (Some(a), Some(o), Some(ev.ts_ms)),
+        _ => (None, None, None),
+    };
+    let symbol = field_str(&ev.data, "symbol");
     let mut tx = db.begin().await?;
     let device: Device = sqlx::query_as(&format!(
-        "INSERT INTO devices (decoder, key, model, dev_id, channel, kind, first_seen, last_seen, count, last_data) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?) \
+        "INSERT INTO devices (decoder, key, model, dev_id, channel, kind, first_seen, last_seen, count, last_data, \
+             lat, lon, pos_ts, symbol) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?) \
          ON CONFLICT(key) DO UPDATE SET last_seen = excluded.last_seen, count = count + 1, \
-             last_data = excluded.last_data, kind = COALESCE(excluded.kind, kind) \
+             last_data = excluded.last_data, kind = COALESCE(excluded.kind, kind), \
+             lat = COALESCE(excluded.lat, lat), lon = COALESCE(excluded.lon, lon), \
+             pos_ts = COALESCE(excluded.pos_ts, pos_ts), symbol = COALESCE(excluded.symbol, symbol) \
          RETURNING {DEVICE_COLS}"
     ))
     .bind(ev.decoder)
@@ -218,6 +273,10 @@ async fn store(db: &SqlitePool, ev: &DecodedEvent) -> Result<(Device, EventRow)>
     .bind(ev.ts_ms)
     .bind(ev.ts_ms)
     .bind(&data)
+    .bind(lat)
+    .bind(lon)
+    .bind(pos_ts)
+    .bind(&symbol)
     .fetch_one(&mut *tx)
     .await?;
     let rssi = ev.data.get("rssi").and_then(Value::as_f64);
@@ -248,11 +307,21 @@ async fn store(db: &SqlitePool, ev: &DecodedEvent) -> Result<(Device, EventRow)>
     Ok((device, row))
 }
 
-/// Pre-serialised `{"type":"event",...}` messages for WebSocket clients.
-pub type EventFeed = broadcast::Sender<Arc<str>>;
+/// A pre-serialised `{"type":"event",...}` message for WebSocket clients.
+#[derive(Clone)]
+pub struct FeedMsg {
+    /// Viewers may see it (see `is_public`).
+    pub public: bool,
+    pub json: Arc<str>,
+}
 
-pub fn ws_message(device: &Device, event: &EventRow) -> Arc<str> {
-    json!({ "type": "event", "device": device, "event": event }).to_string().into()
+pub type EventFeed = broadcast::Sender<FeedMsg>;
+
+pub fn ws_message(device: &Device, event: &EventRow) -> FeedMsg {
+    FeedMsg {
+        public: is_public(&device.decoder),
+        json: json!({ "type": "event", "device": device, "event": event }).to_string().into(),
+    }
 }
 
 pub async fn run(db: SqlitePool, mut rx: mpsc::Receiver<DecodedEvent>, feed: EventFeed, mqtt: Option<MqttHandle>) {
@@ -261,14 +330,15 @@ pub async fn run(db: SqlitePool, mut rx: mpsc::Receiver<DecodedEvent>, feed: Eve
         let (key, ..) = identity(&ev);
         let fp = fingerprint(&ev.data);
         let now = Instant::now();
+        let window = dedupe_window(ev.decoder);
         if let Some((t, last)) = recent.get(&key) {
-            if *last == fp && now.duration_since(*t) < DEDUPE_WINDOW {
+            if *last == fp && now.duration_since(*t) < window {
                 continue;
             }
         }
         recent.insert(key, (now, fp));
         if recent.len() > 4096 {
-            recent.retain(|_, (t, _)| now.duration_since(*t) < DEDUPE_WINDOW);
+            recent.retain(|_, (t, _)| now.duration_since(*t) < Duration::from_secs(30));
         }
 
         match store(&db, &ev).await {
@@ -322,7 +392,20 @@ mod tests {
         assert_eq!(d.label(), "Car FL");
         assert!(d.tracked);
         assert!(delete_device(&db, d1.id).await.unwrap());
-        assert!(recent_events(&db, 10).await.unwrap().is_empty()); // cascaded
+        assert!(recent_events(&db, None, 10).await.unwrap().is_empty()); // cascaded
+
+        // Positions survive later packets without one.
+        let aprs = |v: Value| DecodedEvent::new("aprs", Some(144_800_000), v.as_object().unwrap().clone());
+        let (s1, _) = store(&db, &aprs(json!({"model":"APRS","id":"M0ABC-9","lat":51.5,"lon":-0.1,"symbol":"/>"})))
+            .await
+            .unwrap();
+        assert_eq!(s1.lat, Some(51.5));
+        let (s2, _) = store(&db, &aprs(json!({"model":"APRS","id":"M0ABC-9","status":"QRV"}))).await.unwrap();
+        assert_eq!((s2.lat, s2.lon, s2.symbol.as_deref()), (Some(51.5), Some(-0.1), Some("/>")));
+        assert_eq!(list_devices(&db, Some("aprs"), 10).await.unwrap().len(), 1);
+        assert_eq!(list_devices(&db, Some("rtl_433"), 10).await.unwrap().len(), 0);
+        assert_eq!(tracks(&db, "aprs", 0).await.unwrap().len(), 1);
+        assert_eq!(recent_events(&db, Some("aprs"), 10).await.unwrap().len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

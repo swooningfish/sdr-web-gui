@@ -7,13 +7,14 @@ use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::{to_cu8, IqBlock, SourceCtx};
+use crate::aprs::ax25;
 
 const BLOCK_SECS: f64 = 0.05;
 
 #[derive(Clone, Copy)]
 enum Kind {
-    /// APRS-like: FM with 1200/2200 Hz AFSK, short bursts.
-    Afsk { period: f64, burst: f64 },
+    /// Real APRS packets: AX.25 in HDLC, 1200 baud AFSK on NFM.
+    Aprs { period: f64, channel: AprsChannel },
     /// FM carrier with a sweeping audio tone (SSTV-ish).
     SweepFm,
     /// Nexus-TH temperature/humidity sensor (OOK PPM) that rtl_433 decodes.
@@ -28,7 +29,10 @@ struct Emitter {
     kind: Kind,
     phase: f64,
     tone_phase: f64,
-    bit: bool,
+    /// AFSK: one entry per bit (true = 1200 Hz mark), and when it started.
+    tones: Vec<bool>,
+    tx_start: f64,
+    seq: u32,
     /// Next transmission time and its on-intervals (absolute seconds).
     next: f64,
     pulses: Vec<(f64, f64)>,
@@ -49,7 +53,9 @@ impl SynthGen {
             kind,
             phase: 0.0,
             tone_phase: 0.0,
-            bit: false,
+            tones: Vec::new(),
+            tx_start: 0.0,
+            seq: 0,
             next: 0.0,
             pulses: Vec::new(),
             pulse_idx: 0,
@@ -65,8 +71,8 @@ impl SynthGen {
         };
         SynthGen {
             emitters: vec![
-                e(144_800_000.0, 0.25, Kind::Afsk { period: 6.0, burst: 0.9 }),
-                e(145_825_000.0, 0.08, Kind::Afsk { period: 11.0, burst: 0.7 }),
+                e(144_800_000.0, 0.25, Kind::Aprs { period: 10.0, channel: AprsChannel::Terrestrial }),
+                e(145_825_000.0, 0.12, Kind::Aprs { period: 30.0, channel: AprsChannel::Iss }),
                 e(145_800_000.0, 0.15, Kind::SweepFm),
                 nexus(0x5a, 1, 19.0, 55, 1.0),
                 nexus(0x21, 2, 6.0, 82, 8.5),
@@ -111,18 +117,28 @@ impl SynthGen {
             let mut i_acc = noise * self.gauss();
             let mut q_acc = noise * self.gauss();
             for &idx in &active {
-                // Random data at ~1200 baud: each bit period has a 50 % chance of a change.
-                let flip = self.uniform() < 600.0 * dt;
                 let em = &mut self.emitters[idx];
                 let offset = em.freq_hz - center_hz as f64;
                 let (inst_hz, gate) = match em.kind {
-                    Kind::Afsk { period, burst } => {
-                        if flip {
-                            em.bit = !em.bit;
+                    Kind::Aprs { period, channel } => {
+                        if t >= em.next {
+                            let late = t - em.next;
+                            em.next += period * ((late / period).floor() + 1.0);
+                            if late < 0.5 {
+                                em.tones = afsk_tones(&aprs_packet(channel, em.seq, wall_secs()));
+                                em.tx_start = t;
+                                em.seq = em.seq.wrapping_add(1);
+                            }
                         }
-                        let tone = if em.bit { 2200.0 } else { 1200.0 };
-                        em.tone_phase = (em.tone_phase + TAU * tone * dt) % TAU;
-                        (offset + 3000.0 * em.tone_phase.sin(), (t % period) < burst)
+                        let bit = ((t - em.tx_start) * 1200.0) as usize;
+                        match em.tones.get(bit) {
+                            Some(&mark) => {
+                                let tone = if mark { 1200.0 } else { 2200.0 };
+                                em.tone_phase = (em.tone_phase + TAU * tone * dt) % TAU;
+                                (offset + 3000.0 * em.tone_phase.sin(), true)
+                            }
+                            None => (offset, false),
+                        }
                     }
                     Kind::SweepFm => {
                         let tone = 1500.0 + 800.0 * ((t * 2.0) % 1.0);
@@ -139,11 +155,7 @@ impl SynthGen {
                             if late < 0.5 {
                                 // Temperature drifts slowly so the charts show something;
                                 // wall-clock based so it stays continuous across restarts.
-                                let wall = SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .map(|d| d.as_secs_f64())
-                                    .unwrap_or(0.0);
-                                let temp = base_c + 3.0 * (TAU * wall / 1800.0).sin();
+                                let temp = base_c + 3.0 * (TAU * wall_secs() / 1800.0).sin();
                                 em.pulses = nexus_pulses(t, id, channel, temp, humidity);
                                 em.pulse_idx = 0;
                             }
@@ -171,6 +183,111 @@ impl SynthGen {
         }
         out
     }
+}
+
+fn wall_secs() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+#[derive(Clone, Copy)]
+enum AprsChannel {
+    /// 144.800: a car driving a loop, a weather station and a status beacon.
+    Terrestrial,
+    /// 145.825: an ISS-like station whose position sweeps along an orbit.
+    Iss,
+}
+
+/// `DDMM.mmN`
+fn aprs_lat(lat: f64) -> String {
+    let a = lat.abs();
+    format!("{:02}{:05.2}{}", a.trunc(), a.fract() * 60.0, if lat >= 0.0 { 'N' } else { 'S' })
+}
+
+/// `DDDMM.mmW`
+fn aprs_lon(lon: f64) -> String {
+    let a = lon.abs();
+    format!("{:03}{:05.2}{}", a.trunc(), a.fract() * 60.0, if lon >= 0.0 { 'E' } else { 'W' })
+}
+
+/// The next AX.25 frame (without FCS) for a synthetic APRS channel.
+fn aprs_packet(channel: AprsChannel, seq: u32, wall: f64) -> Vec<u8> {
+    match channel {
+        AprsChannel::Terrestrial => match seq % 4 {
+            0 | 2 => {
+                // Loop of ~3 km radius around central London, 10 minutes per lap.
+                let a = TAU * (wall / 600.0).fract();
+                let lat = 51.505 + 0.027 * a.sin();
+                let lon = -0.09 + 0.043 * a.cos();
+                let course = (90.0 - a.to_degrees() + 360.0 - 180.0).rem_euclid(360.0).round().max(1.0);
+                let info = format!(
+                    "!{}/{}>{:03.0}/018/A=000098 sdrd test mobile",
+                    aprs_lat(lat),
+                    aprs_lon(lon),
+                    course
+                );
+                ax25::encode("M0SDR-9", "APSDRD", &["WIDE1-1", "WIDE2-1"], info.as_bytes())
+            }
+            1 => {
+                let temp_f = 50.0 + 6.0 * (TAU * wall / 3600.0).sin();
+                let info = format!(
+                    "!5131.20N/00009.80W_090/005g010t{temp_f:03.0}r000p000P000h65b10132sdrd test weather"
+                );
+                ax25::encode("G0SDR-13", "APSDRD", &["WIDE2-1"], info.as_bytes())
+            }
+            _ => ax25::encode("M0SDR-10", "APSDRD", &["WIDE2-2"], b">sdrd synthetic APRS beacon"),
+        },
+        AprsChannel::Iss => {
+            let a = TAU * (wall / 5520.0).fract();
+            let lat = 51.6 * a.sin();
+            let lon = (a.to_degrees() * 4.0).rem_euclid(360.0) - 180.0;
+            // Symbol \S: satellite.
+            let info = format!("!{}\\{}SARISS test", aprs_lat(lat), aprs_lon(lon));
+            ax25::encode("RS0ISS", "CQ", &["ARISS"], info.as_bytes())
+        }
+    }
+}
+
+/// HDLC-frame an AX.25 frame (adds FCS, flags and bit stuffing) and NRZI
+/// encode it into per-bit tones: true = mark (1200 Hz), false = space.
+fn afsk_tones(frame: &[u8]) -> Vec<bool> {
+    let mut bits: Vec<u8> = Vec::with_capacity(400 + frame.len() * 10);
+    let flag = |bits: &mut Vec<u8>| bits.extend((0..8).map(|i| (0x7e >> i) & 1));
+    for _ in 0..40 {
+        flag(&mut bits);
+    }
+    let fcs = ax25::fcs(frame);
+    let mut ones = 0;
+    for &byte in frame.iter().chain(&fcs.to_le_bytes()) {
+        for i in 0..8 {
+            let b = (byte >> i) & 1;
+            bits.push(b);
+            if b == 1 {
+                ones += 1;
+                if ones == 5 {
+                    bits.push(0);
+                    ones = 0;
+                }
+            } else {
+                ones = 0;
+            }
+        }
+    }
+    for _ in 0..3 {
+        flag(&mut bits);
+    }
+    // NRZI: a 0 bit changes the tone, a 1 keeps it.
+    let mut mark = true;
+    bits.into_iter()
+        .map(|b| {
+            if b == 0 {
+                mark = !mark;
+            }
+            mark
+        })
+        .collect()
 }
 
 /// On-intervals for one Nexus transmission: 12 rows of 36 bits, each bit a

@@ -55,10 +55,11 @@ async fn client(mut socket: WebSocket, state: AppState, token_hash: String, ism:
                 Err(RecvError::Lagged(_)) => continue, // slow client: drop frames
                 Err(RecvError::Closed) => break,
             },
-            ev = events.recv(), if ism => match ev {
-                Ok(msg) => {
-                    if socket.send(Message::Text((&*msg).into())).await.is_err() { break; }
+            ev = events.recv() => match ev {
+                Ok(msg) if ism || msg.public => {
+                    if socket.send(Message::Text((&*msg.json).into())).await.is_err() { break; }
                 }
+                Ok(_) => {}
                 Err(RecvError::Lagged(n)) => tracing::debug!("ws client missed {n} events"),
                 Err(RecvError::Closed) => break,
             },

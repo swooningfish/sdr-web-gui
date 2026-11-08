@@ -56,7 +56,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # ---------------------------------------------------------------- runtime
 FROM debian:bookworm-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libusb-1.0-0 ca-certificates tini \
+ && apt-get install -y --no-install-recommends libusb-1.0-0 ca-certificates tini direwolf \
  && rm -rf /var/lib/apt/lists/*
 # librtlsdr + rtl_test / rtl_sdr etc. for diagnostics
 COPY --from=rtlsdr /opt/rtlsdr/ /usr/local/

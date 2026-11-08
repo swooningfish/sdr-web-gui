@@ -34,6 +34,15 @@ pub struct ListQuery {
     limit: Option<i64>,
     before: Option<i64>,
     since: Option<i64>,
+    decoder: Option<String>,
+}
+
+/// Viewers may list public decoders (APRS) only; sensor data needs ISM access.
+fn check_decoder(state: &AppState, s: &Session, decoder: Option<&str>) -> Result<(), ApiError> {
+    match decoder {
+        Some(d) if events::is_public(d) => Ok(()),
+        _ => ism_user(state, s),
+    }
 }
 
 pub async fn list_devices(
@@ -41,9 +50,13 @@ pub async fn list_devices(
     AuthUser(s): AuthUser,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Vec<Device>>, ApiError> {
-    ism_user(&state, &s)?;
+    check_decoder(&state, &s, q.decoder.as_deref())?;
     let limit = q.limit.unwrap_or(500).clamp(1, 2000);
-    Ok(Json(events::list_devices(&state.db, limit).await.map_err(ApiError::internal)?))
+    Ok(Json(
+        events::list_devices(&state.db, q.decoder.as_deref(), limit)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
 }
 
 pub async fn device_events(
@@ -52,7 +65,11 @@ pub async fn device_events(
     Path(id): Path<i64>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Vec<EventRow>>, ApiError> {
-    ism_user(&state, &s)?;
+    let d = events::get_device(&state.db, id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(not_found)?;
+    check_decoder(&state, &s, Some(&d.decoder))?;
     // Enough for a week of a sensor that reports every couple of minutes.
     let limit = q.limit.unwrap_or(200).clamp(1, 10_000);
     Ok(Json(
@@ -67,9 +84,13 @@ pub async fn recent_events(
     AuthUser(s): AuthUser,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Vec<EventRow>>, ApiError> {
-    ism_user(&state, &s)?;
+    check_decoder(&state, &s, q.decoder.as_deref())?;
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
-    Ok(Json(events::recent_events(&state.db, limit).await.map_err(ApiError::internal)?))
+    Ok(Json(
+        events::recent_events(&state.db, q.decoder.as_deref(), limit)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
 }
 
 #[derive(Deserialize)]

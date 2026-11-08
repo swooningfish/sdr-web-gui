@@ -70,7 +70,21 @@ pub async fn open(path: &Path) -> Result<SqlitePool> {
     for stmt in SCHEMA.split(';').map(str::trim).filter(|s| !s.is_empty()) {
         sqlx::query(stmt).execute(&pool).await?;
     }
+    add_columns(&pool, "devices", &[("lat", "REAL"), ("lon", "REAL"), ("pos_ts", "INTEGER"), ("symbol", "TEXT")]).await?;
     Ok(pool)
+}
+
+/// Additive migrations: add any columns an older database doesn't have yet.
+async fn add_columns(db: &SqlitePool, table: &str, cols: &[(&str, &str)]) -> Result<()> {
+    let existing: Vec<(String,)> = sqlx::query_as(&format!("SELECT name FROM pragma_table_info('{table}')"))
+        .fetch_all(db)
+        .await?;
+    for (name, ty) in cols {
+        if !existing.iter().any(|(n,)| n == name) {
+            sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {name} {ty}")).execute(db).await?;
+        }
+    }
+    Ok(())
 }
 
 pub fn now() -> i64 {

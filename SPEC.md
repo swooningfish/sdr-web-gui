@@ -78,7 +78,9 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
 1. **Skeleton** — Cargo workspace, device open/tune, live waterfall to browser, auth, Docker.
 2. **ISM/TPMS** ✅ — rtl_433 pipe, flex-decoder editor, events table, MQTT + HA discovery,
    per-device history charts. HA discovery only for devices an admin marks as tracked.
-3. **APRS** — channelizer + FM demod, Direwolf, APRS parser, table + Leaflet map.
+3. **APRS** ✅ — channelizer + FM demod, Direwolf (one per channel, KISS over TCP), APRS parser
+   (positions, compressed, Mic-E, objects, items, status, messages, weather), station table,
+   Leaflet map with tracks, packet log, HA device tracker for tracked stations.
 4. **SSTV** — native decoder + test WAVs, gallery, per-image WAV.
 5. **Scheduler + ISS** — profiles, dwell times, TLE/sgp4 passes, Doppler, pass recordings.
 6. **Live audio + polish** — Opus streaming, settings UI, health/diagnostics, docs.

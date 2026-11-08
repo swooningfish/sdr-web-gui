@@ -10,6 +10,8 @@
   --ok: #22c55e;
   --bad: #ef4444;
   --warn: #f59e0b;
+  /* Map tiles are drawn for light backgrounds; dim and invert them in dark mode. */
+  --tile-filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9);
   color-scheme: dark;
 }
 
@@ -25,6 +27,7 @@
     --accent-text: #ffffff;
     --ok: #15803d;
     --bad: #b91c1c;
+    --tile-filter: none;
     color-scheme: light;
   }
 }

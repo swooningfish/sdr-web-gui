@@ -3,6 +3,7 @@
 
 use serde_json::{Map, Value};
 
+pub mod aprs;
 pub mod rtl433;
 
 #[derive(Debug, Clone)]

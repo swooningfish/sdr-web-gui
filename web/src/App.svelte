@@ -10,14 +10,17 @@
   import Users from './components/Users.svelte';
   import Sensors from './components/Sensors.svelte';
   import DecoderSettings from './components/DecoderSettings.svelte';
+  import Aprs from './components/Aprs.svelte';
+  import AprsSettings from './components/AprsSettings.svelte';
 
   let user = $state<User | null>(null);
   let checking = $state(true);
   let radio = $state<RadioState | null>(null);
   let wsUp = $state(false);
-  let view = $state<'spectrum' | 'sensors' | 'settings'>('spectrum');
+  let view = $state<'spectrum' | 'sensors' | 'aprs' | 'settings'>('spectrum');
   let waterfall = $state<ReturnType<typeof Waterfall> | undefined>();
   let sensors = $state<ReturnType<typeof Sensors> | undefined>();
+  let aprs = $state<ReturnType<typeof Aprs> | undefined>();
 
   const isAdmin = $derived(user?.role === 'admin');
 
@@ -36,7 +39,7 @@
     const s = new Stream({
       onFrame: (f) => waterfall?.push(f),
       onRadio: (st) => (radio = st),
-      onEvent: (d, ev) => sensors?.push(d, ev),
+      onEvent: (d, ev) => (d.decoder === 'aprs' ? aprs?.push(d, ev) : sensors?.push(d, ev)),
       onConnection: (c) => (wsUp = c),
       onAuthLost: () => {
         user = null;
@@ -88,6 +91,7 @@
     <nav>
       <button type="button" class="tab" class:active={view === 'spectrum'} onclick={() => (view = 'spectrum')}>Spectrum</button>
       <button type="button" class="tab" class:active={view === 'sensors'} onclick={() => (view = 'sensors')}>Sensors</button>
+      <button type="button" class="tab" class:active={view === 'aprs'} onclick={() => (view = 'aprs')}>APRS</button>
       <button type="button" class="tab" class:active={view === 'settings'} onclick={() => (view = 'settings')}>Settings</button>
     </nav>
     <div class="status-bar">
@@ -117,10 +121,14 @@
     <div hidden={view !== 'sensors'}>
       <Sensors bind:this={sensors} {isAdmin} {radio} />
     </div>
+    <div hidden={view !== 'aprs'}>
+      <Aprs bind:this={aprs} {isAdmin} {radio} />
+    </div>
     {#if view === 'settings'}
       <div class="settings-view">
         <Account {user} />
         {#if isAdmin}<DecoderSettings />{/if}
+        {#if isAdmin}<AprsSettings />{/if}
         {#if isAdmin}<Users me={user} />{/if}
       </div>
     {/if}

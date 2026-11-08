@@ -6,7 +6,7 @@ monitoring: TPMS/ISM sensors (rtl_433), APRS, and SSTV, including automatic ISS/
 
 See [SPEC.md](SPEC.md) for the full design and roadmap.
 
-## Status: milestone 2 (ISM / TPMS)
+## Status: milestone 3 (APRS)
 
 - [x] Rust core (`sdrd`) owns the dongle via librtlsdr (rtl-sdr-blog fork: V4, V3, generic)
 - [x] Live spectrum and waterfall in the browser over WebSocket
@@ -15,7 +15,7 @@ See [SPEC.md](SPEC.md) for the full design and roadmap.
 - [x] Synthetic and replay IQ sources for development without hardware
 - [x] Docker image plus Caddy (automatic HTTPS) compose setup for the Pi
 - [x] M2: rtl_433 / TPMS with a flex-decoder editor, sensor history charts, MQTT and Home Assistant
-- [ ] M3: APRS (Direwolf) with a map
+- [x] M3: APRS (Direwolf) with a live map, station tracks, packet log and weather charts
 - [ ] M4: native SSTV decoder and image gallery
 - [ ] M5: scheduler and ISS passes with Doppler correction
 - [ ] M6: live audio
@@ -45,10 +45,14 @@ docker compose -f docker-compose.dev.yml up --build
 ```
 
 Open <http://localhost:8080> and sign in as `admin` / `devpassword123`. The synthetic source
-puts test signals on 144.800 (APRS-like bursts), 145.800, 145.825, 433.920 and 437.550 MHz
-(Doppler-drifting carrier). Use the presets to see them. On 433.92 it simulates two Nexus
-temperature/humidity sensors that rtl_433 really decodes: pick the ISM preset (or press
-*Tune* on the Sensors page) and they appear within ~15 s.
+puts test signals on 144.800, 145.800, 145.825, 433.920 and 437.550 MHz (Doppler-drifting
+carrier). Use the presets to see them. The test signals are real, decodable transmissions:
+
+- **144.800 / 145.825 (VHF block, the default):** APRS packets that Direwolf decodes: a car
+  driving a loop around central London, a weather station, a status beacon, and an "ISS" on
+  145.825. Open the APRS tab.
+- **433.92 (ISM preset, or *Tune* on the Sensors page):** two Nexus temperature/humidity
+  sensors that rtl_433 decodes within ~15 s.
 
 By default the dev stack only listens on localhost. To open it from other machines on your LAN
 (e.g. `http://192.168.0.231:8080`), set `SDRD_DEV_BIND`:
@@ -102,16 +106,34 @@ preset; automatic time-sharing with the VHF block comes with the scheduler (M5).
 - **Track** a device to keep it beyond the retention period and publish it to Home Assistant.
 - Viewers can't see sensor data unless `SDRD_ISM_VIEWERS=true` (it's other people's TPMS IDs).
 
-### MQTT / Home Assistant
+## APRS (Direwolf)
+
+Each APRS channel (default 144.800 MHz and ISS APRS 145.825 MHz) is cut out of the capture
+as a 16 kHz slice, FM-demodulated and piped to its own Direwolf process; decoded frames come
+back over KISS. The default VHF block (145.3 MHz at 2.048 MS/s) covers both channels at once,
+alongside ISS SSTV on 145.800.
+
+- **APRS** tab: live map (OpenStreetMap) with station labels and tracks, station list,
+  per-station details (position, speed/course, altitude, comment, raw packets, weather charts
+  for weather stations) and a packet log. 1 h / 6 h / 24 h window.
+- Parses uncompressed and compressed positions, Mic-E, objects, items, status, messages
+  and weather reports. Copies of a packet repeated by digipeaters are merged.
+- **Settings → APRS decoder**: up to 4 channels with labels.
+- APRS is public amateur traffic, so viewer accounts can see it.
+- The map uses OpenStreetMap's tile server. Set `SDRD_MAP_TILE_URL` to use another one (the
+  Content-Security-Policy follows it).
+
+## MQTT / Home Assistant
 
 Set `SDRD_MQTT_HOST` (and user/password if needed) in `.env`. sdrd publishes:
 
 | Topic | Content |
 |---|---|
 | `sdrd/status` | `online` / `offline` (retained, last will) |
-| `sdrd/events/rtl_433` | every decoded event as JSON (turn off with `SDRD_MQTT_EVENTS=false`) |
+| `sdrd/events/rtl_433`, `sdrd/events/aprs` | every decoded event as JSON (turn off with `SDRD_MQTT_EVENTS=false`) |
 | `sdrd/devices/<device>/state` | latest data of tracked devices (retained) |
 | `homeassistant/sensor/…/config` | HA discovery for tracked devices: temperature, humidity, pressure, battery, signal, … |
+| `homeassistant/device_tracker/…/config` | HA device tracker for tracked APRS stations (shows them on the HA map) |
 
 Only tracked devices create Home Assistant entities, so passing cars don't flood HA.
 Discovery is re-sent when Home Assistant restarts.
@@ -139,13 +161,16 @@ All settings are `SDRD_*` environment variables. See [.env.example](.env.example
 | `SDRD_MQTT_HOST` | (off) | MQTT broker; also `_PORT`, `_USER`, `_PASSWORD`, `_PREFIX`, `_DISCOVERY_PREFIX` |
 | `SDRD_EVENT_RETENTION_DAYS` | `30` | Delete older events and untracked devices |
 | `SDRD_ISM_VIEWERS` | `false` | Let viewer accounts see sensors / TPMS |
+| `SDRD_MAP_TILE_URL` | OpenStreetMap | Map tile URL template with `{z}`, `{x}`, `{y}` (and optional `{s}`) |
 
 ## Architecture
 
 ```
-RTL-SDR ─USB─► radio thread (librtlsdr) ─► IQ broadcast ─┬► waterfall FFT ──────────► WebSocket ─► browser
-                    ▲ retune                              └► DDC 433.92 → rtl_433 ─► events ─► SQLite, WebSocket, MQTT
-               REST /api/radio  ◄── admin UI                 (M3+) Direwolf, SSTV …
+RTL-SDR ─USB─► radio thread (librtlsdr) ─► IQ broadcast ─┬► waterfall FFT ─────────────────► WebSocket ─► browser
+                    ▲ retune                              ├► DDC 433.92 → rtl_433 ──────────┐
+               REST /api/radio  ◄── admin UI             ├► DDC 144.800 → FM → Direwolf ───┼► events ─► SQLite, WebSocket, MQTT
+                                                          └► DDC 145.825 → FM → Direwolf ───┘
+                                                             (M4+) SSTV …
 ```
 
 - `crates/sdrd`: Rust daemon (axum, tokio, rustfft, sqlx/SQLite)

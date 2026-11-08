@@ -56,6 +56,10 @@ pub struct Config {
 
     /// Path to the rtl_433 binary.
     pub rtl433_path: String,
+    /// Path to the direwolf binary.
+    pub direwolf_path: String,
+    /// Leaflet tile URL template for the APRS map.
+    pub map_tile_url: String,
     /// Days to keep decoded events (and untracked devices).
     pub event_retention_days: i64,
     /// Let viewer accounts see ISM/TPMS devices (other people's data).
@@ -174,6 +178,9 @@ impl Config {
             trust_proxy: parse_bool("SDRD_TRUST_PROXY", false)?,
             session_hours: parse("SDRD_SESSION_HOURS", 24 * 7)?,
             rtl433_path: var("SDRD_RTL433_PATH").unwrap_or_else(|| "rtl_433".into()),
+            direwolf_path: var("SDRD_DIREWOLF_PATH").unwrap_or_else(|| "direwolf".into()),
+            map_tile_url: var("SDRD_MAP_TILE_URL")
+                .unwrap_or_else(|| "https://tile.openstreetmap.org/{z}/{x}/{y}.png".into()),
             event_retention_days: parse("SDRD_EVENT_RETENTION_DAYS", 30)?,
             ism_viewers: parse_bool("SDRD_ISM_VIEWERS", false)?,
             mqtt: match var("SDRD_MQTT_HOST") {
@@ -190,6 +197,13 @@ impl Config {
                 }),
             },
         };
+        let t = &cfg.map_tile_url;
+        if !(t.starts_with("https://") || t.starts_with("http://"))
+            || !["{z}", "{x}", "{y}"].iter().all(|p| t.contains(p))
+            || t.contains(['"', '\'', ';', ' '])
+        {
+            bail!("SDRD_MAP_TILE_URL must be an http(s) URL template containing {{z}}, {{x}} and {{y}}");
+        }
         if !(1..=3650).contains(&cfg.event_retention_days) {
             bail!("SDRD_EVENT_RETENTION_DAYS must be between 1 and 3650");
         }

@@ -84,6 +84,15 @@ const FIELDS: &[Field] = &[
     },
 ];
 
+/// Keep the last known position in the state even when this packet had none,
+/// so the HA tracker doesn't lose it on a status-only packet.
+fn with_position(data: &mut Map<String, Value>, d: &Device) {
+    if let (Some(lat), Some(lon), false) = (d.lat, d.lon, data.contains_key("lat")) {
+        data.insert("lat".into(), json!(lat));
+        data.insert("lon".into(), json!(lon));
+    }
+}
+
 /// Topic-safe identifier derived from the device key.
 pub fn slug(key: &str) -> String {
     let mut s: String = key
@@ -120,6 +129,7 @@ impl MqttHandle {
             self.publish(topic, false, Value::Object(data.clone()).to_string().into_bytes());
         }
         if device.tracked {
+            with_position(&mut data, device);
             self.publish(self.state_topic(device), true, Value::Object(data).to_string().into_bytes());
         }
     }
@@ -157,9 +167,28 @@ impl MqttHandle {
             c.insert("device".into(), device.clone());
             self.publish(self.discovery_topic(&s, field.key), true, Value::Object(c).to_string().into_bytes());
         }
+        // Stations with a position also become an HA device tracker on the map.
+        if d.lat.is_some() {
+            let c = json!({
+                "name": "Location",
+                "unique_id": format!("sdrd_{s}_location"),
+                "json_attributes_topic": self.state_topic(d),
+                "json_attributes_template":
+                    "{{ {'latitude': value_json.lat, 'longitude': value_json.lon, 'gps_accuracy': 30} | tojson }}",
+                "availability_topic": format!("{}/status", self.cfg.prefix),
+                "source_type": "gps",
+                "device": device,
+            });
+            self.publish(self.tracker_topic(&s), true, c.to_string().into_bytes());
+        }
         let mut state = data;
         state.insert("device".into(), json!(d.label()));
+        with_position(&mut state, d);
         self.publish(self.state_topic(d), true, Value::Object(state).to_string().into_bytes());
+    }
+
+    fn tracker_topic(&self, slug: &str) -> String {
+        format!("{}/device_tracker/sdrd_{slug}/config", self.cfg.discovery_prefix)
     }
 
     /// Remove a device from Home Assistant.
@@ -168,6 +197,7 @@ impl MqttHandle {
         for field in FIELDS {
             self.publish(self.discovery_topic(&s, field.key), true, Vec::new());
         }
+        self.publish(self.tracker_topic(&s), true, Vec::new());
         self.publish(self.state_topic(d), true, Vec::new());
     }
 

@@ -19,11 +19,13 @@ use tower_http::trace::TraceLayer;
 
 use crate::auth::{self, RateLimiter, Role, Session};
 use crate::config::Config;
+use crate::decoders::aprs::AprsHandle;
 use crate::decoders::rtl433::Rtl433Handle;
 use crate::events::EventFeed;
 use crate::mqtt::MqttHandle;
 use crate::radio::RadioHandle;
 
+mod aprs_routes;
 mod auth_routes;
 mod radio_routes;
 mod sensors;
@@ -38,13 +40,29 @@ pub struct AppState {
     pub waterfall_tx: broadcast::Sender<Bytes>,
     pub limiter: Arc<Mutex<RateLimiter>>,
     pub rtl433: Rtl433Handle,
+    pub aprs: AprsHandle,
     pub event_feed: EventFeed,
     pub mqtt: Option<MqttHandle>,
 }
 
-const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-img-src 'self' data: blob:; connect-src 'self'; media-src 'self' blob:; worker-src 'self' blob:; \
-frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
+/// Content-Security-Policy; map tiles may come from the configured tile server.
+fn csp(cfg: &Config) -> String {
+    format!(
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+         img-src 'self' data: blob: {}; connect-src 'self'; media-src 'self' blob:; worker-src 'self' blob:; \
+         frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'",
+        tile_origin(&cfg.map_tile_url)
+    )
+}
+
+/// `https://{s}.tile.example.org/{z}/{x}/{y}.png` → `https://*.tile.example.org`.
+fn tile_origin(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return String::new();
+    };
+    let host = rest.split('/').next().unwrap_or("").replace("{s}", "*");
+    format!("{scheme}://{host}")
+}
 
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
@@ -65,6 +83,8 @@ pub fn router(state: AppState) -> Router {
         .route("/events", get(sensors::recent_events))
         .route("/decoders/rtl_433", get(sensors::get_rtl433).put(sensors::set_rtl433))
         .route("/decoders/rtl_433/check", post(sensors::check_spec))
+        .route("/aprs", get(aprs_routes::get_config).put(aprs_routes::set_config))
+        .route("/aprs/tracks", get(aprs_routes::tracks))
         .route("/ws", get(ws::handler))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "not found") })
         .layer(SetResponseHeaderLayer::overriding(
@@ -74,14 +94,12 @@ pub fn router(state: AppState) -> Router {
 
     let web_dir = &state.cfg.web_dir;
     let spa = ServeDir::new(web_dir).fallback(ServeFile::new(web_dir.join("index.html")));
+    let csp = HeaderValue::from_str(&csp(&state.cfg)).expect("CSP is a valid header value");
 
     Router::new()
         .nest("/api", api)
         .fallback_service(spa)
-        .layer(SetResponseHeaderLayer::if_not_present(
-            header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static(CSP),
-        ))
+        .layer(SetResponseHeaderLayer::if_not_present(header::CONTENT_SECURITY_POLICY, csp))
         .layer(SetResponseHeaderLayer::if_not_present(
             header::X_CONTENT_TYPE_OPTIONS,
             HeaderValue::from_static("nosniff"),
@@ -256,6 +274,15 @@ pub fn check_origin(cfg: &Config, headers: &HeaderMap) -> Result<(), ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tile_origins() {
+        assert_eq!(
+            tile_origin("https://tile.openstreetmap.org/{z}/{x}/{y}.png"),
+            "https://tile.openstreetmap.org"
+        );
+        assert_eq!(tile_origin("https://{s}.tile.example.org/{z}/{x}/{y}.png"), "https://*.tile.example.org");
+    }
 
     #[test]
     fn parses_cookie() {

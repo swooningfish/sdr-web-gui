@@ -50,6 +50,12 @@ check "ws cross-origin"        403 "$(code --max-time 2 -b "$JAR" -H 'Origin: ht
 check "devices"                200 "$(code -b "$JAR" "$BASE/api/devices")"
 check "recent events"          200 "$(code -b "$JAR" "$BASE/api/events")"
 check "rtl_433 config"         200 "$(code -b "$JAR" "$BASE/api/decoders/rtl_433")"
+check "APRS config"            200 "$(code -b "$JAR" "$BASE/api/aprs")"
+check "APRS rejects 5 channels" 400 "$(code -X PUT -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"channels":[{"label":"a","frequency_hz":144800000,"enabled":true},{"label":"b","frequency_hz":144800000,"enabled":true},{"label":"c","frequency_hz":144800000,"enabled":true},{"label":"d","frequency_hz":144800000,"enabled":true},{"label":"e","frequency_hz":144800000,"enabled":true}]}' \
+  "$BASE/api/aprs")"
+CSP=$(curl -sI "$BASE/" | tr -d '\r' | grep -i '^content-security-policy:')
+grep -q "img-src 'self' data: blob: https://tile.openstreetmap.org" <<<"$CSP"; check "CSP allows map tiles" 0 $?
 CHECK=$(curl -s -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
   -d '{"spec":"n=x,m=NOPE,s=1"}' "$BASE/api/decoders/rtl_433/check")
 grep -q '"ok":false' <<<"$CHECK"; check "rtl_433 rejects bad flex spec" 0 $?
@@ -63,6 +69,13 @@ VJAR=$(mktemp)
 curl -s -o /dev/null -c "$VJAR" -H 'Content-Type: application/json' \
   -d "{\"username\":\"$VIEWER\",\"password\":\"viewer-password-123\"}" "$BASE/api/auth/login"
 check "viewer can't see sensors" 403 "$(code -b "$VJAR" "$BASE/api/devices")"
+check "viewer can't see rtl_433 devices" 403 "$(code -b "$VJAR" "$BASE/api/devices?decoder=rtl_433")"
+# --- milestone 3: APRS is public amateur traffic, viewers may see it
+check "viewer sees APRS stations" 200 "$(code -b "$VJAR" "$BASE/api/devices?decoder=aprs")"
+check "viewer sees APRS config"   200 "$(code -b "$VJAR" "$BASE/api/aprs")"
+check "viewer sees APRS tracks"   200 "$(code -b "$VJAR" "$BASE/api/aprs/tracks")"
+check "viewer can't change APRS"  403 "$(code -X PUT -b "$VJAR" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"channels":[]}' "$BASE/api/aprs")"
 rm -f "$VJAR"
 VID=$(curl -s -b "$JAR" "$BASE/api/users" | grep -o "{\"id\":[0-9]*,\"username\":\"$VIEWER\"" | grep -o '[0-9]\+' | head -1)
 [[ -n "$VID" ]] && code -X DELETE -b "$JAR" -H "X-CSRF-Token: $CSRF" "$BASE/api/users/$VID" >/dev/null
