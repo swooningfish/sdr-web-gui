@@ -50,6 +50,16 @@ puts test signals on 144.800 (APRS-like bursts), 145.800, 145.825, 433.920 and 4
 temperature/humidity sensors that rtl_433 really decodes: pick the ISM preset (or press
 *Tune* on the Sensors page) and they appear within ~15 s.
 
+By default the dev stack only listens on localhost. To open it from other machines on your LAN
+(e.g. `http://192.168.0.231:8080`), set `SDRD_DEV_BIND`:
+
+```bash
+SDRD_DEV_BIND=0.0.0.0 docker compose -f docker-compose.dev.yml up --build
+```
+
+The dev admin password is the one above, so anyone on the network can log in and control the
+dongle. Fine on a home LAN, not on a shared one.
+
 The dev stack also runs a Mosquitto broker. Watch what sdrd publishes with:
 
 ```bash
