@@ -8,6 +8,9 @@ const META = new Set([
 
 const num = (v: unknown, d = 1) => (typeof v === 'number' ? v.toFixed(d).replace(/\.0+$/, '') : String(v));
 
+/** Raw bit strings can run to thousands of hex digits. */
+const clip = (s: string, max = 32) => (s.length > max ? `${s.slice(0, max)}…` : s);
+
 export function deviceLabel(d: Device): string {
   if (d.name) return d.name;
   return [d.model, d.dev_id, d.channel ? `ch${d.channel}` : null].filter(Boolean).join(' ');
@@ -37,17 +40,17 @@ export function readings(data: Json): string[] {
   take('wind_avg_km_h', (v) => `wind ${num(v)} km/h`);
   take('rain_mm', (v) => `rain ${num(v)} mm`);
   take('battery_ok', (v) => (v === 0 ? 'battery low' : 'battery ok'));
-  // Flex decoders report raw bits.
+  // Flex decoders report raw bits, as `rows` and again as `codes`; show one, shortened.
   if (Array.isArray(data.rows)) {
     used.add('rows');
+    used.add('codes');
     for (const r of data.rows.slice(0, 2) as Json[]) {
-      if (typeof r?.data === 'string') out.push(`{${r.len}} ${r.data}`);
+      if (typeof r?.data === 'string') out.push(`{${r.len}} ${clip(r.data)}`);
     }
     if (data.rows.length > 2) out.push(`+${data.rows.length - 2} rows`);
-  }
-  if (Array.isArray(data.codes)) {
+  } else if (Array.isArray(data.codes)) {
     used.add('codes');
-    out.push(...(data.codes as string[]).slice(0, 2));
+    out.push(...(data.codes as string[]).slice(0, 2).map(clip));
   }
   for (const [k, v] of Object.entries(data)) {
     if (used.has(k) || META.has(k) || typeof v === 'object') continue;

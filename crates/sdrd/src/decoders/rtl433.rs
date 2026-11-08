@@ -22,6 +22,10 @@ pub const NAME: &str = "rtl_433";
 /// rtl_433's own default rate; we never go below it.
 const MIN_RATE: u32 = 250_000;
 const LOG_LINES: usize = 40;
+/// Flex decoder older versions shipped by default. It has no preamble or match
+/// and an 8 µs bit (2 samples at 250 kS/s), so it reports any FSK burst as raw
+/// bits under the name "TPMS". Real TPMS comes from rtl_433's built-in decoders.
+const LEGACY_TPMS_FLEX: &str = "n=TPMS,m=FSK_PCM,s=8,l=8,r=3000";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -50,10 +54,7 @@ impl Default for Rtl433Config {
             enabled: true,
             frequency_hz: 433_920_000,
             protocols: Vec::new(),
-            flex: vec![FlexDecoder {
-                spec: "n=TPMS,m=FSK_PCM,s=8,l=8,r=3000".into(),
-                enabled: true,
-            }],
+            flex: Vec::new(),
         }
     }
 }
@@ -191,6 +192,13 @@ pub enum SpecError {
     Unavailable(String),
 }
 
+/// Remove [`LEGACY_TPMS_FLEX`] from a saved config; true if it was there.
+fn drop_legacy_flex(cfg: &mut Rtl433Config) -> bool {
+    let before = cfg.flex.len();
+    cfg.flex.retain(|f| f.spec != LEGACY_TPMS_FLEX);
+    cfg.flex.len() != before
+}
+
 pub async fn spawn(
     db: &sqlx::SqlitePool,
     path: String,
@@ -198,7 +206,15 @@ pub async fn spawn(
     events: mpsc::Sender<DecodedEvent>,
 ) -> anyhow::Result<Rtl433Handle> {
     let cfg = match db::get_setting::<Rtl433Config>(db, SETTINGS_KEY).await {
-        Ok(Some(c)) if c.validate().is_ok() => c,
+        Ok(Some(mut c)) if c.validate().is_ok() => {
+            if drop_legacy_flex(&mut c) {
+                tracing::info!("removed the old default flex decoder {LEGACY_TPMS_FLEX}");
+                if let Err(e) = db::set_setting(db, SETTINGS_KEY, &c).await {
+                    tracing::warn!("saving rtl_433 config: {e}");
+                }
+            }
+            c
+        }
         Ok(_) => Rtl433Config::default(),
         Err(e) => {
             tracing::warn!("ignoring stored rtl_433 config: {e}");
@@ -453,6 +469,7 @@ mod tests {
     #[test]
     fn args_include_enabled_flex_only() {
         let mut c = Rtl433Config { protocols: vec![19, -59], ..Default::default() };
+        c.flex.push(FlexDecoder { spec: "n=TPMS,m=FSK_PCM,s=52,l=52,r=1000".into(), enabled: true });
         c.flex.push(FlexDecoder { spec: "n=off,m=OOK_PWM,s=1,l=2,r=3".into(), enabled: false });
         let a = c.args(256_000);
         assert!(a.windows(2).any(|w| w == ["-s", "256000"]));
@@ -460,5 +477,17 @@ mod tests {
         assert!(a.windows(2).any(|w| w == ["-R", "-59"]));
         assert!(a.windows(2).any(|w| w[0] == "-X" && w[1].starts_with("n=TPMS")));
         assert!(!a.iter().any(|x| x.starts_with("n=off")));
+    }
+
+    #[test]
+    fn default_has_no_flex_and_legacy_one_is_dropped() {
+        assert!(Rtl433Config::default().flex.is_empty());
+        let mut c = Rtl433Config::default();
+        c.flex.push(FlexDecoder { spec: LEGACY_TPMS_FLEX.into(), enabled: true });
+        c.flex.push(FlexDecoder { spec: "n=mine,m=OOK_PWM,s=1,l=2,r=3".into(), enabled: true });
+        assert!(drop_legacy_flex(&mut c));
+        assert_eq!(c.flex.len(), 1);
+        assert_eq!(c.flex[0].spec, "n=mine,m=OOK_PWM,s=1,l=2,r=3");
+        assert!(!drop_legacy_flex(&mut c));
     }
 }

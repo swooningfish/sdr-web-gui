@@ -120,7 +120,9 @@
 
       <span class="label">Flex decoders</span>
       <p class="muted small-text hint">
-        Passed as <code>-X</code>, e.g. <code>n=TPMS,m=FSK_PCM,s=8,l=8,r=3000</code>.
+        Passed as <code>-X</code>; they report raw bits, for exploring unknown signals. TPMS is
+        already covered by the built-in decoders. e.g.
+        <code>n=probe,m=OOK_PWM,s=400,l=800,r=2000,preamble=&#123;8&#125;0xaa</code>.
       </p>
       {#each flex as f, i (i)}
         <div class="flex-row">

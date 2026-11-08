@@ -229,7 +229,10 @@ preset, or the ISM step of **rotation** (see [Passes and scheduling](#passes-and
   history with charts (1 h / 24 h / 7 days). Repeats of the same transmission are merged.
 - **Settings → ISM decoder**: enable/disable, frequency, `-R` protocol list, and flex decoders
   (`-X`). *Check* asks rtl_433 itself whether it accepts a spec; saving restarts rtl_433.
-  The default config includes `n=TPMS,m=FSK_PCM,s=8,l=8,r=3000`.
+  TPMS sensors are decoded by rtl_433's built-in decoders (Schrader, Toyota, Ford, Renault,
+  Hyundai, BMW and more) and show up under their make with pressure and temperature. A flex
+  decoder only reports raw bits, so add one only to explore an unknown signal, and give it a
+  `match=` or `preamble=` so it doesn't fire on every burst.
 - **Track** a device to keep it beyond the retention period and publish it to Home Assistant.
 - Viewers can't see sensor data unless `SDRD_ISM_VIEWERS=true` (it's other people's TPMS IDs).
 
