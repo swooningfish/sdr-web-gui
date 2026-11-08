@@ -46,6 +46,27 @@ check "ws upgrade"             101 "$(curl -s -o /dev/null -w '%{http_code}' --m
 check "ws cross-origin"        403 "$(code --max-time 2 -b "$JAR" -H 'Origin: https://evil.example' \
   -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
   -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "$BASE/api/ws")"
+# --- milestone 2: sensors / rtl_433
+check "devices"                200 "$(code -b "$JAR" "$BASE/api/devices")"
+check "recent events"          200 "$(code -b "$JAR" "$BASE/api/events")"
+check "rtl_433 config"         200 "$(code -b "$JAR" "$BASE/api/decoders/rtl_433")"
+CHECK=$(curl -s -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"spec":"n=x,m=NOPE,s=1"}' "$BASE/api/decoders/rtl_433/check")
+grep -q '"ok":false' <<<"$CHECK"; check "rtl_433 rejects bad flex spec" 0 $?
+check "save rejects bad flex"  400 "$(code -X PUT -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"frequency_hz":433920000,"protocols":[],"flex":[{"spec":"n=x,m=NOPE","enabled":true}]}' \
+  "$BASE/api/decoders/rtl_433")"
+VIEWER="smoke_viewer_$$"
+code -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"$VIEWER\",\"password\":\"viewer-password-123\",\"role\":\"viewer\"}" "$BASE/api/users" >/dev/null
+VJAR=$(mktemp)
+curl -s -o /dev/null -c "$VJAR" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"$VIEWER\",\"password\":\"viewer-password-123\"}" "$BASE/api/auth/login"
+check "viewer can't see sensors" 403 "$(code -b "$VJAR" "$BASE/api/devices")"
+rm -f "$VJAR"
+VID=$(curl -s -b "$JAR" "$BASE/api/users" | grep -o "{\"id\":[0-9]*,\"username\":\"$VIEWER\"" | grep -o '[0-9]\+' | head -1)
+[[ -n "$VID" ]] && code -X DELETE -b "$JAR" -H "X-CSRF-Token: $CSRF" "$BASE/api/users/$VID" >/dev/null
+
 # restore default tuning
 code -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
   -d '{"center_hz":145300000,"sample_rate":2048000}' "$BASE/api/radio" >/dev/null

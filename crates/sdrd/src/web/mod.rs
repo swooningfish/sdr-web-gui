@@ -7,7 +7,7 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
 use serde_json::json;
@@ -19,10 +19,14 @@ use tower_http::trace::TraceLayer;
 
 use crate::auth::{self, RateLimiter, Role, Session};
 use crate::config::Config;
+use crate::decoders::rtl433::Rtl433Handle;
+use crate::events::EventFeed;
+use crate::mqtt::MqttHandle;
 use crate::radio::RadioHandle;
 
 mod auth_routes;
 mod radio_routes;
+mod sensors;
 mod users;
 mod ws;
 
@@ -33,6 +37,9 @@ pub struct AppState {
     pub radio: RadioHandle,
     pub waterfall_tx: broadcast::Sender<Bytes>,
     pub limiter: Arc<Mutex<RateLimiter>>,
+    pub rtl433: Rtl433Handle,
+    pub event_feed: EventFeed,
+    pub mqtt: Option<MqttHandle>,
 }
 
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
@@ -47,8 +54,17 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/me", get(auth_routes::me))
         .route("/auth/password", post(auth_routes::change_password))
         .route("/users", get(users::list).post(users::create))
-        .route("/users/{id}", delete(users::remove))
+        .route("/users/{id}", axum::routing::delete(users::remove))
         .route("/radio", get(radio_routes::get_state).post(radio_routes::configure))
+        .route("/devices", get(sensors::list_devices))
+        .route(
+            "/devices/{id}",
+            axum::routing::patch(sensors::update_device).delete(sensors::delete_device),
+        )
+        .route("/devices/{id}/events", get(sensors::device_events))
+        .route("/events", get(sensors::recent_events))
+        .route("/decoders/rtl_433", get(sensors::get_rtl433).put(sensors::set_rtl433))
+        .route("/decoders/rtl_433/check", post(sensors::check_spec))
         .route("/ws", get(ws::handler))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "not found") })
         .layer(SetResponseHeaderLayer::overriding(

@@ -32,6 +32,16 @@ export const MARKERS: { hz: number; label: string }[] = [
 
 export const PRESETS: { label: string; hz: number; rate?: number }[] = [
   { label: 'VHF block (APRS + ISS)', hz: 145_300_000, rate: 2_048_000 },
-  { label: 'ISM 433.92', hz: 433_920_000, rate: 1_024_000 },
+  // Centred just above 433.92 so the dongle's DC spike doesn't sit on the sensors.
+  { label: 'ISM 433.92', hz: 434_000_000, rate: 1_024_000 },
   { label: 'ARISS 437.55', hz: 437_550_000, rate: 1_024_000 },
 ];
+
+/** "12 s ago", "5 min ago", or a date for old timestamps (ms since epoch). */
+export function relTime(ms: number, now = Date.now()): string {
+  const s = Math.max(0, Math.round((now - ms) / 1000));
+  if (s < 60) return `${s} s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return new Date(ms).toLocaleDateString();
+}

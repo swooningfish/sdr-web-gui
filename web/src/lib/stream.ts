@@ -1,4 +1,4 @@
-import { api, ApiError, type RadioState } from './api';
+import { api, ApiError, type Device, type EventRow, type RadioState } from './api';
 
 export interface WaterfallFrame {
   bins: Uint8Array;
@@ -12,6 +12,7 @@ export interface WaterfallFrame {
 export interface StreamHandlers {
   onFrame: (f: WaterfallFrame) => void;
   onRadio: (s: RadioState) => void;
+  onEvent: (device: Device, event: EventRow) => void;
   onConnection: (connected: boolean) => void;
   onAuthLost: () => void;
 }
@@ -71,6 +72,7 @@ export class Stream {
         try {
           const m = JSON.parse(ev.data);
           if (m.type === 'radio') this.h.onRadio(m.state as RadioState);
+          else if (m.type === 'event') this.h.onEvent(m.device as Device, m.event as EventRow);
         } catch {
           /* ignore malformed */
         }

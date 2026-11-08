@@ -19,7 +19,10 @@ use tracing_subscriber::EnvFilter;
 mod auth;
 mod config;
 mod db;
+mod decoders;
 mod dsp;
+mod events;
+mod mqtt;
 mod radio;
 mod web;
 
@@ -64,9 +67,17 @@ async fn serve() -> Result<()> {
     let (waterfall_tx, _) = broadcast::channel(8);
     dsp::waterfall::spawn(iq_tx.subscribe(), waterfall_tx.clone(), cfg.fft_size, cfg.fps);
 
-    // Hourly cleanup of expired sessions.
+    // Decoders → events → SQLite, WebSocket clients and MQTT.
+    let (events_tx, events_rx) = tokio::sync::mpsc::channel(1024);
+    let rtl433 = decoders::rtl433::spawn(&db, cfg.rtl433_path.clone(), iq_tx.subscribe(), events_tx).await?;
+    let mqtt = cfg.mqtt.clone().map(|m| mqtt::spawn(m, db.clone()));
+    let (event_feed, _) = broadcast::channel(256);
+    tokio::spawn(events::run(db.clone(), events_rx, event_feed.clone(), mqtt.clone()));
+
+    // Hourly cleanup of expired sessions and old events.
     {
         let db = db.clone();
+        let days = cfg.event_retention_days;
         tokio::spawn(async move {
             let mut t = tokio::time::interval(Duration::from_secs(3600));
             loop {
@@ -75,6 +86,11 @@ async fn serve() -> Result<()> {
                     Ok(n) if n > 0 => tracing::info!("purged {n} expired sessions"),
                     Ok(_) => {}
                     Err(e) => tracing::warn!("session purge failed: {e}"),
+                }
+                match events::purge(&db, days).await {
+                    Ok((e, d)) if e + d > 0 => tracing::info!("purged {e} old events and {d} devices"),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("event purge failed: {e}"),
                 }
             }
         });
@@ -90,6 +106,9 @@ async fn serve() -> Result<()> {
         radio,
         waterfall_tx,
         limiter: Arc::new(Mutex::new(auth::RateLimiter::new(Duration::from_secs(15 * 60)))),
+        rtl433,
+        event_feed,
+        mqtt,
     };
     let app = web::router(state);
     let listener = TcpListener::bind(cfg.bind)

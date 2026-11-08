@@ -4,7 +4,7 @@
 
 use std::f64::consts::TAU;
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::{to_cu8, IqBlock, SourceCtx};
 
@@ -16,8 +16,8 @@ enum Kind {
     Afsk { period: f64, burst: f64 },
     /// FM carrier with a sweeping audio tone (SSTV-ish).
     SweepFm,
-    /// OOK pulse bursts (ISM sensors / TPMS-ish).
-    Ook { period: f64, burst: f64 },
+    /// Nexus-TH temperature/humidity sensor (OOK PPM) that rtl_433 decodes.
+    Nexus { period: f64, id: u8, channel: u8, base_c: f64, humidity: u8 },
     /// Unmodulated carrier drifting like a LEO satellite's Doppler.
     Doppler { span_hz: f64, period: f64 },
 }
@@ -29,6 +29,10 @@ struct Emitter {
     phase: f64,
     tone_phase: f64,
     bit: bool,
+    /// Next transmission time and its on-intervals (absolute seconds).
+    next: f64,
+    pulses: Vec<(f64, f64)>,
+    pulse_idx: usize,
 }
 
 pub(super) struct SynthGen {
@@ -46,13 +50,26 @@ impl SynthGen {
             phase: 0.0,
             tone_phase: 0.0,
             bit: false,
+            next: 0.0,
+            pulses: Vec::new(),
+            pulse_idx: 0,
+        };
+        let nexus = |id, channel, base_c, humidity, first: f64| {
+            let mut em = e(
+                433_920_000.0,
+                0.35,
+                Kind::Nexus { period: 15.0, id, channel, base_c, humidity },
+            );
+            em.next = first;
+            em
         };
         SynthGen {
             emitters: vec![
                 e(144_800_000.0, 0.25, Kind::Afsk { period: 6.0, burst: 0.9 }),
                 e(145_825_000.0, 0.08, Kind::Afsk { period: 11.0, burst: 0.7 }),
                 e(145_800_000.0, 0.15, Kind::SweepFm),
-                e(433_920_000.0, 0.35, Kind::Ook { period: 4.0, burst: 0.25 }),
+                nexus(0x5a, 1, 19.0, 55, 1.0),
+                nexus(0x21, 2, 6.0, 82, 8.5),
                 e(437_550_000.0, 0.12, Kind::Doppler { span_hz: 10_000.0, period: 120.0 }),
             ],
             t: 0.0,
@@ -112,12 +129,30 @@ impl SynthGen {
                         em.tone_phase = (em.tone_phase + TAU * tone * dt) % TAU;
                         (offset + 3000.0 * em.tone_phase.sin(), true)
                     }
-                    Kind::Ook { period, burst } => {
-                        let in_burst = (t % period) < burst;
-                        // 500 µs symbols, fixed pseudo-random pattern.
-                        let sym = ((t % period) / 0.0005) as u32;
-                        let on = (sym.wrapping_mul(2_654_435_761) >> 13) & 1 == 1;
-                        (offset, in_burst && on)
+                    Kind::Nexus { period, id, channel, base_c, humidity } => {
+                        if t >= em.next {
+                            // Keep each sensor on its own fixed schedule, so two
+                            // sensors never collide after a retune; transmissions
+                            // due while we were tuned elsewhere are skipped.
+                            let late = t - em.next;
+                            em.next += period * ((late / period).floor() + 1.0);
+                            if late < 0.5 {
+                                // Temperature drifts slowly so the charts show something;
+                                // wall-clock based so it stays continuous across restarts.
+                                let wall = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .map(|d| d.as_secs_f64())
+                                    .unwrap_or(0.0);
+                                let temp = base_c + 3.0 * (TAU * wall / 1800.0).sin();
+                                em.pulses = nexus_pulses(t, id, channel, temp, humidity);
+                                em.pulse_idx = 0;
+                            }
+                        }
+                        while em.pulse_idx < em.pulses.len() && em.pulses[em.pulse_idx].1 < t {
+                            em.pulse_idx += 1;
+                        }
+                        let on = em.pulses.get(em.pulse_idx).is_some_and(|p| p.0 <= t);
+                        (offset, on)
                     }
                     Kind::Doppler { span_hz, period } => {
                         (offset + span_hz * (TAU * t / period).cos(), true)
@@ -136,6 +171,31 @@ impl SynthGen {
         }
         out
     }
+}
+
+/// On-intervals for one Nexus transmission: 12 rows of 36 bits, each bit a
+/// 500 µs pulse followed by a 1000 µs (0) or 2000 µs (1) gap, rows separated
+/// by a 4 ms sync gap. Layout: id(8) battery(1) test(1) channel(2) temp×10(12)
+/// 1111 humidity(8).
+fn nexus_pulses(start: f64, id: u8, channel: u8, temp_c: f64, humidity: u8) -> Vec<(f64, f64)> {
+    let temp = ((temp_c * 10.0).round() as i32 as u32) & 0xfff;
+    let word: u64 = (id as u64) << 28
+        | 1 << 27 // battery ok
+        | ((channel.clamp(1, 3) - 1) as u64) << 24
+        | (temp as u64) << 12
+        | 0xf << 8
+        | humidity as u64;
+    let mut out = Vec::with_capacity(12 * 37);
+    let mut t = start;
+    for _ in 0..12 {
+        for i in (0..36).rev() {
+            out.push((t, t + 500e-6));
+            t += 500e-6 + if (word >> i) & 1 == 1 { 2000e-6 } else { 1000e-6 };
+        }
+        out.push((t, t + 500e-6));
+        t += 500e-6 + 4000e-6;
+    }
+    out
 }
 
 pub(super) fn run(ctx: SourceCtx) {

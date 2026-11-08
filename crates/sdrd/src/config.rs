@@ -53,6 +53,29 @@ pub struct Config {
     /// Trust `X-Forwarded-For` / `X-Forwarded-Host` from the reverse proxy.
     pub trust_proxy: bool,
     pub session_hours: i64,
+
+    /// Path to the rtl_433 binary.
+    pub rtl433_path: String,
+    /// Days to keep decoded events (and untracked devices).
+    pub event_retention_days: i64,
+    /// Let viewer accounts see ISM/TPMS devices (other people's data).
+    pub ism_viewers: bool,
+    pub mqtt: Option<MqttConfig>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MqttConfig {
+    pub host: String,
+    pub port: u16,
+    pub user: Option<String>,
+    pub password: Option<String>,
+    pub client_id: String,
+    /// Topic prefix for our own topics.
+    pub prefix: String,
+    /// Home Assistant discovery prefix.
+    pub discovery_prefix: String,
+    /// Publish every decoded event to `<prefix>/events/<decoder>`.
+    pub events: bool,
 }
 
 fn var(name: &str) -> Option<String> {
@@ -81,6 +104,15 @@ fn parse_bool(name: &str, default: bool) -> Result<bool> {
             _ => bail!("{name}={v:?}: expected true/false"),
         },
     }
+}
+
+fn topic_prefix(name: &str, default: &str) -> Result<String> {
+    let v = var(name).unwrap_or_else(|| default.into());
+    let v = v.trim_matches('/').to_string();
+    if v.is_empty() || v.contains(['+', '#']) {
+        bail!("{name}={v:?}: must be a plain MQTT topic prefix");
+    }
+    Ok(v)
 }
 
 impl Config {
@@ -141,7 +173,26 @@ impl Config {
             cookie_secure: parse_bool("SDRD_COOKIE_SECURE", true)?,
             trust_proxy: parse_bool("SDRD_TRUST_PROXY", false)?,
             session_hours: parse("SDRD_SESSION_HOURS", 24 * 7)?,
+            rtl433_path: var("SDRD_RTL433_PATH").unwrap_or_else(|| "rtl_433".into()),
+            event_retention_days: parse("SDRD_EVENT_RETENTION_DAYS", 30)?,
+            ism_viewers: parse_bool("SDRD_ISM_VIEWERS", false)?,
+            mqtt: match var("SDRD_MQTT_HOST") {
+                None => None,
+                Some(host) => Some(MqttConfig {
+                    host,
+                    port: parse("SDRD_MQTT_PORT", 1883)?,
+                    user: var("SDRD_MQTT_USER"),
+                    password: var("SDRD_MQTT_PASSWORD"),
+                    client_id: var("SDRD_MQTT_CLIENT_ID").unwrap_or_else(|| "sdrd".into()),
+                    prefix: topic_prefix("SDRD_MQTT_PREFIX", "sdrd")?,
+                    discovery_prefix: topic_prefix("SDRD_MQTT_DISCOVERY_PREFIX", "homeassistant")?,
+                    events: parse_bool("SDRD_MQTT_EVENTS", true)?,
+                }),
+            },
         };
+        if !(1..=3650).contains(&cfg.event_retention_days) {
+            bail!("SDRD_EVENT_RETENTION_DAYS must be between 1 and 3650");
+        }
         if cfg.source == SourceKind::Replay && cfg.replay_file.is_none() {
             bail!("SDRD_SOURCE=replay requires SDRD_REPLAY_FILE (cu8 IQ)");
         }

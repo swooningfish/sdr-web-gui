@@ -1,7 +1,9 @@
-# Local development without a dongle: synthetic test signals over plain HTTP.
+# Local development without a dongle: synthetic test signals over plain HTTP,
+# plus a throwaway MQTT broker.
 #
 #   docker compose -f docker-compose.dev.yml up --build
 #   open http://localhost:8080  (admin / devpassword123)
+#   docker compose -f docker-compose.dev.yml exec mqtt mosquitto_sub -v -t 'sdrd/#' -t 'homeassistant/#'
 
 services:
   sdrd:
@@ -12,11 +14,17 @@ services:
       SDRD_COOKIE_SECURE: "false"
       SDRD_ADMIN_USER: admin
       SDRD_ADMIN_PASSWORD: devpassword123
+      SDRD_MQTT_HOST: mqtt
       RUST_LOG: sdrd=debug,tower_http=info
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - sdrd-dev-data:/data
+    depends_on: [mqtt]
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    command: mosquitto -c /mosquitto-no-auth.conf
 
 volumes:
   sdrd-dev-data:

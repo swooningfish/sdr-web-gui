@@ -7,6 +7,8 @@
 # rtl-sdr-blog fork of librtlsdr: supports RTL-SDR Blog V4 (and V3 / generic
 # RTL2832U). Pin to a tag or commit for reproducible builds.
 ARG RTLSDR_BLOG_REF=master
+# rtl_433 release. Built without SDR backends: sdrd feeds it IQ over a pipe.
+ARG RTL433_REF=25.12
 
 # ---------------------------------------------------------------- web UI
 FROM node:22-bookworm-slim AS web
@@ -34,6 +36,12 @@ RUN git clone https://github.com/rtlsdrblog/rtl-sdr-blog /src/rtl-sdr \
  && cmake --build build -j"$(nproc)" \
  && cmake --install build
 
+# ---------------------------------------------------------------- rtl_433
+FROM debian:bookworm-slim AS rtl433
+ARG RTL433_REF
+RUN apt-get update  && apt-get install -y --no-install-recommends git ca-certificates cmake build-essential pkg-config  && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch "$RTL433_REF" https://github.com/merbanan/rtl_433 /src/rtl_433  && cmake -S /src/rtl_433 -B /src/build       -DCMAKE_BUILD_TYPE=Release       -DENABLE_RTLSDR=OFF       -DENABLE_SOAPYSDR=OFF       -DENABLE_OPENSSL=OFF       -DBUILD_TESTING=OFF       -DBUILD_DOCUMENTATION=OFF  && cmake --build /src/build -j"$(nproc)"  && install -m 0755 /src/build/src/rtl_433 /usr/local/bin/rtl_433
+
 # ---------------------------------------------------------------- sdrd
 FROM rtlsdr AS build
 WORKDIR /src
@@ -56,6 +64,7 @@ RUN ldconfig \
  && useradd --system --uid 10001 --user-group --home-dir /data --shell /usr/sbin/nologin sdrd \
  && mkdir -p /data /app \
  && chown sdrd:sdrd /data
+COPY --from=rtl433 /usr/local/bin/rtl_433 /usr/local/bin/rtl_433
 COPY --from=build /sdrd /usr/local/bin/sdrd
 COPY --from=web /web/dist /app/web
 

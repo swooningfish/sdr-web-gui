@@ -21,18 +21,20 @@ pub async fn handler(
 ) -> Result<Response, ApiError> {
     // Browsers send cookies on cross-site WebSocket upgrades, so check Origin.
     check_origin(&state.cfg, &headers)?;
-    let token_hash = session.token_hash;
+    let token_hash = session.token_hash.clone();
+    let ism = super::sensors::can_see_ism(&state, &session);
     Ok(ws
         .max_message_size(64 * 1024)
-        .on_upgrade(move |socket| client(socket, state, token_hash)))
+        .on_upgrade(move |socket| client(socket, state, token_hash, ism)))
 }
 
 fn radio_msg(s: &RadioState) -> String {
     json!({ "type": "radio", "state": s }).to_string()
 }
 
-async fn client(mut socket: WebSocket, state: AppState, token_hash: String) {
+async fn client(mut socket: WebSocket, state: AppState, token_hash: String, ism: bool) {
     let mut wf = state.waterfall_tx.subscribe();
+    let mut events = state.event_feed.subscribe();
     let mut radio = state.radio.subscribe();
     let initial = radio_msg(&radio.borrow_and_update());
     if socket.send(Message::Text(initial.into())).await.is_err() {
@@ -51,6 +53,13 @@ async fn client(mut socket: WebSocket, state: AppState, token_hash: String) {
                     if socket.send(Message::Binary(f)).await.is_err() { break; }
                 }
                 Err(RecvError::Lagged(_)) => continue, // slow client: drop frames
+                Err(RecvError::Closed) => break,
+            },
+            ev = events.recv(), if ism => match ev {
+                Ok(msg) => {
+                    if socket.send(Message::Text((&*msg).into())).await.is_err() { break; }
+                }
+                Err(RecvError::Lagged(n)) => tracing::debug!("ws client missed {n} events"),
                 Err(RecvError::Closed) => break,
             },
             changed = radio.changed() => {

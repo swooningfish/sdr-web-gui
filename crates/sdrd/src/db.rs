@@ -2,6 +2,8 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
 const SCHEMA: &str = r#"
@@ -20,7 +22,38 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
-CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at)
+CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS devices (
+    id         INTEGER PRIMARY KEY,
+    decoder    TEXT    NOT NULL,
+    key        TEXT    NOT NULL UNIQUE,
+    model      TEXT    NOT NULL,
+    dev_id     TEXT,
+    channel    TEXT,
+    kind       TEXT,
+    name       TEXT,
+    tracked    INTEGER NOT NULL DEFAULT 0,
+    first_seen INTEGER NOT NULL,
+    last_seen  INTEGER NOT NULL,
+    count      INTEGER NOT NULL DEFAULT 0,
+    last_data  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS devices_last_seen ON devices(last_seen);
+CREATE TABLE IF NOT EXISTS events (
+    id        INTEGER PRIMARY KEY,
+    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    ts        INTEGER NOT NULL,
+    freq_hz   INTEGER,
+    rssi      REAL,
+    snr       REAL,
+    data      TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS events_device_ts ON events(device_id, ts);
+CREATE INDEX IF NOT EXISTS events_ts ON events(ts)
 "#;
 
 pub async fn open(path: &Path) -> Result<SqlitePool> {
@@ -45,4 +78,35 @@ pub fn now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+pub fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// JSON value stored in the `settings` table.
+pub async fn get_setting<T: DeserializeOwned>(db: &SqlitePool, key: &str) -> Result<Option<T>> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(db)
+        .await?;
+    Ok(match row {
+        Some((v,)) => Some(serde_json::from_str(&v)?),
+        None => None,
+    })
+}
+
+pub async fn set_setting<T: Serialize>(db: &SqlitePool, key: &str, value: &T) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES (?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(serde_json::to_string(value)?)
+    .execute(db)
+    .await?;
+    Ok(())
 }
