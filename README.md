@@ -20,6 +20,24 @@ See [SPEC.md](SPEC.md) for the full design and roadmap.
 - [ ] M5: scheduler and ISS passes with Doppler correction
 - [ ] M6: live audio
 
+## Prerequisites
+
+- Docker with the **Compose** and **buildx** plugins. The Dockerfile uses BuildKit cache mounts
+  (`RUN --mount=type=cache`) to keep Rust rebuilds fast. Without buildx, Docker falls back to the
+  legacy builder and the build fails with `the --mount option requires BuildKit`.
+
+  | Distro | Install buildx |
+  |---|---|
+  | Arch / Manjaro | `sudo pacman -S docker-buildx` |
+  | Fedora / RHEL (Docker CE repo) | `sudo dnf install docker-buildx-plugin` |
+  | Fedora (distro `moby-engine`) | `sudo dnf install docker-buildx` |
+  | Debian / Ubuntu / Raspberry Pi OS (Docker apt repo) | `sudo apt install docker-buildx-plugin` |
+
+  Check with `docker buildx version`. Docker installed via `get.docker.com` (as
+  `scripts/pi-setup.sh` does) already includes it.
+- For hot-reload UI work only: Node.js 22+.
+- For deployment: an RTL-SDR dongle (RTL-SDR Blog V4/V3 or generic) on a Raspberry Pi 5.
+
 ## Quick start: development (no dongle needed)
 
 ```bash
