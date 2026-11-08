@@ -1,6 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type AprsInfo, type Device, type EventRow, type RadioState, type Track } from '../lib/api';
+  import {
+    api,
+    type AprsInfo,
+    type Device,
+    type EventRow,
+    type Observer,
+    type RadioState,
+    type Track,
+  } from '../lib/api';
   import { motion, stationName, stationText, symbolName } from '../lib/aprs';
   import { unsupported } from '../lib/coverage';
   import { formatMHz, relTime } from '../lib/format';
@@ -18,6 +26,7 @@
   ];
 
   let info = $state<AprsInfo | null>(null);
+  let home = $state<Observer | null>(null);
   let stations = $state<Device[]>([]);
   let packets = $state<{ device: Device; event: EventRow }[]>([]);
   let tracks = $state<Track[]>([]);
@@ -76,6 +85,8 @@
         api.aprsTracks(Date.now() - 24 * 3600_000),
       ]);
       info = i;
+      // Home = station location (viewers can read it); refreshed with the status.
+      api.schedule().then((x) => (home = x.status.location), () => {});
       stations = d;
       tracks = t;
       const byId = new Map(d.map((x) => [x.id, x]));
@@ -200,7 +211,7 @@
   <div class="main">
     <section class="panel map-panel">
       {#if info}
-        <AprsMap stations={visible} tracks={shownTracks} {selectedId} tileUrl={info.map_tiles} onselect={select} />
+        <AprsMap stations={visible} tracks={shownTracks} {selectedId} tileUrl={info.map_tiles} onselect={select} {home} />
       {/if}
     </section>
 

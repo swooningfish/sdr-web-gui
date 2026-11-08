@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import L from 'leaflet';
   import 'leaflet/dist/leaflet.css';
-  import type { Device, Track } from '../lib/api';
+  import type { Device, Observer, Track } from '../lib/api';
   import { isSatellite, stationName, symbolName } from '../lib/aprs';
 
   let {
@@ -11,13 +11,21 @@
     selectedId,
     tileUrl,
     onselect,
+    home = null,
   }: {
     stations: Device[];
     tracks: Track[];
     selectedId: number | null;
     tileUrl: string;
     onselect: (id: number) => void;
+    /** Station location (Settings → Passes), shown as a house. */
+    home?: Observer | null;
   } = $props();
+
+  const HOUSE =
+    '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M3 11.2 12 3.5l9 7.7V21h-6.2v-6H9.2v6H3z" fill="currentColor"/></svg>';
+  let homeMarker: L.Marker | null = null;
+  let homeBtn: HTMLButtonElement | null = null;
 
   let el: HTMLDivElement;
   let map = $state.raw<L.Map | null>(null);
@@ -35,12 +43,20 @@
    * (a satellite on the other side of the world would zoom right out). */
   function fitOnce(m: L.Map) {
     if (fitted || m.getSize().x === 0) return;
-    const ground = stations.filter((d) => d.lat !== null && d.lon !== null && !isSatellite(d));
-    if (!ground.length) return;
+    const pts = stations
+      .filter((d) => d.lat !== null && d.lon !== null && !isSatellite(d))
+      .map((d) => [d.lat!, d.lon!] as L.LatLngTuple);
+    // Home is part of the first view, so you can see stations relative to it.
+    if (home) pts.push([home.lat_deg, home.lon_deg]);
+    if (!pts.length) return;
     fitted = true;
-    const b = L.latLngBounds(ground.map((d) => [d.lat!, d.lon!] as L.LatLngTuple));
-    if (ground.length === 1) m.setView(b.getCenter(), 12);
+    const b = L.latLngBounds(pts);
+    if (pts.length === 1) m.setView(b.getCenter(), home && !stations.length ? 10 : 12);
     else m.fitBounds(b.pad(0.2), { maxZoom: 13 });
+  }
+
+  function centreHome() {
+    if (map && home) map.setView([home.lat_deg, home.lon_deg], Math.max(map.getZoom(), 11));
   }
 
   onMount(() => {
@@ -54,6 +70,23 @@
     } as L.TileLayerOptions).addTo(m);
     trackLayer = L.layerGroup().addTo(m);
     markerLayer = L.layerGroup().addTo(m);
+    // "Centre on home" button under the zoom buttons.
+    const HomeControl = L.Control.extend({
+      onAdd() {
+        const wrap = L.DomUtil.create('div', 'leaflet-bar');
+        const b = L.DomUtil.create('button', 'aprs-home-btn', wrap) as HTMLButtonElement;
+        b.type = 'button';
+        b.innerHTML = HOUSE;
+        L.DomEvent.disableClickPropagation(wrap);
+        L.DomEvent.on(b, 'click', (e) => {
+          L.DomEvent.preventDefault(e);
+          centreHome();
+        });
+        homeBtn = b;
+        return wrap;
+      },
+    });
+    new HomeControl({ position: 'topleft' }).addTo(m);
     // The tab may be hidden when the map is created; fix its size (and frame
     // the stations, which needs a real size) once it's shown.
     const ro = new ResizeObserver(() => {
@@ -67,6 +100,38 @@
       m.remove();
       map = null;
     };
+  });
+
+  // Home marker and the state of its button.
+  $effect(() => {
+    if (!map) return;
+    if (homeBtn) {
+      homeBtn.disabled = !home;
+      const t = home ? 'Centre on home' : 'Set the station location in Settings → Passes to show home';
+      homeBtn.title = t;
+      homeBtn.setAttribute('aria-label', t);
+    }
+    if (!home) {
+      homeMarker?.remove();
+      homeMarker = null;
+      return;
+    }
+    const at: L.LatLngTuple = [home.lat_deg, home.lon_deg];
+    if (homeMarker) homeMarker.setLatLng(at);
+    else {
+      homeMarker = L.marker(at, {
+        icon: L.divIcon({
+          className: 'aprs-home',
+          html: `<span class="house">${HOUSE}</span><span class="label">Home</span>`,
+          iconSize: [22, 22],
+          iconAnchor: [11, 11],
+        }),
+        title: 'Home: station location',
+        zIndexOffset: 500,
+        keyboard: false,
+      }).addTo(map);
+    }
+    fitOnce(map);
   });
 
   // Station markers: a dot plus the callsign as a label. Updated in place so
@@ -193,6 +258,52 @@
       0 0 3px var(--surface),
       0 0 3px var(--surface),
       0 0 3px var(--surface);
+  }
+  .map :global(.aprs-home) {
+    overflow: visible;
+  }
+  .map :global(.aprs-home .house) {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--surface);
+    color: var(--text);
+    border: 2px solid var(--text);
+    box-sizing: border-box;
+  }
+  .map :global(.aprs-home .label) {
+    position: absolute;
+    left: 25px;
+    top: 2px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    text-shadow:
+      0 0 3px var(--surface),
+      0 0 3px var(--surface),
+      0 0 3px var(--surface);
+  }
+  .map :global(.aprs-home-btn) {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: 2px;
+    background: #fff;
+    color: #333;
+    cursor: pointer;
+  }
+  .map :global(.aprs-home-btn:hover:not(:disabled)) {
+    background: #f4f4f4;
+  }
+  .map :global(.aprs-home-btn:disabled) {
+    color: #bbb;
+    cursor: not-allowed;
   }
   .map :global(.aprs-track) {
     stroke: var(--accent);

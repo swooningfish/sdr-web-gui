@@ -32,6 +32,9 @@ test('no tab scrolls sideways', async ({ page }) => {
 });
 
 test('spectrum toolbar does not move when hovering the spectrum', async ({ page }) => {
+  // Hover needs live spectrum data, so the receiver must be delivering IQ.
+  const radio = await (await page.request.get('/api/radio')).json();
+  test.skip(!radio.connected, `receiver not connected (${radio.error ?? radio.source}); pick a working source to run this`);
   await openTab(page, 'Spectrum');
   const toolbar = page.locator('.wf .toolbar');
   const controls = page.locator('.wf .controls');
@@ -80,4 +83,27 @@ test('waterfall colour choice is remembered', async ({ page }) => {
   await page.reload();
   await expect(page.getByLabel('Waterfall colours')).toHaveValue('viridis');
   await page.getByLabel('Waterfall colours').selectOption('turbo');
+});
+
+test('APRS map shows home and can centre on it', async ({ page }) => {
+  // The dev stack has a station location set (Settings → Passes).
+  const loc = (await (await page.request.get('/api/schedule')).json()).status.location;
+  test.skip(!loc, 'no station location set');
+  await openTab(page, 'APRS');
+  const home = page.locator('.aprs-home');
+  await expect(home).toBeVisible();
+  const btn = page.getByRole('button', { name: 'Centre on home' });
+  await expect(btn).toBeEnabled();
+  // Pan away, then centre: the house should end up in the middle of the map.
+  const map = page.getByRole('region', { name: 'APRS station map' });
+  const m = (await map.boundingBox())!;
+  await page.mouse.move(m.x + m.width * 0.5, m.y + m.height * 0.5);
+  await page.mouse.down();
+  await page.mouse.move(m.x + m.width * 0.1, m.y + m.height * 0.2, { steps: 5 });
+  await page.mouse.up();
+  await btn.click();
+  await page.waitForTimeout(600);
+  const h = (await home.locator('.house').boundingBox())!;
+  expect(Math.abs(h.x + h.width / 2 - (m.x + m.width / 2))).toBeLessThan(25);
+  expect(Math.abs(h.y + h.height / 2 - (m.y + m.height / 2))).toBeLessThan(25);
 });
