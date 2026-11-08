@@ -1,11 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, ApiError, type Device, type EventRow, type RadioState, type Rtl433Info } from '../lib/api';
-  import { CHART_FIELDS, deviceLabel, readings, series } from '../lib/sensors';
+  import { api, ApiError, type Device, type DevicePatch, type EventRow, type RadioState, type Rtl433Info } from '../lib/api';
+  import { CHART_FIELDS, deviceLabel, deviceTitle, readings, series } from '../lib/sensors';
   import TimeChart from './TimeChart.svelte';
+  import DeviceIdent from './DeviceIdent.svelte';
   import { formatMHz, formatRate, relTime } from '../lib/format';
 
   let { isAdmin, radio }: { isAdmin: boolean; radio: RadioState | null } = $props();
+  const canCopy = typeof navigator !== 'undefined' && !!navigator.clipboard;
+  let copied = $state(false);
 
   let devices = $state<Device[]>([]);
   let feed = $state<{ device: Device; event: EventRow }[]>([]);
@@ -92,12 +95,36 @@
     return () => clearInterval(t);
   });
 
+  /** Open a device's details (used by the dashboard). */
+  export async function open(id: number) {
+    let d = devices.find((x) => x.id === id);
+    if (!d) {
+      try {
+        d = (await api.devices('rtl_433')).find((x) => x.id === id);
+      } catch (e) {
+        fail(e);
+      }
+    }
+    if (d && selectedId !== id) await select(d);
+  }
+
+  async function copyId(id: string) {
+    try {
+      await navigator.clipboard.writeText(id);
+      copied = true;
+      setTimeout(() => (copied = false), 1500);
+    } catch {
+      /* clipboard blocked; the ID is still selectable */
+    }
+  }
+
   async function select(d: Device) {
     if (selectedId === d.id) {
       selectedId = null;
       return;
     }
     selectedId = d.id;
+    copied = false;
     nameInput = d.name ?? '';
     await loadHistory();
   }
@@ -119,7 +146,7 @@
     loadHistory();
   }
 
-  async function update(d: Device, patch: { name?: string; tracked?: boolean }) {
+  async function update(d: Device, patch: DevicePatch) {
     busy = true;
     err = null;
     try {
@@ -240,11 +267,10 @@
                 <tr class:sel={d.id === selectedId} onclick={() => select(d)}>
                   <td>
                     <button type="button" class="link" onclick={(e) => { e.stopPropagation(); select(d); }}>
-                      {deviceLabel(d)}
+                      {deviceTitle(d)}
                     </button>
-                    <div class="muted small-text">
-                      {d.name ? `${d.model} ${d.dev_id ?? ''}` : ''}{d.kind ? ` ${d.kind}` : ''}
-                    </div>
+                    {#if d.dash_pos !== null}<span class="badge" title="On the dashboard">dashboard</span>{/if}
+                    <div><DeviceIdent device={d} showModel={!!d.name} /></div>
                   </td>
                   <td class="readings">{readings(r).slice(0, 4).join(' · ')}</td>
                   <td class="num hide-sm">{typeof r.rssi === 'number' ? `${r.rssi.toFixed(1)} dB` : ''}</td>
@@ -272,13 +298,26 @@
       {#if selected}
         <section class="panel">
           <div class="head">
-            <h2>{deviceLabel(selected)}</h2>
+            <h2>{deviceTitle(selected)}</h2>
             <button type="button" class="small" onclick={() => (selectedId = null)}>Close</button>
           </div>
           <dl class="small-text">
-            <dt>Model</dt><dd>{selected.model}</dd>
-            {#if selected.dev_id}<dt>ID</dt><dd>{selected.dev_id}</dd>{/if}
+            <dt>Model</dt>
+            <dd class="model">
+              <span>{selected.model}</span>
+              {#if selected.dev_id}
+                <span class="id">
+                  ID <code>{selected.dev_id}</code>
+                  {#if canCopy}
+                    <button type="button" class="small" onclick={() => copyId(selected!.dev_id!)}
+                      >{copied ? 'Copied' : 'Copy'}</button
+                    >
+                  {/if}
+                </span>
+              {/if}
+            </dd>
             {#if selected.channel}<dt>Channel</dt><dd>{selected.channel}</dd>{/if}
+            {#if selected.kind}<dt>Type</dt><dd>{selected.kind}</dd>{/if}
             <dt>First heard</dt><dd>{new Date(selected.first_seen).toLocaleString()}</dd>
             <dt>Readings</dt><dd>{selected.count}</dd>
           </dl>
@@ -296,6 +335,15 @@
                   onchange={(e) => update(selected!, { tracked: (e.currentTarget as HTMLInputElement).checked })}
                 />
                 Track (keep, publish to Home Assistant)
+              </label>
+              <label class="check">
+                <input
+                  type="checkbox"
+                  checked={selected.dash_pos !== null}
+                  disabled={busy}
+                  onchange={(e) => update(selected!, { dashboard: (e.currentTarget as HTMLInputElement).checked })}
+                />
+                Show on dashboard
               </label>
               <button type="button" class="small danger" onclick={() => remove(selected!)}>Delete</button>
             </div>
@@ -336,7 +384,8 @@
             {#each feed as f (f.event.id)}
               <li>
                 <span class="muted nowrap">{time(f.event.ts)}</span>
-                <button type="button" class="link" onclick={() => select(f.device)}>{deviceLabel(f.device)}</button>
+                <button type="button" class="link" onclick={() => select(f.device)}>{deviceTitle(f.device)}</button>
+                <DeviceIdent device={f.device} showModel={!!f.device.name} />
                 <div class="small-text">{readings(f.event.data).slice(0, 3).join(' · ')}</div>
               </li>
             {/each}
@@ -458,6 +507,35 @@
   }
   dt {
     color: var(--muted);
+  }
+  .model {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+  }
+  .model .id {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+  }
+  .model code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--text);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0 5px;
+    user-select: all;
+  }
+  .badge {
+    margin-left: 6px;
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    font-size: 11px;
   }
   dd {
     margin: 0;

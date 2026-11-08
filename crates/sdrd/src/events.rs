@@ -56,6 +56,8 @@ pub struct Device {
     pub lon: Option<f64>,
     pub pos_ts: Option<i64>,
     pub symbol: Option<String>,
+    /// Position on the sensor dashboard (lowest first); `None` = not shown.
+    pub dash_pos: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, sqlx::FromRow)]
@@ -136,7 +138,7 @@ fn fingerprint(data: &Map<String, Value>) -> String {
 }
 
 const DEVICE_COLS: &str = "id, decoder, key, model, dev_id, channel, kind, name, tracked, \
-    first_seen, last_seen, count, last_data, lat, lon, pos_ts, symbol";
+    first_seen, last_seen, count, last_data, lat, lon, pos_ts, symbol, dash_pos";
 
 pub async fn list_devices(db: &SqlitePool, decoder: Option<&str>, limit: i64) -> Result<Vec<Device>> {
     Ok(sqlx::query_as(&format!(
@@ -191,6 +193,56 @@ pub async fn update_device(db: &SqlitePool, id: i64, name: Option<Option<String>
             .execute(db)
             .await?;
     }
+    Ok(())
+}
+
+/// Devices on the dashboard, in display order.
+pub async fn dashboard_devices(db: &SqlitePool) -> Result<Vec<Device>> {
+    Ok(sqlx::query_as(&format!(
+        "SELECT {DEVICE_COLS} FROM devices WHERE dash_pos IS NOT NULL ORDER BY dash_pos, id"
+    ))
+    .fetch_all(db)
+    .await?)
+}
+
+/// Add a device to the end of the dashboard, or take it off. Adding also
+/// tracks it, so the purge can't delete a device that's on show.
+pub async fn set_on_dashboard(db: &SqlitePool, id: i64, on: bool) -> Result<()> {
+    if on {
+        sqlx::query(
+            "UPDATE devices SET tracked = 1, \
+                 dash_pos = COALESCE(dash_pos, (SELECT COALESCE(MAX(dash_pos), 0) + 1 FROM devices)) \
+             WHERE id = ?",
+        )
+        .bind(id)
+        .execute(db)
+        .await?;
+    } else {
+        sqlx::query("UPDATE devices SET dash_pos = NULL WHERE id = ?")
+            .bind(id)
+            .execute(db)
+            .await?;
+    }
+    Ok(())
+}
+
+/// Renumber the dashboard in the given order. Devices not on the dashboard
+/// are ignored; ones on it but missing from `ids` keep their place after them.
+pub async fn reorder_dashboard(db: &SqlitePool, ids: &[i64]) -> Result<()> {
+    let mut tx = db.begin().await?;
+    let mut order: Vec<i64> = ids.to_vec();
+    let rest: Vec<(i64,)> = sqlx::query_as("SELECT id FROM devices WHERE dash_pos IS NOT NULL ORDER BY dash_pos, id")
+        .fetch_all(&mut *tx)
+        .await?;
+    order.extend(rest.into_iter().map(|(id,)| id).filter(|id| !ids.contains(id)));
+    for (i, id) in order.iter().enumerate() {
+        sqlx::query("UPDATE devices SET dash_pos = ? WHERE id = ? AND dash_pos IS NOT NULL")
+            .bind(i as i64 + 1)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -420,7 +472,27 @@ mod tests {
         let d = get_device(&db, d1.id).await.unwrap().unwrap();
         assert_eq!(d.label(), "Car FL");
         assert!(d.tracked);
+
+        // Dashboard: pinning tracks, appends, and reorders.
+        let (t1, _) = store(&db, &ev(json!({"model":"Nexus-TH","id":1,"temperature_C":20.0}))).await.unwrap();
+        let (t2, _) = store(&db, &ev(json!({"model":"Nexus-TH","id":2,"temperature_C":21.0}))).await.unwrap();
+        assert!(!t1.tracked && t1.dash_pos.is_none());
+        set_on_dashboard(&db, t1.id, true).await.unwrap();
+        set_on_dashboard(&db, t2.id, true).await.unwrap();
+        set_on_dashboard(&db, t1.id, true).await.unwrap(); // already on: keeps its place
+        let ids = |v: Vec<Device>| v.into_iter().map(|d| d.id).collect::<Vec<_>>();
+        assert_eq!(ids(dashboard_devices(&db).await.unwrap()), vec![t1.id, t2.id]);
+        assert!(get_device(&db, t1.id).await.unwrap().unwrap().tracked);
+        reorder_dashboard(&db, &[t2.id, d1.id]).await.unwrap(); // d1 isn't on it: ignored
+        assert_eq!(ids(dashboard_devices(&db).await.unwrap()), vec![t2.id, t1.id]);
+        assert!(get_device(&db, d1.id).await.unwrap().unwrap().dash_pos.is_none());
+        set_on_dashboard(&db, t2.id, false).await.unwrap();
+        assert_eq!(ids(dashboard_devices(&db).await.unwrap()), vec![t1.id]);
+
         assert!(delete_device(&db, d1.id).await.unwrap());
+        for d in [t1.id, t2.id] {
+            delete_device(&db, d).await.unwrap();
+        }
         assert!(recent_events(&db, None, 10).await.unwrap().is_empty()); // cascaded
 
         // Positions survive later packets without one.

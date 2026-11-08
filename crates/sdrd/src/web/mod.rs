@@ -85,6 +85,8 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(sensors::update_device).delete(sensors::delete_device),
         )
         .route("/devices/{id}/events", get(sensors::device_events))
+        .route("/dashboard", get(sensors::dashboard))
+        .route("/dashboard/order", axum::routing::put(sensors::set_dashboard_order))
         .route("/events", get(sensors::recent_events))
         .route("/decoders/rtl_433", get(sensors::get_rtl433).put(sensors::set_rtl433))
         .route("/decoders/rtl_433/check", post(sensors::check_spec))

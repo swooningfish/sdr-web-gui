@@ -51,6 +51,14 @@ export interface Device {
   lon: number | null;
   pos_ts: number | null;
   symbol: string | null;
+  /** Position on the sensor dashboard; null = not shown there. */
+  dash_pos: number | null;
+}
+
+export interface DevicePatch {
+  name?: string;
+  tracked?: boolean;
+  dashboard?: boolean;
 }
 
 export interface AprsChannel {
@@ -219,8 +227,9 @@ export const api = {
     if (opts.since !== undefined) q.set('since', String(Math.floor(opts.since)));
     return req<EventRow[]>('GET', `/devices/${id}/events?${q}`);
   },
-  updateDevice: (id: number, patch: { name?: string; tracked?: boolean }) =>
-    req<Device>('PATCH', `/devices/${id}`, patch),
+  updateDevice: (id: number, patch: DevicePatch) => req<Device>('PATCH', `/devices/${id}`, patch),
+  dashboard: () => req<Device[]>('GET', '/dashboard'),
+  setDashboardOrder: (ids: number[]) => req<Device[]>('PUT', '/dashboard/order', { ids }),
   deleteDevice: (id: number) => req('DELETE', `/devices/${id}`),
   events: (limit = 100, decoder?: string) =>
     req<EventRow[]>('GET', `/events?limit=${limit}${decoder ? `&decoder=${decoder}` : ''}`),

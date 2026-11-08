@@ -70,7 +70,19 @@ pub async fn open(path: &Path) -> Result<SqlitePool> {
     for stmt in SCHEMA.split(';').map(str::trim).filter(|s| !s.is_empty()) {
         sqlx::query(stmt).execute(&pool).await?;
     }
-    add_columns(&pool, "devices", &[("lat", "REAL"), ("lon", "REAL"), ("pos_ts", "INTEGER"), ("symbol", "TEXT")]).await?;
+    add_columns(
+        &pool,
+        "devices",
+        &[
+            ("lat", "REAL"),
+            ("lon", "REAL"),
+            ("pos_ts", "INTEGER"),
+            ("symbol", "TEXT"),
+            // Position on the sensor dashboard; NULL = not on it.
+            ("dash_pos", "INTEGER"),
+        ],
+    )
+    .await?;
     Ok(pool)
 }
 

@@ -99,6 +99,8 @@ pub struct DevicePatch {
     /// Empty string clears the name.
     name: Option<String>,
     tracked: Option<bool>,
+    /// Show on the sensor dashboard (also tracks the device).
+    dashboard: Option<bool>,
 }
 
 pub async fn update_device(
@@ -124,6 +126,14 @@ pub async fn update_device(
     events::update_device(&state.db, id, name, p.tracked)
         .await
         .map_err(ApiError::internal)?;
+    // An untracked device gets purged once it goes quiet, so it can't stay on
+    // the dashboard; pinning one tracks it.
+    let dashboard = if p.tracked == Some(false) { Some(false) } else { p.dashboard };
+    if let Some(on) = dashboard {
+        events::set_on_dashboard(&state.db, id, on)
+            .await
+            .map_err(ApiError::internal)?;
+    }
     let after = events::get_device(&state.db, id)
         .await
         .map_err(ApiError::internal)?
@@ -135,8 +145,42 @@ pub async fn update_device(
             m.retract(&before);
         }
     }
-    tracing::info!(by = %admin.user.username, device = %after.key, tracked = after.tracked, "device updated");
+    tracing::info!(
+        by = %admin.user.username,
+        device = %after.key,
+        tracked = after.tracked,
+        dashboard = after.dash_pos.is_some(),
+        "device updated"
+    );
     Ok(Json(after))
+}
+
+/// Devices pinned to the sensor dashboard, in order.
+pub async fn dashboard(State(state): State<AppState>, AuthUser(s): AuthUser) -> Result<Json<Vec<Device>>, ApiError> {
+    ism_user(&state, &s)?;
+    Ok(Json(events::dashboard_devices(&state.db).await.map_err(ApiError::internal)?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DashboardOrder {
+    ids: Vec<i64>,
+}
+
+pub async fn set_dashboard_order(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Json(o): Json<DashboardOrder>,
+) -> Result<Json<Vec<Device>>, ApiError> {
+    let mut ids = o.ids;
+    if ids.len() > 1000 {
+        return Err(ApiError::bad_request("too many devices"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    ids.retain(|id| seen.insert(*id));
+    events::reorder_dashboard(&state.db, &ids).await.map_err(ApiError::internal)?;
+    tracing::info!(by = %admin.user.username, "dashboard reordered");
+    Ok(Json(events::dashboard_devices(&state.db).await.map_err(ApiError::internal)?))
 }
 
 pub async fn delete_device(

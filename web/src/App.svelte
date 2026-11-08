@@ -9,6 +9,7 @@
   import Account from './components/Account.svelte';
   import Users from './components/Users.svelte';
   import Sensors from './components/Sensors.svelte';
+  import Dashboard from './components/Dashboard.svelte';
   import DecoderSettings from './components/DecoderSettings.svelte';
   import Aprs from './components/Aprs.svelte';
   import AprsSettings from './components/AprsSettings.svelte';
@@ -19,9 +20,10 @@
   let checking = $state(true);
   let radio = $state<RadioState | null>(null);
   let wsUp = $state(false);
-  let view = $state<'spectrum' | 'sensors' | 'aprs' | 'sstv' | 'settings'>('spectrum');
+  let view = $state<'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'sstv' | 'settings'>('spectrum');
   let waterfall = $state<ReturnType<typeof Waterfall> | undefined>();
   let sensors = $state<ReturnType<typeof Sensors> | undefined>();
+  let dashboard = $state<ReturnType<typeof Dashboard> | undefined>();
   let aprs = $state<ReturnType<typeof Aprs> | undefined>();
   let sstv = $state<ReturnType<typeof Sstv> | undefined>();
 
@@ -45,7 +47,10 @@
       onEvent: (d, ev) => {
         if (d.decoder === 'aprs') aprs?.push(d, ev);
         else if (d.decoder === 'sstv') sstv?.push(d, ev);
-        else sensors?.push(d, ev);
+        else {
+          sensors?.push(d, ev);
+          dashboard?.push(d, ev);
+        }
       },
       onSstvRows: (r) => sstv?.rows(r),
       onConnection: (c) => (wsUp = c),
@@ -66,6 +71,11 @@
       radio = null;
       view = 'spectrum';
     }
+  }
+
+  function openSensor(id: number) {
+    view = 'sensors';
+    sensors?.open(id);
   }
 
   async function tuneTo(hz: number) {
@@ -98,6 +108,7 @@
     </div>
     <nav>
       <button type="button" class="tab" class:active={view === 'spectrum'} onclick={() => (view = 'spectrum')}>Spectrum</button>
+      <button type="button" class="tab" class:active={view === 'dashboard'} onclick={() => (view = 'dashboard')}>Dashboard</button>
       <button type="button" class="tab" class:active={view === 'sensors'} onclick={() => (view = 'sensors')}>Sensors</button>
       <button type="button" class="tab" class:active={view === 'aprs'} onclick={() => (view = 'aprs')}>APRS</button>
       <button type="button" class="tab" class:active={view === 'sstv'} onclick={() => (view = 'sstv')}>SSTV</button>
@@ -127,6 +138,9 @@
       <RadioPanel {radio} {isAdmin} />
     </div>
     <!-- Kept mounted so live events keep arriving while another tab is open. -->
+    <div hidden={view !== 'dashboard'}>
+      <Dashboard bind:this={dashboard} {isAdmin} active={view === 'dashboard'} onopen={openSensor} />
+    </div>
     <div hidden={view !== 'sensors'}>
       <Sensors bind:this={sensors} {isAdmin} {radio} />
     </div>

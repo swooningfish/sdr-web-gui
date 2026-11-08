@@ -13,6 +13,11 @@ export function deviceLabel(d: Device): string {
   return [d.model, d.dev_id, d.channel ? `ch${d.channel}` : null].filter(Boolean).join(' ');
 }
 
+/** Name for a card or heading: the given name, else just the model. */
+export function deviceTitle(d: Device): string {
+  return d.name || d.model;
+}
+
 /** Short human-readable readings, most useful first. */
 export function readings(data: Json): string[] {
   const out: string[] = [];
