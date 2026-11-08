@@ -1,0 +1,56 @@
+# Production: sdrd behind Caddy (automatic HTTPS via Let's Encrypt).
+#
+#   cp .env.example .env   # set SDR_DOMAIN, SDRD_ADMIN_PASSWORD, ...
+#   docker compose up -d --build
+#
+# The host must have the dvb_usb_rtl28xxu module blacklisted and the udev rule
+# from scripts/pi-setup.sh installed.
+
+services:
+  sdrd:
+    build: .
+    image: sdr-web-gui:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SDRD_SOURCE: rtlsdr
+      SDRD_TRUST_PROXY: "true"
+      SDRD_COOKIE_SECURE: "true"
+    # Bind-mount the USB bus and allow USB char devices (major 189) so the
+    # dongle keeps working after being unplugged and plugged back in.
+    volumes:
+      - sdrd-data:/data
+      - /dev/bus/usb:/dev/bus/usb
+    device_cgroup_rules:
+      - "c 189:* rmw"
+    expose:
+      - "8080"
+    networks: [internal]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    depends_on: [sdrd]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SDR_DOMAIN: ${SDR_DOMAIN:?set SDR_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [internal]
+
+networks:
+  internal:
+
+volumes:
+  sdrd-data:
+  caddy-data:
+  caddy-config:

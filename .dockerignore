@@ -1,0 +1,7 @@
+target
+data
+.env
+.git
+web/node_modules
+web/dist
+*.cu8

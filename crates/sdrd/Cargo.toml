@@ -1,0 +1,30 @@
+[package]
+name = "sdrd"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Web-controlled RTL-SDR monitoring daemon"
+
+[features]
+default = []
+# Link against librtlsdr (rtl-sdr-blog fork recommended). Without it only the
+# synthetic and replay sources are available, which is handy for development.
+rtlsdr = []
+
+[dependencies]
+anyhow = "1"
+argon2 = "0.5"
+axum = { version = "0.8", features = ["ws", "macros"] }
+bytes = "1"
+hex = "0.4"
+num-complex = "0.4"
+rand = "0.8"
+rustfft = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "set-header", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
