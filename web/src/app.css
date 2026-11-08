@@ -142,3 +142,21 @@ button.danger:hover:not(:disabled) {
 .dot.bad {
   background: var(--bad);
 }
+
+/* Features on frequencies the selected SDR can't tune. */
+.na-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1px dashed var(--bad);
+  border-radius: 999px;
+  color: var(--bad);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.na-row {
+  opacity: 0.6;
+}
+.na-row:focus-within {
+  opacity: 1;
+}

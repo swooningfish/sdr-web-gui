@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use super::{block_len, IqBlock, SourceCtx};
 
-pub(super) fn run(ctx: SourceCtx, path: PathBuf) {
+pub(super) fn run(mut ctx: SourceCtx, path: PathBuf) {
     let s = ctx.initial.clone();
     let file = match File::open(&path) {
         Ok(f) => f,
@@ -28,6 +28,7 @@ pub(super) fn run(ctx: SourceCtx, path: PathBuf) {
     let mut reader = BufReader::new(file);
     ctx.update_state(|st| {
         st.connected = true;
+        st.device_id = Some("replay".into());
         st.device = Some(format!("Replay: {}", path.display()));
         st.tuner = Some("file".into());
     });
@@ -38,7 +39,7 @@ pub(super) fn run(ctx: SourceCtx, path: PathBuf) {
     let mut next = Instant::now();
     loop {
         // Replay cannot be retuned; drain commands so the queue doesn't grow.
-        let _ = ctx.latest_cmd();
+        let _ = ctx.take();
 
         let mut data = vec![0u8; len];
         let mut filled = 0;

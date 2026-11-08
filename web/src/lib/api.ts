@@ -19,16 +19,52 @@ export interface RadioSettings {
   direct_sampling: number;
 }
 
+/** Inclusive span of frequencies a receiver can tune. */
+export interface FreqRange {
+  lo_hz: number;
+  hi_hz: number;
+}
+
 export interface RadioState {
   source: string;
   can_tune: boolean;
+  can_select: boolean;
   connected: boolean;
+  device_id: string | null;
   device: string | null;
   tuner: string | null;
+  /** What the selected receiver can tune; empty = unknown. */
+  ranges: FreqRange[];
   settings: RadioSettings;
   gains_db: number[];
   sample_rates: number[];
   error: string | null;
+}
+
+export interface SdrDevice {
+  id: string;
+  name: string;
+  serial: string | null;
+  tuner: string | null;
+  ranges: FreqRange[];
+  active: boolean;
+  note: string | null;
+  /** Per entry of `SdrDevices.features`: whether this device can receive it. */
+  supported: boolean[];
+}
+
+/** Something the station listens to on a fixed frequency. */
+export interface SdrFeature {
+  group: string;
+  label: string;
+  freq_hz: number;
+  enabled: boolean;
+}
+
+export interface SdrDevices {
+  can_select: boolean;
+  devices: SdrDevice[];
+  features: SdrFeature[];
 }
 
 export type Json = Record<string, unknown>;
@@ -309,6 +345,8 @@ export const api = {
     req('POST', '/auth/password', { current_password, new_password }),
   radio: () => req<RadioState>('GET', '/radio'),
   configure: (patch: RadioPatch) => req<RadioSettings>('POST', '/radio', patch),
+  sdrDevices: () => req<SdrDevices>('GET', '/radio/devices'),
+  selectSdr: (id: string) => req('POST', '/radio/device', { id }),
   users: () => req<UserRow[]>('GET', '/users'),
   createUser: (username: string, password: string, role: Role) =>
     req<{ id: number }>('POST', '/users', { username, password, role }),

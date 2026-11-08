@@ -1,11 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type FlexDecoder, type Rtl433Info } from '../lib/api';
+  import { api, type FlexDecoder, type RadioState, type Rtl433Info } from '../lib/api';
+  import { unsupported } from '../lib/coverage';
   import { parseFrequency } from '../lib/format';
+
+  let { radio }: { radio: RadioState | null } = $props();
 
   let info = $state<Rtl433Info | null>(null);
   let enabled = $state(true);
   let freqInput = $state('');
+  const freqWhy = $derived(unsupported(radio, parseFrequency(freqInput) ?? 0));
   let protocolsInput = $state('');
   let flex = $state<(FlexDecoder & { check?: { ok: boolean; message?: string } })[]>([]);
   let busy = $state(false);
@@ -102,6 +106,7 @@
 
       <label for="r433-freq">Frequency (MHz)</label>
       <input id="r433-freq" bind:value={freqInput} inputmode="decimal" />
+      {#if freqWhy}<p class="small-text hint"><span class="na-tag">Not supported by this SDR</span> {freqWhy}</p>{/if}
       <p class="muted small-text hint">
         Decodes about ±100 kHz around this frequency whenever it is inside the tuned band.
       </p>

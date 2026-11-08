@@ -4,6 +4,7 @@
   import { CHART_FIELDS, deviceLabel, deviceTitle, readings, series } from '../lib/sensors';
   import TimeChart from './TimeChart.svelte';
   import DeviceIdent from './DeviceIdent.svelte';
+  import { unsupported } from '../lib/coverage';
   import { formatMHz, formatRate, relTime } from '../lib/format';
 
   let { isAdmin, radio }: { isAdmin: boolean; radio: RadioState | null } = $props();
@@ -207,6 +208,9 @@
             <span class="dot" class:ok={s.running && s.in_band} class:bad={!!s.error}></span>
             {#if !s.enabled}
               <span>rtl_433 is turned off</span>
+            {:else if unsupported(radio, s.frequency_hz)}
+              <span class="na-tag">Disabled</span>
+              <span>{formatMHz(s.frequency_hz, 3)}: {unsupported(radio, s.frequency_hz)}</span>
             {:else if s.error}
               <span class="error-text">{s.error}</span>
             {:else if !s.in_band}

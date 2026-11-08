@@ -5,13 +5,14 @@
 //! opened, or disappears (unplugged), we keep retrying and report the error
 //! in the radio state so the UI can show it.
 
+use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr};
-use std::thread::sleep;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 
-use super::{block_len, IqBlock, RadioSettings, SourceCtx};
+use super::{block_len, tuner_ranges, DeviceInfo, FreqRange, IqBlock, RadioSettings, RadioState, SourceCtx};
 
 #[repr(C)]
 struct RtlSdrDev {
@@ -28,7 +29,6 @@ extern "C" {
         product: *mut c_char,
         serial: *mut c_char,
     ) -> c_int;
-    fn rtlsdr_get_index_by_serial(serial: *const c_char) -> c_int;
     fn rtlsdr_open(dev: *mut *mut RtlSdrDev, index: u32) -> c_int;
     fn rtlsdr_close(dev: *mut RtlSdrDev) -> c_int;
     fn rtlsdr_set_center_freq(dev: *mut RtlSdrDev, freq: u32) -> c_int;
@@ -51,8 +51,11 @@ extern "C" {
 
 struct Device {
     dev: *mut RtlSdrDev,
+    id: String,
+    index: u32,
     name: String,
     tuner: String,
+    ranges: Vec<FreqRange>,
     gains_tenths: Vec<i32>,
 }
 
@@ -86,50 +89,130 @@ fn tuner_name(t: c_int) -> &'static str {
     }
 }
 
-impl Device {
-    fn open(index: u32, serial: Option<&str>) -> Result<Device> {
-        let count = unsafe { rtlsdr_get_device_count() };
-        if count == 0 {
-            bail!("no RTL-SDR device found (is it plugged in and passed through to the container?)");
-        }
-        let index = match serial {
-            Some(s) => {
-                let c = std::ffi::CString::new(s)?;
-                let i = unsafe { rtlsdr_get_index_by_serial(c.as_ptr()) };
-                if i < 0 {
-                    bail!("no RTL-SDR with serial {s:?}");
-                }
-                i as u32
-            }
-            None => index,
-        };
-        if index >= count {
-            bail!("device index {index} out of range ({count} found)");
-        }
+/// A dongle on the USB bus, identified without opening it.
+struct Usb {
+    index: u32,
+    id: String,
+    name: String,
+    product: String,
+    serial: String,
+}
 
-        let mut manufact = [0 as c_char; 256];
-        let mut product = [0 as c_char; 256];
-        let mut serial_buf = [0 as c_char; 256];
-        let name = unsafe {
-            rtlsdr_get_device_usb_strings(
-                index,
-                manufact.as_mut_ptr(),
-                product.as_mut_ptr(),
-                serial_buf.as_mut_ptr(),
-            );
-            let generic = CStr::from_ptr(rtlsdr_get_device_name(index))
-                .to_string_lossy()
-                .to_string();
-            let (m, p, s) = (cstr(&manufact), cstr(&product), cstr(&serial_buf));
-            if p.is_empty() {
+/// Every connected dongle. Ids use the serial number when it's unique (so
+/// they survive re-plugging), else the USB index: many cheap dongles all
+/// ship with serial 00000001.
+fn usb_devices() -> Vec<Usb> {
+    let count = unsafe { rtlsdr_get_device_count() };
+    let mut out: Vec<Usb> = (0..count)
+        .map(|index| {
+            let mut manufact = [0 as c_char; 256];
+            let mut product = [0 as c_char; 256];
+            let mut serial = [0 as c_char; 256];
+            let generic = unsafe {
+                rtlsdr_get_device_usb_strings(
+                    index,
+                    manufact.as_mut_ptr(),
+                    product.as_mut_ptr(),
+                    serial.as_mut_ptr(),
+                );
+                CStr::from_ptr(rtlsdr_get_device_name(index)).to_string_lossy().to_string()
+            };
+            let (m, p, s) = (cstr(&manufact), cstr(&product), cstr(&serial));
+            let name = if p.is_empty() {
                 generic
+            } else if s.is_empty() {
+                format!("{m} {p}").trim().to_string()
             } else {
                 format!("{m} {p} (SN {s})").trim().to_string()
+            };
+            Usb { index, id: String::new(), name, product: p, serial: s }
+        })
+        .collect();
+    let serials: Vec<String> = out.iter().map(|u| u.serial.clone()).collect();
+    for u in &mut out {
+        let unique = !u.serial.is_empty() && serials.iter().filter(|s| **s == u.serial).count() == 1;
+        u.id = if unique { format!("sn:{}", u.serial) } else { format!("idx:{}", u.index) };
+    }
+    out
+}
+
+fn find<'a>(id: &str, devices: &'a [Usb]) -> Result<&'a Usb> {
+    if devices.is_empty() {
+        bail!("no RTL-SDR device found (is it plugged in and passed through to the container?)");
+    }
+    if let Some(s) = id.strip_prefix("sn:") {
+        return devices
+            .iter()
+            .find(|u| u.serial == s)
+            .ok_or_else(|| anyhow!("no RTL-SDR with serial {s:?}"));
+    }
+    let index: u32 = id
+        .strip_prefix("idx:")
+        .and_then(|n| n.parse().ok())
+        .ok_or_else(|| anyhow!("bad device id {id:?}"))?;
+    devices
+        .iter()
+        .find(|u| u.index == index)
+        .ok_or_else(|| anyhow!("device index {index} out of range ({} found)", devices.len()))
+}
+
+/// Open a dongle just long enough to read its tuner type.
+fn probe_tuner(index: u32) -> Option<String> {
+    let mut dev: *mut RtlSdrDev = std::ptr::null_mut();
+    let r = unsafe { rtlsdr_open(&mut dev, index) };
+    if r < 0 || dev.is_null() {
+        return None;
+    }
+    let t = tuner_name(unsafe { rtlsdr_get_tuner_type(dev) });
+    unsafe { rtlsdr_close(dev) };
+    Some(t.to_string())
+}
+
+/// The device list for the API. Tuner types of idle dongles are found by
+/// opening them briefly, then cached.
+pub(super) fn enumerate(st: &RadioState, cache: &Mutex<HashMap<String, String>>) -> Vec<DeviceInfo> {
+    usb_devices()
+        .into_iter()
+        .map(|u| {
+            let open = st.connected && st.device_index == Some(u.index);
+            let active = open || (!st.connected && st.device_id.as_deref() == Some(u.id.as_str()));
+            let key = format!("{}|{}", u.id, u.name);
+            let mut note = None;
+            let (tuner, ranges) = if open {
+                (st.tuner.clone(), st.ranges.clone())
+            } else {
+                let cached = cache.lock().unwrap().get(&key).cloned();
+                // Leave the selected one alone while the radio thread retries it.
+                let tuner = cached.or_else(|| if active { None } else { probe_tuner(u.index) });
+                match &tuner {
+                    Some(t) => {
+                        cache.lock().unwrap().insert(key, t.clone());
+                    }
+                    None => note = Some("busy: in use by another program, or can't be opened".to_string()),
+                }
+                let ranges = tuner.as_deref().map(|t| tuner_ranges(t, &u.product)).unwrap_or_default();
+                (tuner, ranges)
+            };
+            DeviceInfo {
+                id: u.id,
+                name: u.name,
+                serial: (!u.serial.is_empty()).then_some(u.serial),
+                tuner,
+                ranges,
+                active,
+                note,
             }
-        };
+        })
+        .collect()
+}
+
+impl Device {
+    fn open(id: &str) -> Result<Device> {
+        let devices = usb_devices();
+        let u = find(id, &devices)?;
 
         let mut dev: *mut RtlSdrDev = std::ptr::null_mut();
-        let r = unsafe { rtlsdr_open(&mut dev, index) };
+        let r = unsafe { rtlsdr_open(&mut dev, u.index) };
         if r < 0 || dev.is_null() {
             bail!(
                 "rtlsdr_open failed ({r}); the device may be busy or claimed by the \
@@ -145,7 +228,10 @@ impl Device {
         }
         Ok(Device {
             dev,
-            name,
+            id: u.id.clone(),
+            index: u.index,
+            name: u.name.clone(),
+            ranges: tuner_ranges(&tuner, &u.product),
             tuner,
             gains_tenths,
         })
@@ -220,15 +306,21 @@ fn check(r: c_int, what: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn run(ctx: SourceCtx, index: u32, serial: Option<String>) {
+pub(super) fn run(mut ctx: SourceCtx) {
     let mut s = ctx.initial.clone();
+    let mut id = ctx.device.clone();
     let mut last_err: Option<String> = None;
     loop {
-        if let Some(n) = ctx.latest_cmd() {
+        let p = ctx.take();
+        if let Some(n) = p.settings {
             s = n;
             ctx.update_state(|st| st.settings = s.clone());
         }
-        let mut dev = match Device::open(index, serial.as_deref()) {
+        if let Some(d) = p.device {
+            id = d;
+            last_err = None;
+        }
+        let mut dev = match Device::open(&id) {
             Ok(d) => d,
             Err(e) => {
                 let msg = e.to_string();
@@ -238,13 +330,19 @@ pub(super) fn run(ctx: SourceCtx, index: u32, serial: Option<String>) {
                 }
                 ctx.update_state(|st| {
                     st.connected = false;
+                    st.device_id = Some(id.clone());
+                    st.device_index = None;
+                    st.device = None;
+                    st.tuner = None;
+                    st.ranges = Vec::new();
                     st.error = Some(msg);
                 });
-                sleep(Duration::from_secs(5));
+                ctx.wait(Duration::from_secs(5));
                 continue;
             }
         };
         last_err = None;
+        ctx.fit_to(&mut s, &dev.ranges);
         if let Err(e) = dev.apply(&s, None) {
             tracing::warn!("initial configuration failed: {e}");
             ctx.update_state(|st| st.error = Some(e.to_string()));
@@ -254,15 +352,20 @@ pub(super) fn run(ctx: SourceCtx, index: u32, serial: Option<String>) {
         tracing::info!(device = %dev.name, tuner = %dev.tuner, "RTL-SDR opened");
         ctx.update_state(|st| {
             st.connected = true;
+            st.device_id = Some(dev.id.clone());
+            st.device_index = Some(dev.index);
             st.device = Some(dev.name.clone());
             st.tuner = Some(dev.tuner.clone());
+            st.ranges = dev.ranges.clone();
             st.gains_db = dev.gains_tenths.iter().map(|g| *g as f32 / 10.0).collect();
             st.settings = s.clone();
         });
 
         let mut applied = s.clone();
+        let mut switching = false;
         loop {
-            if let Some(n) = ctx.latest_cmd() {
+            let p = ctx.take();
+            if let Some(n) = p.settings {
                 match dev.apply(&n, Some(&applied)) {
                     Ok(()) => {
                         applied = n.clone();
@@ -277,6 +380,12 @@ pub(super) fn run(ctx: SourceCtx, index: u32, serial: Option<String>) {
                     }
                 }
                 s = n;
+            }
+            if let Some(d) = p.device {
+                tracing::info!(from = %dev.id, to = %d, "switching RTL-SDR");
+                id = d;
+                switching = true;
+                break;
             }
             match dev.read(block_len(applied.sample_rate)) {
                 Ok(data) if !data.is_empty() => ctx.publish(IqBlock {
@@ -296,6 +405,8 @@ pub(super) fn run(ctx: SourceCtx, index: u32, serial: Option<String>) {
             }
         }
         drop(dev);
-        sleep(Duration::from_secs(2));
+        if !switching {
+            ctx.wait(Duration::from_secs(2));
+        }
     }
 }

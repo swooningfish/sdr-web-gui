@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { api, type RadioPatch, type RadioState } from '../lib/api';
+  import { api, type RadioPatch, type RadioState, type SdrDevice } from '../lib/api';
+  import { describeRanges, unsupported } from '../lib/coverage';
   import { formatMHz, formatRate, parseFrequency, PRESETS } from '../lib/format';
 
   let { radio, isAdmin }: { radio: RadioState | null; isAdmin: boolean } = $props();
@@ -8,6 +9,31 @@
   let editing = $state(false);
   let busy = $state(false);
   let err = $state<string | null>(null);
+  let devices = $state<SdrDevice[]>([]);
+
+  // Device list for the picker; refreshed when the receiver changes.
+  $effect(() => {
+    void radio?.device_id;
+    void radio?.connected;
+    if (!radio?.can_select) return;
+    api.sdrDevices().then(
+      (r) => (devices = r.devices),
+      () => {},
+    );
+  });
+
+  async function selectDevice(e: Event) {
+    const id = (e.currentTarget as HTMLSelectElement).value;
+    busy = true;
+    err = null;
+    try {
+      await api.selectSdr(id);
+    } catch (ex) {
+      err = ex instanceof Error ? ex.message : String(ex);
+    } finally {
+      busy = false;
+    }
+  }
 
   $effect(() => {
     if (radio && !editing) freqInput = (radio.settings.center_hz / 1e6).toFixed(4);
@@ -69,8 +95,24 @@
         <div class="muted small-text">
           {radio.source}{radio.tuner ? ` · ${radio.tuner}` : ''} · {formatRate(radio.settings.sample_rate)}
         </div>
+        {#if radio.ranges.length}
+          <div class="muted small-text">Covers {describeRanges(radio.ranges)}</div>
+        {/if}
       </div>
     </div>
+    {#if radio.can_select && devices.length > 1}
+      <div class="device">
+        <label for="sdr">Device</label>
+        <select id="sdr" value={radio.device_id ?? ''} disabled={!isAdmin || busy} onchange={selectDevice}>
+          {#if !devices.some((d) => d.id === radio.device_id)}
+            <option value={radio.device_id ?? ''}>{radio.device ?? radio.device_id ?? 'None'}</option>
+          {/if}
+          {#each devices as d (d.id)}
+            <option value={d.id}>{d.name}{d.tuner ? ` (${d.tuner})` : ''}</option>
+          {/each}
+        </select>
+      </div>
+    {/if}
     {#if radio.error}
       <p class="error">{radio.error}</p>
     {/if}
@@ -99,13 +141,15 @@
 
     <div class="presets">
       {#each PRESETS as p (p.label)}
+        {@const why = unsupported(radio, p.hz)}
         <button
           type="button"
           class="small preset"
           class:active={radio.settings.center_hz === p.hz}
-          disabled={locked}
+          class:na={!!why}
+          disabled={locked || !!why}
           onclick={() => apply({ center_hz: p.hz, ...(p.rate ? { sample_rate: p.rate } : {}) })}
-          title={formatMHz(p.hz)}>{p.label}</button
+          title={why ? `${formatMHz(p.hz)}: ${why}` : formatMHz(p.hz)}>{p.label}</button
         >
       {/each}
     </div>
@@ -182,6 +226,24 @@
     gap: 10px;
     align-items: center;
     margin-bottom: 12px;
+  }
+  .device {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 8px 12px;
+    align-items: center;
+    margin-bottom: 12px;
+    font-size: 14px;
+  }
+  .device label {
+    color: var(--muted);
+  }
+  .device select {
+    min-width: 0;
+  }
+  .preset.na {
+    border-style: dashed;
+    text-decoration: line-through;
   }
   .freq {
     display: flex;

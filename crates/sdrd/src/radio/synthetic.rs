@@ -6,7 +6,7 @@ use std::f64::consts::TAU;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::{to_cu8, IqBlock, SourceCtx};
+use super::{to_cu8, tuner_ranges, DeviceInfo, IqBlock, RadioSettings, SourceCtx};
 use crate::aprs::ax25;
 use crate::sstv::{encode, modes};
 
@@ -361,23 +361,73 @@ fn nexus_pulses(start: f64, id: u8, channel: u8, temp_c: f64, humidity: u8) -> V
     out
 }
 
-pub(super) fn run(ctx: SourceCtx) {
-    let mut s = ctx.initial.clone();
+/// Simulated receivers, so device selection and per-device frequency limits
+/// can be tried without hardware.
+pub(super) struct SimDevice {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub tuner: &'static str,
+}
+
+pub(super) const DEVICES: &[SimDevice] = &[
+    SimDevice { id: "sim-r820t", name: "Simulated RTL-SDR Blog V3", tuner: "R820T/R860" },
+    SimDevice { id: "sim-v4", name: "Simulated RTL-SDR Blog V4", tuner: "R828D" },
+    SimDevice { id: "sim-e4000", name: "Simulated E4000 dongle", tuner: "E4000" },
+    SimDevice { id: "sim-fc2580", name: "Simulated FC2580 dongle", tuner: "FC2580" },
+];
+
+fn sim(id: &str) -> &'static SimDevice {
+    DEVICES.iter().find(|d| d.id == id).unwrap_or(&DEVICES[0])
+}
+
+pub(super) fn devices(active: Option<&str>) -> Vec<DeviceInfo> {
+    DEVICES
+        .iter()
+        .map(|d| DeviceInfo {
+            id: d.id.into(),
+            name: d.name.into(),
+            serial: None,
+            tuner: Some(d.tuner.into()),
+            ranges: tuner_ranges(d.tuner, d.name),
+            active: active == Some(d.id),
+            note: None,
+        })
+        .collect()
+}
+
+fn select(ctx: &SourceCtx, s: &mut RadioSettings, id: &str) {
+    let d = sim(id);
+    let ranges = tuner_ranges(d.tuner, d.name);
+    ctx.fit_to(s, &ranges);
+    tracing::info!(device = d.name, "synthetic device selected");
     ctx.update_state(|st| {
         st.connected = true;
-        st.device = Some("Synthetic test source".into());
-        st.tuner = Some("simulated".into());
+        st.device_id = Some(d.id.into());
+        st.device = Some(d.name.into());
+        st.tuner = Some(d.tuner.into());
+        st.ranges = ranges;
         st.gains_db = vec![0.0, 9.0, 19.7, 29.7, 40.2, 49.6];
         st.settings = s.clone();
+        st.error = None;
     });
+}
+
+pub(super) fn run(mut ctx: SourceCtx) {
+    let mut s = ctx.initial.clone();
+    let first = ctx.device.clone();
+    select(&ctx, &mut s, &first);
     tracing::info!("synthetic source running");
 
     let mut gen = SynthGen::new();
     let mut next = Instant::now();
     loop {
-        if let Some(n) = ctx.latest_cmd() {
+        let p = ctx.take();
+        if let Some(n) = p.settings {
             s = n;
             ctx.update_state(|st| st.settings = s.clone());
+        }
+        if let Some(id) = p.device {
+            select(&ctx, &mut s, &id);
         }
         let n = (s.sample_rate as f64 * BLOCK_SECS) as usize;
         let data = gen.generate(s.center_hz, s.sample_rate, s.gain_db, n);

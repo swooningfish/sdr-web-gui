@@ -2,12 +2,14 @@
   import { onMount } from 'svelte';
   import { api, type AprsInfo, type Device, type EventRow, type RadioState, type Track } from '../lib/api';
   import { motion, stationName, stationText, symbolName } from '../lib/aprs';
+  import { unsupported } from '../lib/coverage';
   import { formatMHz, relTime } from '../lib/format';
   import { CHART_FIELDS, series } from '../lib/sensors';
   import AprsMap from './AprsMap.svelte';
   import TimeChart from './TimeChart.svelte';
 
   let { isAdmin, radio }: { isAdmin: boolean; radio: RadioState | null } = $props();
+  const vhfWhy = $derived(unsupported(radio, 145_300_000));
 
   const WINDOWS = [
     { label: '1 h', ms: 3600_000 },
@@ -167,12 +169,17 @@
       {#if info}
         <div class="channels small-text">
           {#each info.status.channels as c, i (i)}
-            <span class="pill" title={c.error ?? (c.in_band ? `${c.packets} packets since start` : 'outside the tuned band')}>
-              <span class="dot" class:ok={c.running && c.in_band} class:bad={!!c.error}></span>
-              {c.label} {formatMHz(c.frequency_hz, 3)}{c.enabled ? (c.in_band ? '' : ' · idle') : ' · off'}
+            {@const why = unsupported(radio, c.frequency_hz)}
+            <span
+              class="pill"
+              class:na={!!why}
+              title={why ?? c.error ?? (c.in_band ? `${c.packets} packets since start` : 'outside the tuned band')}
+            >
+              <span class="dot" class:ok={c.running && c.in_band && !why} class:bad={!!c.error && !why}></span>
+              {c.label} {formatMHz(c.frequency_hz, 3)}{why ? ' · not supported by this SDR' : c.enabled ? (c.in_band ? '' : ' · idle') : ' · off'}
             </span>
           {/each}
-          {#if allIdle && isAdmin && radio?.can_tune}
+          {#if allIdle && isAdmin && radio?.can_tune && !vhfWhy}
             <button type="button" class="small" onclick={tuneVhf}>Tune to VHF block</button>
           {/if}
         </div>
@@ -299,6 +306,10 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
+  }
+  .pill.na {
+    border-style: dashed;
+    color: var(--muted);
   }
   .pill {
     display: inline-flex;

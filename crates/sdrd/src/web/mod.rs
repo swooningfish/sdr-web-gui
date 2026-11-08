@@ -36,6 +36,8 @@ mod sstv_routes;
 mod users;
 mod ws;
 
+pub use radio_routes::DEVICE_KEY;
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: SqlitePool,
@@ -82,6 +84,8 @@ pub fn router(state: AppState) -> Router {
         .route("/users", get(users::list).post(users::create))
         .route("/users/{id}", axum::routing::delete(users::remove))
         .route("/radio", get(radio_routes::get_state).post(radio_routes::configure))
+        .route("/radio/devices", get(radio_routes::devices))
+        .route("/radio/device", post(radio_routes::select_device))
         .route("/devices", get(sensors::list_devices))
         .route(
             "/devices/{id}",

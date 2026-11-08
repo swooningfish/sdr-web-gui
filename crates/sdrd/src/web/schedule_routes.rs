@@ -13,6 +13,7 @@ use tower_http::services::ServeFile;
 use super::{AdminUser, ApiError, AppState, AuthUser};
 use crate::events;
 use crate::orbit::Observer;
+use crate::radio::{covers, describe_ranges};
 use crate::scheduler::{ScheduleConfig, PASSES};
 
 pub async fn get(State(state): State<AppState>, _user: AuthUser) -> Json<Value> {
@@ -95,6 +96,17 @@ pub async fn test_pass(
     }
     if state.schedule.status().active.is_some() {
         return Err(ApiError::bad_request("a pass is already in progress"));
+    }
+    let ranges = state.radio.state().ranges;
+    if let Some(sat) = state.schedule.config().satellites.first() {
+        if !covers(&ranges, sat.center_hz) {
+            return Err(ApiError::bad_request(format!(
+                "{} ({:.3} MHz) is outside this SDR's range ({})",
+                sat.name,
+                sat.center_hz as f64 / 1e6,
+                describe_ranges(&ranges)
+            )));
+        }
     }
     state.schedule.test_pass(r.seconds).await;
     tracing::info!(by = %admin.user.username, seconds = r.seconds, "test pass started");

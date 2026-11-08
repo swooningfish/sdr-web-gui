@@ -1,7 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type Demod, type SstvChannel, type SstvInfo } from '../lib/api';
+  import { api, type Demod, type RadioState, type SstvChannel, type SstvInfo } from '../lib/api';
+  import { unsupported } from '../lib/coverage';
   import { formatMHz, parseFrequency } from '../lib/format';
+
+  let { radio }: { radio: RadioState | null } = $props();
 
   let info = $state<SstvInfo | null>(null);
   let enabled = $state(true);
@@ -76,13 +79,15 @@
         for the ISS and VHF/UHF; USB for HF (e.g. 14.230 MHz with direct sampling). Up to 4 channels.
       </p>
       {#each channels as c, i (i)}
-        <div class="row">
+        {@const why = unsupported(radio, parseFrequency(c.freq) ?? 0)}
+        <div class="row" class:na-row={!!why}>
           <input type="checkbox" bind:checked={c.enabled} aria-label="Enable channel {i + 1}" />
           <input class="label" bind:value={c.label} maxlength="24" placeholder="Label" aria-label="Channel {i + 1} label" />
           <input class="freq" bind:value={c.freq} inputmode="decimal" aria-label="Channel {i + 1} frequency in MHz" />
           <select bind:value={c.demod} aria-label="Channel {i + 1} demodulation">
             {#each DEMODS as d (d.value)}<option value={d.value}>{d.label}</option>{/each}
           </select>
+          {#if why}<span class="na-tag" title={why}>Not supported by this SDR</span>{/if}
           <label class="dop" title="Satellite downlink: follow the Doppler shift during passes"
             ><input type="checkbox" bind:checked={c.doppler} /> Doppler</label
           >

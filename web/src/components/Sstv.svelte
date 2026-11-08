@@ -2,10 +2,12 @@
   import { onMount } from 'svelte';
   import { api, type Device, type EventRow, type RadioState, type SstvInfo } from '../lib/api';
   import type { SstvRows } from '../lib/stream';
+  import { unsupported } from '../lib/coverage';
   import { formatMHz, relTime } from '../lib/format';
   import { imageUrl, SSTV_MODES } from '../lib/sstv';
 
   let { isAdmin, radio }: { isAdmin: boolean; radio: RadioState | null } = $props();
+  const vhfWhy = $derived(unsupported(radio, 145_300_000));
 
   interface Live {
     channel: number;
@@ -141,13 +143,14 @@
       {#if info}
         <div class="channels small-text">
           {#each info.status.channels as c, i (i)}
-            <span class="pill" title={c.in_band ? `${c.images} images since start` : 'outside the tuned band'}>
-              <span class="dot" class:ok={c.enabled && c.in_band}></span>
+            {@const why = unsupported(radio, c.frequency_hz)}
+            <span class="pill" class:na={!!why} title={why ?? (c.in_band ? `${c.images} images since start` : 'outside the tuned band')}>
+              <span class="dot" class:ok={c.enabled && c.in_band && !why}></span>
               {c.label} {formatMHz(c.frequency_hz, 3)}
-              {c.demod?.toUpperCase()}{c.enabled ? (c.in_band ? '' : ' · idle') : ' · off'}
+              {c.demod?.toUpperCase()}{why ? ' · not supported by this SDR' : c.enabled ? (c.in_band ? '' : ' · idle') : ' · off'}
             </span>
           {/each}
-          {#if allIdle && isAdmin && radio?.can_tune}
+          {#if allIdle && isAdmin && radio?.can_tune && !vhfWhy}
             <button type="button" class="small" onclick={tuneVhf}>Tune to VHF block</button>
           {/if}
         </div>
@@ -254,6 +257,10 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
+  }
+  .pill.na {
+    border-style: dashed;
+    color: var(--muted);
   }
   .pill {
     display: inline-flex;

@@ -17,6 +17,7 @@
   import SstvSettings from './components/SstvSettings.svelte';
   import Passes from './components/Passes.svelte';
   import ScheduleSettings from './components/ScheduleSettings.svelte';
+  import SdrDevices from './components/SdrDevices.svelte';
 
   let user = $state<User | null>(null);
   let checking = $state(true);
@@ -158,15 +159,16 @@
       <Sstv bind:this={sstv} {isAdmin} {radio} />
     </div>
     <div hidden={view !== 'passes'}>
-      <Passes bind:this={passes} {isAdmin} onsettings={() => (view = 'settings')} />
+      <Passes bind:this={passes} {isAdmin} {radio} onsettings={() => (view = 'settings')} />
     </div>
     {#if view === 'settings'}
       <div class="settings-view">
         <Account {user} />
-        {#if isAdmin}<DecoderSettings />{/if}
-        {#if isAdmin}<AprsSettings />{/if}
-        {#if isAdmin}<SstvSettings />{/if}
-        {#if isAdmin}<ScheduleSettings />{/if}
+        {#if isAdmin}<SdrDevices {radio} {isAdmin} />{/if}
+        {#if isAdmin}<DecoderSettings {radio} />{/if}
+        {#if isAdmin}<AprsSettings {radio} />{/if}
+        {#if isAdmin}<SstvSettings {radio} />{/if}
+        {#if isAdmin}<ScheduleSettings {radio} />{/if}
         {#if isAdmin}<Users me={user} />{/if}
       </div>
     {/if}

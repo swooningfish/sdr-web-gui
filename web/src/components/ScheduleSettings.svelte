@@ -1,7 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type ScheduleConfig, type ScheduleInfo } from '../lib/api';
+  import { api, type RadioState, type ScheduleConfig, type ScheduleInfo } from '../lib/api';
+  import { unsupported } from '../lib/coverage';
   import { formatRate, parseFrequency, relTime } from '../lib/format';
+
+  let { radio }: { radio: RadioState | null } = $props();
+  const why = (mhzText: string | undefined) => unsupported(radio, parseFrequency(mhzText ?? '') ?? 0);
 
   const RATES = [250_000, 1_024_000, 1_536_000, 1_800_000, 1_920_000, 2_048_000, 2_400_000];
 
@@ -18,6 +22,7 @@
   let testSecs = $state(60);
   let msg = $state<{ ok: boolean; text: string } | null>(null);
   let busy = $state(false);
+  const testWhy = $derived(info?.config.satellites[0] ? unsupported(radio, info.config.satellites[0].center_hz) : null);
 
   const mhz = (hz: number) => (hz / 1e6).toFixed(3);
 
@@ -156,7 +161,8 @@
         its downlink is recorded. Channels marked "Doppler" in the APRS and SSTV settings follow the Doppler shift.
       </p>
       {#each cfg.satellites as s, i (i)}
-        <fieldset>
+        {@const na = why(satFreq[i])}
+        <fieldset class:na-row={!!na}>
           <div class="row">
             <label class="check"><input type="checkbox" bind:checked={s.enabled} /> On</label>
             <input class="grow" bind:value={s.name} maxlength="32" aria-label="Satellite name" />
@@ -174,6 +180,9 @@
               {#each RATES as r (r)}<option value={r}>{formatRate(r)}</option>{/each}
             </select>
           </div>
+          {#if na}
+            <p class="small-text hint"><span class="na-tag">Not supported by this SDR</span> Passes are skipped. {na}</p>
+          {/if}
           <div class="row">
             <label class="check"><input type="checkbox" bind:checked={s.record} /> Record</label>
             <label><input class="f" bind:value={satRec[i]} inputmode="decimal" disabled={!s.record} /> MHz FM</label>
@@ -188,10 +197,12 @@
       >
       <p class="muted small-text hint">Holds while an SSTV image is being received (up to 5 minutes).</p>
       {#each cfg.profiles as p, i (i)}
-        <div class="row">
+        {@const na = why(profFreq[i])}
+        <div class="row" class:na-row={!!na}>
           <input class="grow" bind:value={p.name} maxlength="32" aria-label="Profile name" />
           <input class="f" bind:value={profFreq[i]} inputmode="decimal" aria-label="{p.name} centre frequency in MHz" />
           <span class="muted small-text">MHz</span>
+          {#if na}<span class="na-tag" title="{na}. Rotation skips this profile.">Not supported</span>{/if}
           <select bind:value={p.sample_rate} aria-label="{p.name} sample rate">
             {#each RATES as r (r)}<option value={r}>{formatRate(r)}</option>{/each}
           </select>
@@ -236,10 +247,15 @@
       <span class="small-text">Run a pretend pass now for</span>
       <input class="n" type="number" bind:value={testSecs} min="10" max="900" aria-label="Test pass length in seconds" />
       <span class="small-text">s</span>
-      <button type="button" class="small" disabled={busy} onclick={() => act(() => api.testPass(testSecs), 'Test pass started')}
-        >Start</button
+      <button
+        type="button"
+        class="small"
+        disabled={busy || !!testWhy}
+        title={testWhy ?? ''}
+        onclick={() => act(() => api.testPass(testSecs), 'Test pass started')}>Start</button
       >
     </div>
+    {#if testWhy}<p class="small-text hint"><span class="na-tag">Disabled</span> {info.config.satellites[0].name}: {testWhy}</p>{/if}
     <p class="muted small-text hint">Tunes and records exactly like a real pass (without Doppler), then logs it.</p>
 
     {#if msg}<p class:error={!msg.ok} class:success={msg.ok}>{msg.text}</p>{/if}

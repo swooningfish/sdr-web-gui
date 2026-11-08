@@ -24,7 +24,7 @@ use crate::db;
 use crate::decoders::sstv::SstvHandle;
 use crate::decoders::DecodedEvent;
 use crate::orbit::{self, doppler_hz, Look, Observer, Pass, Satellite};
-use crate::radio::{RadioHandle, RadioPatch, RadioSettings, MAX_FREQ_HZ, MIN_FREQ_HZ, SAMPLE_RATES};
+use crate::radio::{covers, RadioHandle, RadioPatch, RadioSettings, MAX_FREQ_HZ, MIN_FREQ_HZ, SAMPLE_RATES};
 use crate::recorder::{RecordDone, RecordSpec, RecorderHandle};
 
 pub const PASSES: &str = "passes";
@@ -630,6 +630,8 @@ impl Run {
             self.predict();
         }
         let cfg = self.cfg_rx.borrow().clone();
+        // Satellites and profiles the selected SDR can't receive are skipped.
+        let ranges = self.radio.state().ranges;
 
         if self.active.as_ref().is_some_and(|a| now > a.pass.los_ms + 5_000) {
             self.end().await;
@@ -639,7 +641,10 @@ impl Run {
             let next = self.passes.iter().find(|(id, p)| {
                 now >= p.aos_ms - lead
                     && now < p.los_ms
-                    && cfg.satellites.iter().any(|s| s.norad_id == *id && s.enabled)
+                    && cfg
+                        .satellites
+                        .iter()
+                        .any(|s| s.norad_id == *id && s.enabled && covers(&ranges, s.center_hz))
             });
             if let Some((id, p)) = next.cloned() {
                 let sat = cfg.satellites.iter().find(|s| s.norad_id == id).cloned().unwrap();
@@ -681,11 +686,19 @@ impl Run {
             }
             if now >= self.rot_until && !holding {
                 self.hold_since = None;
-                let idx = self.rot_idx.map_or(0, |i| (i + 1) % cfg.profiles.len());
-                let p = cfg.profiles[idx].clone();
-                self.rot_idx = Some(idx);
-                self.rot_until = now + p.dwell_s as i64 * 1000;
-                self.tune(p.center_hz, p.sample_rate, &format!("rotation → {}", p.name));
+                let n = cfg.profiles.len();
+                let first = self.rot_idx.map_or(0, |i| i + 1);
+                let next = (0..n).map(|k| (first + k) % n).find(|&i| covers(&ranges, cfg.profiles[i].center_hz));
+                match next {
+                    Some(idx) => {
+                        let p = cfg.profiles[idx].clone();
+                        self.rot_idx = Some(idx);
+                        self.rot_until = now + p.dwell_s as i64 * 1000;
+                        self.tune(p.center_hz, p.sample_rate, &format!("rotation → {}", p.name));
+                    }
+                    // Nothing this device can receive; look again shortly.
+                    None => self.rot_until = now + 10_000,
+                }
             }
         }
 

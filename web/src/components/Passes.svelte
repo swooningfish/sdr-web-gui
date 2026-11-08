@@ -1,12 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type Device, type EventRow, type Pass, type ScheduleInfo } from '../lib/api';
+  import { api, type Device, type EventRow, type Pass, type RadioState, type ScheduleInfo } from '../lib/api';
+  import { unsupported } from '../lib/coverage';
   import { formatMHz, relTime } from '../lib/format';
   import { compass, countdown, duration } from '../lib/passes';
   import { imageUrl } from '../lib/sstv';
   import SkyPlot from './SkyPlot.svelte';
 
-  let { isAdmin, onsettings }: { isAdmin: boolean; onsettings: () => void } = $props();
+  let { isAdmin, radio, onsettings }: { isAdmin: boolean; radio: RadioState | null; onsettings: () => void } =
+    $props();
 
   let info = $state<ScheduleInfo | null>(null);
   let recordings = $state<EventRow[]>([]);
@@ -16,6 +18,15 @@
   let now = $state(Date.now());
 
   const st = $derived(info?.status ?? null);
+  /** Satellite name → why the selected SDR can't receive it. */
+  const skipped = $derived.by(() => {
+    const m = new Map<string, string>();
+    for (const s of info?.config.satellites ?? []) {
+      const why = s.enabled ? unsupported(radio, s.center_hz) : null;
+      if (why) m.set(s.name, why);
+    }
+    return m;
+  });
   const active = $derived(st?.active ?? null);
   const shown = $derived.by((): Pass | null => {
     if (!st) return null;
@@ -92,6 +103,9 @@
       {/if}
     </div>
     {#if err}<p class="error">{err}</p>{/if}
+    {#each [...skipped] as [name, why] (name)}
+      <p class="callout small-text"><span class="na-tag">Disabled</span> {name} passes are skipped. {why}.</p>
+    {/each}
     {#if st && !st.location}
       <p class="callout small-text">
         Set the station's location to predict passes.
@@ -166,6 +180,8 @@
           <tbody>
             {#each st.passes as p (p.satellite + p.aos_ms)}
               <tr
+                class:na-row={skipped.has(p.satellite)}
+                title={skipped.get(p.satellite) ?? ''}
                 class:sel={selected === p.aos_ms}
                 class:live={active && !active.test && active.aos_ms === p.aos_ms}
                 onclick={() => (selected = selected === p.aos_ms ? null : p.aos_ms)}

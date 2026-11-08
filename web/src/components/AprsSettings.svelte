@@ -1,7 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type AprsChannel, type AprsInfo } from '../lib/api';
+  import { api, type AprsChannel, type AprsInfo, type RadioState } from '../lib/api';
+  import { unsupported } from '../lib/coverage';
   import { formatMHz, parseFrequency } from '../lib/format';
+
+  let { radio }: { radio: RadioState | null } = $props();
 
   let info = $state<AprsInfo | null>(null);
   let enabled = $state(true);
@@ -72,11 +75,13 @@
         145.825 MHz together). Up to 4 channels.
       </p>
       {#each channels as c, i (i)}
-        <div class="row">
+        {@const why = unsupported(radio, parseFrequency(c.freq) ?? 0)}
+        <div class="row" class:na-row={!!why}>
           <input type="checkbox" bind:checked={c.enabled} aria-label="Enable channel {i + 1}" />
           <input class="label" bind:value={c.label} maxlength="24" placeholder="Label" aria-label="Channel {i + 1} label" />
           <input class="freq" bind:value={c.freq} inputmode="decimal" aria-label="Channel {i + 1} frequency in MHz" />
           <span class="muted small-text">MHz</span>
+          {#if why}<span class="na-tag" title={why}>Not supported by this SDR</span>{/if}
           <label class="dop" title="Satellite downlink: follow the Doppler shift during passes"
             ><input type="checkbox" bind:checked={c.doppler} /> Doppler</label
           >
@@ -98,10 +103,11 @@
 
     <h3>Status</h3>
     {#each info.status.channels as c, i (i)}
-      <p class="small-text status">
+      {@const why = unsupported(radio, c.frequency_hz)}
+      <p class="small-text status" class:na-row={!!why}>
         <span class="dot" class:ok={c.running && c.in_band} class:bad={!!c.error}></span>
         {c.label} ({formatMHz(c.frequency_hz, 3)}):
-        {#if !c.enabled}off{:else if c.error}{c.error}{:else if !c.in_band}idle, outside the tuned band{:else if c.running}decoding,
+        {#if !c.enabled}off{:else if why}{why}{:else if c.error}{c.error}{:else if !c.in_band}idle, outside the tuned band{:else if c.running}decoding,
           {c.packets} packets{:else}starting{/if}
       </p>
     {/each}

@@ -68,7 +68,8 @@ async fn serve() -> Result<()> {
     auth::bootstrap_admin(&db, &cfg.admin_user, cfg.admin_password.as_deref()).await?;
 
     let (iq_tx, _) = broadcast::channel(16);
-    let radio = radio::spawn(&cfg, iq_tx.clone())?;
+    let saved_device = db::get_setting::<String>(&db, web::DEVICE_KEY).await.ok().flatten();
+    let radio = radio::spawn(&cfg, iq_tx.clone(), saved_device)?;
     let (waterfall_tx, _) = broadcast::channel(8);
     dsp::waterfall::spawn(iq_tx.subscribe(), waterfall_tx.clone(), cfg.fft_size, cfg.fps);
 
