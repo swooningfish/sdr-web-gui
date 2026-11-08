@@ -1,6 +1,7 @@
-# Pass USB RTL-SDR dongles into the dev container. Layer it over the dev file:
+# Pass USB RTL-SDR dongles into the dev container. Layer it over the dev file,
+# either via COMPOSE_FILE in .env (see .env.dev.example) or by hand:
 #
-#   docker compose -f docker-compose.dev.yml -f docker-compose.usb.yml up --build
+#   docker compose -f docker-compose.dev.yml -f docker-compose.usb.yml up -d --build
 #
 # Then pick the dongle in Settings → Receiver → SDR devices → Source: USB.
 #

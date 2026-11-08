@@ -1,12 +1,15 @@
 # Local development without a dongle: synthetic test signals over plain HTTP,
 # plus a throwaway MQTT broker.
 #
-#   docker compose -f docker-compose.dev.yml up --build
+#   cp .env.dev.example .env    # once: makes plain `docker compose` use this file
+#   docker compose up -d --build
 #   open http://localhost:8080  (admin / devpassword123)
 #
-#   LAN access (e.g. http://192.168.0.231:8080) - the dev password is public, so home LAN only:
-#   SDRD_DEV_BIND=0.0.0.0 docker compose -f docker-compose.dev.yml up --build
-#   docker compose -f docker-compose.dev.yml exec mqtt mosquitto_sub -v -t 'sdrd/#' -t 'homeassistant/#'
+# LAN access (e.g. http://192.168.0.231:8080): set SDRD_DEV_BIND=0.0.0.0 in .env.
+# The dev password is public, so home LAN only.
+#
+# Without the .env shortcut, name the file each time:
+#   docker compose -f docker-compose.dev.yml up -d --build
 
 services:
   sdrd:
@@ -22,7 +25,7 @@ services:
       SDRD_MQTT_HOST: mqtt
       RUST_LOG: sdrd=debug,tower_http=info
     ports:
-      # Localhost only by default. For LAN access: SDRD_DEV_BIND=0.0.0.0 docker compose ...
+      # Localhost only by default. For LAN access set SDRD_DEV_BIND=0.0.0.0 in .env.
       - "${SDRD_DEV_BIND:-127.0.0.1}:8080:8080"
     volumes:
       - sdrd-dev-data:/data

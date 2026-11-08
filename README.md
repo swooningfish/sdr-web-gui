@@ -6,6 +6,33 @@ monitoring: TPMS/ISM sensors (rtl_433), APRS, and SSTV, including automatic ISS/
 
 See [SPEC.md](SPEC.md) for the full design and roadmap.
 
+## TL;DR
+
+**Try it on your computer** (no dongle needed, simulated radio):
+
+```bash
+cp .env.dev.example .env        # once
+docker compose up -d --build    # first start, or after changing code
+```
+
+Open <http://localhost:8080> and sign in as `admin` / `devpassword123`.
+
+After that, `docker compose up -d` brings it back up (after a reboot or `docker compose down`),
+`docker compose logs -f sdrd` shows the logs, and `docker compose down` stops it.
+To use a real USB dongle or open it from other machines, edit `.env` (see
+[Development](#development-no-dongle-needed)).
+
+**Run it on a Raspberry Pi 5** with a dongle and HTTPS:
+
+```bash
+git clone https://github.com/swooningfish/sdr-web-gui && cd sdr-web-gui
+sudo ./scripts/pi-setup.sh
+cp .env.example .env && nano .env   # set SDR_DOMAIN and SDRD_ADMIN_PASSWORD
+docker compose up -d --build
+```
+
+Details in [Deploying on a Raspberry Pi 5](#deploying-on-a-raspberry-pi-5).
+
 ## Status: milestone 6 (live audio)
 
 - [x] Rust core (`sdrd`) owns the dongle via librtlsdr (rtl-sdr-blog fork: V4, V3, generic)
@@ -38,15 +65,59 @@ See [SPEC.md](SPEC.md) for the full design and roadmap.
 - For hot-reload UI work only: Node.js 22+.
 - For deployment: an RTL-SDR dongle (RTL-SDR Blog V4/V3 or generic) on a Raspberry Pi 5.
 
-## Quick start: development (no dongle needed)
+## Development (no dongle needed)
+
+The dev stack is `docker-compose.dev.yml`: sdrd over plain HTTP with a simulated receiver,
+plus a throwaway MQTT broker. Copy the dev settings file once so that plain `docker compose`
+commands use it, without typing `-f docker-compose.dev.yml` every time:
 
 ```bash
-docker compose -f docker-compose.dev.yml up --build
+cp .env.dev.example .env
+docker compose up -d --build
 ```
 
-Open <http://localhost:8080> and sign in as `admin` / `devpassword123`. The synthetic source
-puts test signals on 144.800, 145.800, 145.825, 433.920 and 437.550 MHz (Doppler-drifting
-carrier). Use the presets to see them. The test signals are real, decodable transmissions:
+Open <http://localhost:8080> and sign in as `admin` / `devpassword123`.
+
+`.env` is not committed, so it's yours to change. The two settings you might change:
+
+| Setting in `.env` | What it does |
+|---|---|
+| `COMPOSE_FILE=docker-compose.dev.yml` | Simulated receiver only (the default) |
+| `COMPOSE_FILE=docker-compose.dev.yml:docker-compose.usb.yml` | Also pass USB dongles into the container (see [Using a real dongle](#using-a-real-dongle-in-development)) |
+| `SDRD_DEV_BIND=127.0.0.1` | Only this computer can open the page |
+| `SDRD_DEV_BIND=0.0.0.0` | Other machines on your LAN can too, e.g. `http://192.168.0.231:8080`. The dev admin password is public, so anyone on the network can log in and control the dongle: fine on a home LAN, not on a shared one |
+
+After editing `.env`, run `docker compose up -d` to apply it.
+
+> Prefer not to use `.env`? Name the files each time instead:
+> `docker compose -f docker-compose.dev.yml -f docker-compose.usb.yml up -d --build`.
+> The `SDRD_DEV_BIND=0.0.0.0 docker compose ...` prefix form only works in bash/zsh, not
+> PowerShell; putting it in `.env` works in every shell.
+
+### Everyday commands
+
+Run these from the repository folder. With the `.env` above they work the same in dev and
+on the Pi.
+
+| To | Run |
+|---|---|
+| Start, or bring it back up after a reboot / `down` | `docker compose up -d` |
+| Start after changing code or `git pull` (rebuilds the image) | `docker compose up -d --build` |
+| See whether it's running | `docker compose ps` |
+| Follow the logs (Ctrl+C stops following, not the app) | `docker compose logs -f sdrd` |
+| Restart sdrd only | `docker compose restart sdrd` |
+| Stop | `docker compose down` |
+| Stop and **delete all data** (users, events, images, recordings). Dev resets only, never on the Pi | `docker compose down -v` |
+
+`-d` runs it in the background. Leave it off to watch the logs in the terminal; Ctrl+C then
+stops the containers. `--build` is only needed when code has changed; without it startup
+takes seconds.
+
+### Test signals
+
+The simulated receiver puts test signals on 144.800, 145.800, 145.825, 433.920 and
+437.550 MHz (Doppler-drifting carrier). Use the presets to see them. They are real,
+decodable transmissions:
 
 - **144.800 / 145.825 (VHF block, the default):** APRS packets that Direwolf decodes: a car
   driving a loop around central London, a weather station, a status beacon, and an "ISS" on
@@ -56,20 +127,10 @@ carrier). Use the presets to see them. The test signals are real, decodable tran
 - **433.92 (ISM preset, or *Tune* on the Sensors page):** two Nexus temperature/humidity
   sensors that rtl_433 decodes within ~15 s.
 
-By default the dev stack only listens on localhost. To open it from other machines on your LAN
-(e.g. `http://192.168.0.231:8080`), set `SDRD_DEV_BIND`:
+To watch what sdrd publishes to the dev MQTT broker:
 
 ```bash
-SDRD_DEV_BIND=0.0.0.0 docker compose -f docker-compose.dev.yml up --build
-```
-
-The dev admin password is the one above, so anyone on the network can log in and control the
-dongle. Fine on a home LAN, not on a shared one.
-
-The dev stack also runs a Mosquitto broker. Watch what sdrd publishes with:
-
-```bash
-docker compose -f docker-compose.dev.yml exec mqtt mosquitto_sub -v -t 'sdrd/#' -t 'homeassistant/#'
+docker compose exec mqtt mosquitto_sub -v -t 'sdrd/#' -t 'homeassistant/#'
 ```
 
 ### Using a real dongle in development
@@ -78,14 +139,16 @@ The receiver is picked in the UI: **Settings → Receiver → SDR devices → So
 between **USB**, **Network (rtl_tcp)** and **Simulated** without a restart, and the choice is
 remembered. `SDRD_SOURCE` only sets what's used the first time.
 
-**USB.** The dongle has to be passed into the container, so layer on `docker-compose.usb.yml`:
+**USB.** The dongle has to be passed into the container, so add `docker-compose.usb.yml`.
+In `.env`, comment out the first `COMPOSE_FILE` line and uncomment the second:
 
-```bash
-docker compose -f docker-compose.dev.yml -f docker-compose.usb.yml up --build
+```
+COMPOSE_FILE=docker-compose.dev.yml:docker-compose.usb.yml
 ```
 
-On Linux that's all (blacklist `dvb_usb_rtl28xxu` first, see `scripts/pi-setup.sh`). Docker
-Desktop on **Windows** can't see USB devices until they're attached to WSL with
+then `docker compose up -d`. On Linux that's all (blacklist `dvb_usb_rtl28xxu` first, see
+`scripts/pi-setup.sh`). Docker Desktop on **Windows** can't see USB devices until they're
+attached to WSL with
 [usbipd-win](https://github.com/dorssel/usbipd-win). In an admin PowerShell, once:
 
 ```powershell
@@ -109,13 +172,28 @@ the rtl-sdr tools; Windows builds are on the RTL-SDR Blog releases page). Then c
 running Docker, or the machine's IP address. It's unencrypted and unauthenticated, so keep it
 on your LAN.
 
-For UI work with hot reload, run sdrd as above, then:
+### UI work with hot reload
+
+Keep the dev stack running, then:
 
 ```bash
 cd web && npm install && npm run dev
 ```
 
-Vite proxies `/api` to `localhost:8080`.
+and open the address Vite prints. Vite proxies `/api` to `localhost:8080`, so UI changes
+show up instantly without rebuilding the image.
+
+### Tests
+
+With the dev stack running:
+
+- `./scripts/smoke-test.sh` checks the API: health, login, auth and CSRF rules.
+- `./scripts/ui-test.sh` runs Playwright (in its official Docker image, nothing to install) at
+  1920, 1366, 820 and 375 px wide. It checks that no page scrolls sideways, that the spectrum
+  toolbar doesn't move on hover, and checks the settings tabs, the profile page and
+  remembered waterfall colours.
+
+Both are bash scripts: on Windows run them from Git Bash or WSL.
 
 ## Deploying on a Raspberry Pi 5
 
@@ -127,15 +205,25 @@ docker compose up -d --build         # first build takes a while on the Pi
 docker compose logs -f sdrd
 ```
 
-Caddy obtains a Let's Encrypt certificate for `SDR_DOMAIN`. Point DNS at your public IP and
-forward ports 80 and 443 to the Pi. sdrd itself is only reachable through Caddy.
+Use `.env.example` here, not `.env.dev.example`: without `COMPOSE_FILE`, `docker compose`
+uses the production `docker-compose.yml`. Caddy obtains a Let's Encrypt certificate for
+`SDR_DOMAIN`. Point DNS at your public IP and forward ports 80 and 443 to the Pi. sdrd itself
+is only reachable through Caddy. The containers restart on their own after a reboot.
+
+To update later:
+
+```bash
+git pull && docker compose up -d --build
+```
+
+The [everyday commands](#everyday-commands) work the same on the Pi.
 
 ## Sensors (rtl_433, TPMS)
 
 rtl_433 runs inside the container and is fed from sdrd's own IQ stream: sdrd cuts ~256 kHz
 around the rtl_433 frequency (433.92 MHz by default) out of whatever the dongle is tuned to.
 So it decodes whenever 433.92 MHz is inside the tuned band. With one dongle that means the ISM
-preset; automatic time-sharing with the VHF block comes with the scheduler (M5).
+preset, or the ISM step of **rotation** (see [Passes and scheduling](#passes-and-scheduling)).
 
 - **Sensors** tab: every device heard, latest readings, signal, a live feed, and per-device
   history with charts (1 h / 24 h / 7 days). Repeats of the same transmission are merged.
@@ -207,19 +295,12 @@ SSTV), Passes (location, satellites, rotation, TLEs, test pass), Integrations (M
 Assistant), Users and System (read-only server settings). Everyone can open their
 **profile** from their username in the header to change their password or sign out.
 
-## Browser tests
-
-`scripts/ui-test.sh` runs Playwright (in its official Docker image) against the dev stack at
-1920, 1366, 820 and 375 px wide. It checks that no page scrolls sideways, that the spectrum
-toolbar doesn't move on hover, and checks the settings tabs, the profile page and remembered
-waterfall colours.
-
 ## Passes and scheduling
 
 Set the station location under **Settings → Passes**: search for a town or postcode, type a
 Maidenhead locator (e.g. `IO91wm`), enter coordinates, or press *Use this device's location*
 (browsers only allow that over HTTPS or on `localhost`, not on a plain-HTTP LAN address).
-A pass in progress (real or test) can be stopped from the Passes tab or Settings. sdrd then predicts passes for 48 hours ahead with SGP4. Orbit data (TLE) comes
+sdrd then predicts passes for 48 hours ahead with SGP4. Orbit data (TLE) comes
 from CelesTrak and is refreshed every 12 h; it can also be pasted in by hand for offline
 setups. Predictions were cross-checked against skyfield: AOS/LOS within a second, look
 angles and range-rate matching to 0.001.
@@ -244,7 +325,8 @@ For ARISS events on 437.550 MHz, change the ISS tune and recording frequencies t
 
 **Rotation** (off by default) cycles through profiles when no pass is on, for example VHF
 block 60 s then ISM 30 s. It never hops away while an SSTV image is coming in (up to 5 min).
-Admins can run a **test pass** to check tuning and recording end to end.
+Admins can run a **test pass** to check tuning and recording end to end. A pass in progress
+(real or test) can be stopped from the Passes tab or Settings.
 
 ## MQTT / Home Assistant
 
