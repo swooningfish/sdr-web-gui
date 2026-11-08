@@ -70,7 +70,8 @@ async fn serve() -> Result<()> {
 
     let (iq_tx, _) = broadcast::channel(16);
     let saved_device = db::get_setting::<String>(&db, web::DEVICE_KEY).await.ok().flatten();
-    let radio = radio::spawn(&cfg, iq_tx.clone(), saved_device)?;
+    let saved_tcp = db::get_setting::<Vec<String>>(&db, web::TCP_SERVERS_KEY).await.ok().flatten();
+    let radio = radio::spawn(&cfg, iq_tx.clone(), saved_device, saved_tcp.unwrap_or_default())?;
     let (waterfall_tx, _) = broadcast::channel(8);
     dsp::waterfall::spawn(iq_tx.subscribe(), waterfall_tx.clone(), cfg.fft_size, cfg.fps);
 

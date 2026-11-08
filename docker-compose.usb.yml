@@ -1,0 +1,34 @@
+# Pass USB RTL-SDR dongles into the dev container. Layer it over the dev file:
+#
+#   docker compose -f docker-compose.dev.yml -f docker-compose.usb.yml up --build
+#
+# Then pick the dongle in Settings → Receiver → SDR devices → Source: USB.
+#
+# Linux: works as is (blacklist dvb_usb_rtl28xxu first, see scripts/pi-setup.sh).
+#
+# Windows (Docker Desktop / WSL2): Windows keeps USB devices to itself, so
+# attach the dongle to WSL first with usbipd-win (admin PowerShell, once):
+#   winget install usbipd
+#   usbipd list                          # find the BUSID of "Bulk-In, Interface" 0bda:2838
+#   usbipd bind --busid <BUSID>
+# and after every replug or reboot (no admin needed):
+#   usbipd attach --wsl --busid <BUSID>
+# Start the containers after attaching: /dev/bus/usb must exist in the WSL VM.
+#
+# macOS: Docker Desktop can't pass USB through. Run `rtl_tcp -a 0.0.0.0` on
+# the Mac and use Source: Network with host.docker.internal:1234 instead.
+#
+# The bind mount (rather than `devices:`) lets the dongle be replugged without
+# restarting the container; 189 is the USB character device major number.
+
+services:
+  sdrd:
+    # USB device nodes are root-only (0600) unless a udev rule widens them, as
+    # scripts/pi-setup.sh does on the Pi. Docker Desktop's VM has no udev rules
+    # and recreates the nodes on every attach, so run as root here. Dev only:
+    # the production compose file runs as the unprivileged sdrd user.
+    user: "0:0"
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb
+    device_cgroup_rules:
+      - "c 189:* rmw"

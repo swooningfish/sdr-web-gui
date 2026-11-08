@@ -72,6 +72,43 @@ The dev stack also runs a Mosquitto broker. Watch what sdrd publishes with:
 docker compose -f docker-compose.dev.yml exec mqtt mosquitto_sub -v -t 'sdrd/#' -t 'homeassistant/#'
 ```
 
+### Using a real dongle in development
+
+The receiver is picked in the UI: **Settings → Receiver → SDR devices → Source** switches
+between **USB**, **Network (rtl_tcp)** and **Simulated** without a restart, and the choice is
+remembered. `SDRD_SOURCE` only sets what's used the first time.
+
+**USB.** The dongle has to be passed into the container, so layer on `docker-compose.usb.yml`:
+
+```bash
+docker compose -f docker-compose.dev.yml -f docker-compose.usb.yml up --build
+```
+
+On Linux that's all (blacklist `dvb_usb_rtl28xxu` first, see `scripts/pi-setup.sh`). Docker
+Desktop on **Windows** can't see USB devices until they're attached to WSL with
+[usbipd-win](https://github.com/dorssel/usbipd-win). In an admin PowerShell, once:
+
+```powershell
+winget install usbipd
+usbipd list                   # note the BUSID of the 0bda:2838 device
+usbipd bind --busid <BUSID>
+```
+
+then after each replug or reboot, before starting the containers:
+
+```powershell
+usbipd attach --wsl --busid <BUSID>
+```
+
+While attached, Windows programs (SDR#, SDR++) can't use the dongle; `usbipd detach --busid <BUSID>`
+gives it back. Docker Desktop on macOS can't pass USB through at all: use rtl_tcp.
+
+**rtl_tcp (any OS).** Run `rtl_tcp -a 0.0.0.0` on the machine with the dongle (it comes with
+the rtl-sdr tools; Windows builds are on the RTL-SDR Blog releases page). Then choose
+**Source: Network (rtl_tcp)** and connect to `host.docker.internal:1234` for the computer
+running Docker, or the machine's IP address. It's unencrypted and unauthenticated, so keep it
+on your LAN.
+
 For UI work with hot reload, run sdrd as above, then:
 
 ```bash
@@ -237,7 +274,8 @@ All settings are `SDRD_*` environment variables. See [.env.example](.env.example
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SDRD_SOURCE` | `rtlsdr` | `rtlsdr`, `synthetic`, or `replay` (with `SDRD_REPLAY_FILE=/data/x.cu8`) |
+| `SDRD_SOURCE` | `rtlsdr` | Receiver to start with if none was chosen in the UI: `rtlsdr`, `rtl_tcp`, `synthetic`, or `replay` (with `SDRD_REPLAY_FILE=/data/x.cu8`) |
+| `SDRD_RTLTCP` | – | `host:port` of an rtl_tcp server to list under Source: Network (required for `SDRD_SOURCE=rtl_tcp`) |
 | `SDRD_CENTER_HZ` | `145300000` | Startup centre frequency |
 | `SDRD_SAMPLE_RATE` | `2048000` | Startup sample rate |
 | `SDRD_GAIN` | `auto` | `auto` or dB |

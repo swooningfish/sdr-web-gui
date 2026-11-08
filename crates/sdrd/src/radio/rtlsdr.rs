@@ -12,7 +12,11 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 
-use super::{block_len, tuner_ranges, DeviceInfo, FreqRange, IqBlock, RadioSettings, RadioState, SourceCtx};
+use super::{
+    block_len, kind_of, tuner_name, tuner_ranges, DeviceInfo, FreqRange, IqBlock, RadioSettings, RadioState,
+    SourceCtx,
+};
+use crate::config::SourceKind;
 
 #[repr(C)]
 struct RtlSdrDev {
@@ -75,18 +79,6 @@ fn cstr(buf: &[c_char]) -> String {
         .to_string_lossy()
         .trim()
         .to_string()
-}
-
-fn tuner_name(t: c_int) -> &'static str {
-    match t {
-        1 => "E4000",
-        2 => "FC0012",
-        3 => "FC0013",
-        4 => "FC2580",
-        5 => "R820T/R860",
-        6 => "R828D",
-        _ => "unknown",
-    }
 }
 
 /// A dongle on the USB bus, identified without opening it.
@@ -163,7 +155,7 @@ fn probe_tuner(index: u32) -> Option<String> {
     if r < 0 || dev.is_null() {
         return None;
     }
-    let t = tuner_name(unsafe { rtlsdr_get_tuner_type(dev) });
+    let t = tuner_name(unsafe { rtlsdr_get_tuner_type(dev) } as u32);
     unsafe { rtlsdr_close(dev) };
     Some(t.to_string())
 }
@@ -195,6 +187,7 @@ pub(super) fn enumerate(st: &RadioState, cache: &Mutex<HashMap<String, String>>)
             };
             DeviceInfo {
                 id: u.id,
+                source: SourceKind::Rtlsdr.name(),
                 name: u.name,
                 serial: (!u.serial.is_empty()).then_some(u.serial),
                 tuner,
@@ -220,7 +213,7 @@ impl Device {
             );
         }
 
-        let tuner = tuner_name(unsafe { rtlsdr_get_tuner_type(dev) }).to_string();
+        let tuner = tuner_name(unsafe { rtlsdr_get_tuner_type(dev) } as u32).to_string();
         let n = unsafe { rtlsdr_get_tuner_gains(dev, std::ptr::null_mut()) };
         let mut gains_tenths = vec![0 as c_int; n.max(0) as usize];
         if n > 0 {
@@ -306,8 +299,9 @@ fn check(r: c_int, what: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn run(mut ctx: SourceCtx) {
-    let mut s = ctx.initial.clone();
+/// Runs until a device of another kind is selected; returns its id.
+pub(super) fn run(ctx: &mut SourceCtx) -> String {
+    let mut s = ctx.current();
     let mut id = ctx.device.clone();
     let mut last_err: Option<String> = None;
     loop {
@@ -317,6 +311,9 @@ pub(super) fn run(mut ctx: SourceCtx) {
             ctx.update_state(|st| st.settings = s.clone());
         }
         if let Some(d) = p.device {
+            if kind_of(&d) != Some(SourceKind::Rtlsdr) {
+                return d;
+            }
             id = d;
             last_err = None;
         }
@@ -382,6 +379,10 @@ pub(super) fn run(mut ctx: SourceCtx) {
                 s = n;
             }
             if let Some(d) = p.device {
+                if kind_of(&d) != Some(SourceKind::Rtlsdr) {
+                    tracing::info!(from = %dev.id, to = %d, "closing RTL-SDR");
+                    return d;
+                }
                 tracing::info!(from = %dev.id, to = %d, "switching RTL-SDR");
                 id = d;
                 switching = true;

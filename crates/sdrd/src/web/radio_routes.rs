@@ -5,10 +5,12 @@ use serde_json::{json, Value};
 
 use super::{AdminUser, ApiError, AppState, AuthUser};
 use crate::db;
-use crate::radio::{covers, DeviceInfo, RadioPatch, RadioSettings, RadioState};
+use crate::radio::{covers, parse_tcp_addr, DeviceInfo, RadioPatch, RadioSettings, RadioState};
 
 /// Settings key for the receiver chosen in the UI.
 pub const DEVICE_KEY: &str = "radio.device";
+/// Settings key for the rtl_tcp servers added in the UI (`host:port` list).
+pub const TCP_SERVERS_KEY: &str = "radio.rtl_tcp";
 
 pub async fn get_state(State(state): State<AppState>, _user: AuthUser) -> Json<RadioState> {
     Json(state.radio.state())
@@ -86,6 +88,8 @@ pub async fn devices(State(state): State<AppState>, _user: AuthUser) -> Json<Val
         .collect();
     Json(json!({
         "can_select": state.radio.state().can_select,
+        "usb_supported": cfg!(feature = "rtlsdr"),
+        "replay_available": state.cfg.replay_file.is_some(),
         "devices": devices,
         "features": features,
     }))
@@ -104,6 +108,32 @@ pub async fn select_device(
 ) -> Result<Json<Value>, ApiError> {
     state.radio.select(&r.id).map_err(ApiError::bad_request)?;
     db::set_setting(&state.db, DEVICE_KEY, &r.id).await.map_err(ApiError::internal)?;
+    if let Some(addr) = r.id.strip_prefix("tcp:") {
+        let list = state.radio.add_tcp_server(addr);
+        db::set_setting(&state.db, TCP_SERVERS_KEY, &list).await.map_err(ApiError::internal)?;
+    }
     tracing::info!(by = %admin.user.username, device = %r.id, "receiver selected");
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgetReq {
+    addr: String,
+}
+
+/// Remove an rtl_tcp server from the device list. The one in use stays listed
+/// until another receiver is chosen.
+pub async fn forget_tcp_server(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Json(r): Json<ForgetReq>,
+) -> Result<Json<Value>, ApiError> {
+    if parse_tcp_addr(&r.addr).is_none() {
+        return Err(ApiError::bad_request("expected host:port"));
+    }
+    let list = state.radio.remove_tcp_server(&r.addr);
+    db::set_setting(&state.db, TCP_SERVERS_KEY, &list).await.map_err(ApiError::internal)?;
+    tracing::info!(by = %admin.user.username, addr = %r.addr, "rtl_tcp server removed");
     Ok(Json(json!({ "ok": true })))
 }

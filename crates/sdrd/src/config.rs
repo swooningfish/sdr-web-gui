@@ -12,6 +12,8 @@ pub enum SourceKind {
     Synthetic,
     /// Loop a recorded cu8 IQ file.
     Replay,
+    /// A dongle shared over the network by `rtl_tcp`.
+    RtlTcp,
 }
 
 impl SourceKind {
@@ -20,6 +22,7 @@ impl SourceKind {
             SourceKind::Rtlsdr => "rtlsdr",
             SourceKind::Synthetic => "synthetic",
             SourceKind::Replay => "replay",
+            SourceKind::RtlTcp => "rtl_tcp",
         }
     }
 }
@@ -36,6 +39,8 @@ pub struct Config {
     #[cfg_attr(not(feature = "rtlsdr"), allow(dead_code))]
     pub device_serial: Option<String>,
     pub replay_file: Option<PathBuf>,
+    /// `host:port` of an rtl_tcp server, offered in the device list.
+    pub rtltcp_addr: Option<String>,
 
     pub center_hz: u64,
     pub sample_rate: u32,
@@ -136,7 +141,8 @@ impl Config {
                 "rtlsdr" => SourceKind::Rtlsdr,
                 "synthetic" => SourceKind::Synthetic,
                 "replay" => SourceKind::Replay,
-                _ => bail!("SDRD_SOURCE={v:?}: expected rtlsdr, synthetic or replay"),
+                "rtl_tcp" | "rtltcp" => SourceKind::RtlTcp,
+                _ => bail!("SDRD_SOURCE={v:?}: expected rtlsdr, rtl_tcp, synthetic or replay"),
             },
         };
         if source == SourceKind::Rtlsdr && !cfg!(feature = "rtlsdr") {
@@ -169,6 +175,7 @@ impl Config {
             device_index: parse("SDRD_DEVICE_INDEX", 0)?,
             device_serial: var("SDRD_DEVICE_SERIAL"),
             replay_file: var("SDRD_REPLAY_FILE").map(PathBuf::from),
+            rtltcp_addr: var("SDRD_RTLTCP"),
             center_hz: parse("SDRD_CENTER_HZ", 145_300_000)?,
             sample_rate: parse("SDRD_SAMPLE_RATE", 2_048_000)?,
             gain_db,
@@ -212,6 +219,14 @@ impl Config {
         }
         if !(1..=3650).contains(&cfg.event_retention_days) {
             bail!("SDRD_EVENT_RETENTION_DAYS must be between 1 and 3650");
+        }
+        if let Some(a) = &cfg.rtltcp_addr {
+            if crate::radio::parse_tcp_addr(a).is_none() {
+                bail!("SDRD_RTLTCP={a:?}: expected host:port, e.g. host.docker.internal:1234");
+            }
+        }
+        if cfg.source == SourceKind::RtlTcp && cfg.rtltcp_addr.is_none() {
+            bail!("SDRD_SOURCE=rtl_tcp requires SDRD_RTLTCP (host:port)");
         }
         if cfg.source == SourceKind::Replay && cfg.replay_file.is_none() {
             bail!("SDRD_SOURCE=replay requires SDRD_REPLAY_FILE (cu8 IQ)");

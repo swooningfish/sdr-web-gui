@@ -37,7 +37,7 @@ mod system_routes;
 mod users;
 mod ws;
 
-pub use radio_routes::DEVICE_KEY;
+pub use radio_routes::{DEVICE_KEY, TCP_SERVERS_KEY};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -90,6 +90,7 @@ pub fn router(state: AppState) -> Router {
         .route("/radio", get(radio_routes::get_state).post(radio_routes::configure))
         .route("/radio/devices", get(radio_routes::devices))
         .route("/radio/device", post(radio_routes::select_device))
+        .route("/radio/rtl_tcp", axum::routing::delete(radio_routes::forget_tcp_server))
         .route("/devices", get(sensors::list_devices))
         .route(
             "/devices/{id}",

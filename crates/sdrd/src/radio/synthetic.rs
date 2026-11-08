@@ -6,7 +6,8 @@ use std::f64::consts::TAU;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::{to_cu8, tuner_ranges, DeviceInfo, IqBlock, RadioSettings, SourceCtx};
+use super::{kind_of, to_cu8, tuner_ranges, DeviceInfo, IqBlock, RadioSettings, SourceCtx};
+use crate::config::SourceKind;
 use crate::aprs::ax25;
 use crate::sstv::{encode, modes};
 
@@ -385,6 +386,7 @@ pub(super) fn devices(active: Option<&str>) -> Vec<DeviceInfo> {
         .iter()
         .map(|d| DeviceInfo {
             id: d.id.into(),
+            source: SourceKind::Synthetic.name(),
             name: d.name.into(),
             serial: None,
             tuner: Some(d.tuner.into()),
@@ -412,10 +414,11 @@ fn select(ctx: &SourceCtx, s: &mut RadioSettings, id: &str) {
     });
 }
 
-pub(super) fn run(mut ctx: SourceCtx) {
-    let mut s = ctx.initial.clone();
+/// Runs until a device of another kind is selected; returns its id.
+pub(super) fn run(ctx: &mut SourceCtx) -> String {
+    let mut s = ctx.current();
     let first = ctx.device.clone();
-    select(&ctx, &mut s, &first);
+    select(ctx, &mut s, &first);
     tracing::info!("synthetic source running");
 
     let mut gen = SynthGen::new();
@@ -427,7 +430,10 @@ pub(super) fn run(mut ctx: SourceCtx) {
             ctx.update_state(|st| st.settings = s.clone());
         }
         if let Some(id) = p.device {
-            select(&ctx, &mut s, &id);
+            if kind_of(&id) != Some(SourceKind::Synthetic) {
+                return id;
+            }
+            select(ctx, &mut s, &id);
         }
         let n = (s.sample_rate as f64 * BLOCK_SECS) as usize;
         let data = gen.generate(s.center_hz, s.sample_rate, s.gain_db, n);

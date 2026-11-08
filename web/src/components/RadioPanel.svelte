@@ -10,6 +10,12 @@
   let busy = $state(false);
   let err = $state<string | null>(null);
   let devices = $state<SdrDevice[]>([]);
+  const GROUPS = [
+    { source: 'rtlsdr', label: 'USB' },
+    { source: 'rtl_tcp', label: 'Network (rtl_tcp)' },
+    { source: 'replay', label: 'Recording' },
+    { source: 'synthetic', label: 'Simulated' },
+  ] as const;
 
   // Device list for the picker; refreshed when the receiver changes.
   $effect(() => {
@@ -107,8 +113,15 @@
           {#if !devices.some((d) => d.id === radio.device_id)}
             <option value={radio.device_id ?? ''}>{radio.device ?? radio.device_id ?? 'None'}</option>
           {/if}
-          {#each devices as d (d.id)}
-            <option value={d.id}>{d.name}{d.tuner ? ` (${d.tuner})` : ''}</option>
+          {#each GROUPS as g (g.source)}
+            {@const list = devices.filter((d) => d.source === g.source)}
+            {#if list.length}
+              <optgroup label={g.label}>
+                {#each list as d (d.id)}
+                  <option value={d.id}>{d.name}{d.tuner ? ` (${d.tuner})` : ''}</option>
+                {/each}
+              </optgroup>
+            {/if}
           {/each}
         </select>
       </div>

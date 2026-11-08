@@ -13,7 +13,7 @@ pub async fn get(State(state): State<AppState>, _admin: AdminUser) -> Json<Value
     let c = &state.cfg;
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
-        "source": c.source.name(),
+        "source": state.radio.state().source,
         "event_retention_days": c.event_retention_days,
         "ism_viewers": c.ism_viewers,
         "audio_viewers": c.audio_viewers,

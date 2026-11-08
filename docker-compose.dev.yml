@@ -13,6 +13,8 @@ services:
     build: .
     image: sdr-web-gui:dev
     environment:
+      # Starting receiver only: switch source (USB, rtl_tcp, simulated) under
+      # Settings -> Receiver -> SDR devices. USB also needs docker-compose.usb.yml.
       SDRD_SOURCE: synthetic
       SDRD_COOKIE_SECURE: "false"
       SDRD_ADMIN_USER: admin
@@ -24,6 +26,10 @@ services:
       - "${SDRD_DEV_BIND:-127.0.0.1}:8080:8080"
     volumes:
       - sdrd-dev-data:/data
+    # Lets an rtl_tcp server on this computer be reached as
+    # host.docker.internal:1234 on Linux too (Docker Desktop has it built in).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on: [mqtt]
 
   mqtt:

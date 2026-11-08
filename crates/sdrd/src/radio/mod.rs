@@ -1,7 +1,12 @@
 //! The radio owns the IQ source (a dongle, a test generator or a recording)
 //! on a dedicated thread and broadcasts raw cu8 blocks to the DSP consumers.
+//!
+//! The kind of source follows from the selected device id, so the UI can move
+//! between a USB dongle, an rtl_tcp server and the simulator without a
+//! restart. `SDRD_SOURCE` only picks what to open when nothing was chosen yet.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -14,7 +19,11 @@ use crate::config::{Config, SourceKind};
 mod replay;
 #[cfg(feature = "rtlsdr")]
 mod rtlsdr;
+mod rtltcp;
 mod synthetic;
+
+/// Most rtl_tcp servers remembered in the device list.
+pub const MAX_TCP_SERVERS: usize = 8;
 
 /// Sample rates offered in the UI. All are valid for the RTL2832U; rates above
 /// 2.4 MS/s tend to drop samples on USB so they are not offered.
@@ -61,6 +70,19 @@ pub fn tuner_ranges(tuner: &str, product: &str) -> Vec<FreqRange> {
     }
 }
 
+/// librtlsdr's `rtlsdr_tuner` enum, also sent in the rtl_tcp greeting.
+pub(crate) fn tuner_name(t: u32) -> &'static str {
+    match t {
+        1 => "E4000",
+        2 => "FC0012",
+        3 => "FC0013",
+        4 => "FC2580",
+        5 => "R820T/R860",
+        6 => "R828D",
+        _ => "unknown",
+    }
+}
+
 /// Whether a device with these ranges can receive `hz`. No ranges means the
 /// device is unknown (not connected, or a recording) and nothing is ruled out.
 pub fn covers(ranges: &[FreqRange], hz: u64) -> bool {
@@ -99,8 +121,11 @@ pub fn describe_ranges(ranges: &[FreqRange]) -> String {
 /// A receiver that can be selected.
 #[derive(Clone, Debug, Serialize)]
 pub struct DeviceInfo {
-    /// Stable id used to select it: `sn:<serial>`, `idx:<n>` or `sim-*`.
+    /// Stable id used to select it: `sn:<serial>`, `idx:<n>`, `tcp:<host:port>`,
+    /// `replay` or `sim-*`.
     pub id: String,
+    /// Which kind of source it is ([`SourceKind::name`]).
+    pub source: &'static str,
     pub name: String,
     pub serial: Option<String>,
     pub tuner: Option<String>,
@@ -230,9 +255,10 @@ pub(crate) struct SourceCtx {
     iq_tx: broadcast::Sender<Arc<IqBlock>>,
     desired: Arc<Mutex<RadioSettings>>,
     pending: Pending,
-    pub initial: RadioSettings,
-    /// Device to open first.
+    /// Device to open next.
     pub device: String,
+    /// Tuner types seen per device (shared with [`RadioHandle`]).
+    pub tuners: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl SourceCtx {
@@ -251,8 +277,12 @@ impl SourceCtx {
         std::mem::take(&mut self.pending)
     }
 
+    /// The settings the user last asked for.
+    pub fn current(&self) -> RadioSettings {
+        self.desired.lock().unwrap().clone()
+    }
+
     /// Sleep for `d`, waking early if another device is selected.
-    #[cfg_attr(not(feature = "rtlsdr"), allow(dead_code))]
     pub fn wait(&mut self, d: Duration) {
         let until = Instant::now() + d;
         while self.pending.device.is_none() {
@@ -282,6 +312,33 @@ impl SourceCtx {
         }
     }
 
+    /// Wait until a device is selected and return its id (for a source that
+    /// can't continue, e.g. a missing recording).
+    pub fn park(&mut self) -> String {
+        loop {
+            if let Some(d) = self.take().device {
+                return d;
+            }
+            self.wait(Duration::from_secs(3600));
+        }
+    }
+
+    /// Reset the state for a newly started source.
+    fn begin(&self, kind: SourceKind) {
+        self.state_tx.send_modify(|st| {
+            st.source = kind.name();
+            st.can_tune = kind != SourceKind::Replay;
+            st.connected = false;
+            st.device_id = Some(self.device.clone());
+            st.device_index = None;
+            st.device = None;
+            st.tuner = None;
+            st.ranges = Vec::new();
+            st.gains_db = Vec::new();
+            st.error = None;
+        });
+    }
+
     pub fn update_state(&self, f: impl FnOnce(&mut RadioState)) {
         self.state_tx.send_modify(f);
     }
@@ -298,10 +355,10 @@ pub struct RadioHandle {
     state_rx: watch::Receiver<RadioState>,
     /// Desired settings (what the user last asked for).
     desired: Arc<Mutex<RadioSettings>>,
-    can_tune: bool,
-    source: SourceKind,
-    /// Tuner types of dongles we've opened to identify (key: id + name).
-    #[cfg_attr(not(feature = "rtlsdr"), allow(dead_code))]
+    replay_file: Option<PathBuf>,
+    /// rtl_tcp servers offered in the device list (`host:port`).
+    tcp_servers: Arc<Mutex<Vec<String>>>,
+    /// Tuner types of devices we've opened (key: id + name, or the tcp id).
     tuners: Arc<Mutex<HashMap<String, String>>>,
 }
 
@@ -315,7 +372,7 @@ impl RadioHandle {
     }
 
     pub fn configure(&self, patch: &RadioPatch) -> Result<RadioSettings, String> {
-        if !self.can_tune {
+        if !self.state_rx.borrow().can_tune {
             return Err("this source cannot be retuned".into());
         }
         let mut desired = self.desired.lock().unwrap();
@@ -338,68 +395,145 @@ impl RadioHandle {
         Ok(next)
     }
 
-    /// Switch to another receiver (an id from [`RadioHandle::devices`]).
+    /// Switch to another receiver (an id from [`RadioHandle::devices`]). The
+    /// source kind follows from the id.
     pub fn select(&self, id: &str) -> Result<(), String> {
-        if !self.state_rx.borrow().can_select {
-            return Err(format!("the {} source has no other devices", self.source.name()));
-        }
-        if !valid_id(self.source, id) {
-            return Err("unknown device".into());
+        match kind_of(id) {
+            Some(SourceKind::Rtlsdr) if !cfg!(feature = "rtlsdr") => {
+                return Err("sdrd was built without USB RTL-SDR support".into())
+            }
+            Some(SourceKind::Replay) if self.replay_file.is_none() => {
+                return Err("no recording configured (SDRD_REPLAY_FILE)".into())
+            }
+            Some(_) => {}
+            None => return Err("unknown device".into()),
         }
         self.cmd_tx
             .send(Cmd::Select(id.to_string()))
             .map_err(|_| "radio thread has stopped".to_string())
     }
 
-    /// Receivers that can be selected, with what each can tune.
+    /// Remember an rtl_tcp server (`host:port`) in the device list. Returns
+    /// the new list, to be saved.
+    pub fn add_tcp_server(&self, addr: &str) -> Vec<String> {
+        let mut l = self.tcp_servers.lock().unwrap();
+        if !l.iter().any(|a| a == addr) {
+            l.push(addr.to_string());
+            let excess = l.len().saturating_sub(MAX_TCP_SERVERS);
+            l.drain(..excess);
+        }
+        l.clone()
+    }
+
+    pub fn remove_tcp_server(&self, addr: &str) -> Vec<String> {
+        let mut l = self.tcp_servers.lock().unwrap();
+        l.retain(|a| a != addr);
+        l.clone()
+    }
+
+    /// Receivers that can be selected, with what each can tune: USB dongles,
+    /// remembered rtl_tcp servers, the recording if configured, and the
+    /// simulated dongles.
     pub async fn devices(&self) -> Vec<DeviceInfo> {
         let st = self.state();
-        match self.source {
-            SourceKind::Synthetic => synthetic::devices(st.device_id.as_deref()),
-            SourceKind::Replay => vec![DeviceInfo {
-                id: "replay".into(),
-                name: st.device.unwrap_or_else(|| "Replay".into()),
-                serial: None,
-                tuner: st.tuner,
-                ranges: st.ranges,
-                active: true,
-                note: None,
-            }],
-            #[cfg(feature = "rtlsdr")]
-            SourceKind::Rtlsdr => {
-                let tuners = self.tuners.clone();
+        let mut out: Vec<DeviceInfo> = Vec::new();
+
+        #[cfg(feature = "rtlsdr")]
+        {
+            let tuners = self.tuners.clone();
+            let st = st.clone();
+            out.extend(
                 tokio::task::spawn_blocking(move || rtlsdr::enumerate(&st, &tuners))
                     .await
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+            );
+        }
+
+        let mut servers = self.tcp_servers.lock().unwrap().clone();
+        if let Some(addr) = st.device_id.as_deref().and_then(|id| id.strip_prefix("tcp:")) {
+            if !servers.iter().any(|a| a == addr) {
+                servers.push(addr.to_string());
             }
-            #[cfg(not(feature = "rtlsdr"))]
-            SourceKind::Rtlsdr => Vec::new(),
         }
+        let tuners = self.tuners.lock().unwrap().clone();
+        out.extend(servers.iter().map(|addr| rtltcp::device_info(addr, &st, &tuners)));
+
+        if let Some(path) = &self.replay_file {
+            let active = st.device_id.as_deref() == Some("replay");
+            out.push(DeviceInfo {
+                id: "replay".into(),
+                source: SourceKind::Replay.name(),
+                name: format!("Recording: {}", path.display()),
+                serial: None,
+                tuner: active.then(|| "file".to_string()),
+                ranges: Vec::new(),
+                active,
+                note: None,
+            });
+        }
+
+        out.extend(synthetic::devices(st.device_id.as_deref()));
+        out
     }
 }
 
-fn valid_id(source: SourceKind, id: &str) -> bool {
-    match source {
-        SourceKind::Synthetic => synthetic::DEVICES.iter().any(|d| d.id == id),
-        SourceKind::Replay => false,
-        SourceKind::Rtlsdr => {
-            id.len() <= 80
-                && !id.chars().any(char::is_control)
-                && (id.strip_prefix("idx:").is_some_and(|n| n.parse::<u32>().is_ok())
-                    || id.strip_prefix("sn:").is_some_and(|s| !s.is_empty()))
-        }
+/// `host:port` with a plain host name, IPv4 or `[IPv6]` address.
+pub fn parse_tcp_addr(addr: &str) -> Option<(&str, u16)> {
+    if addr.len() > 80 {
+        return None;
+    }
+    let (host, port) = addr.rsplit_once(':')?;
+    let port: u16 = port.parse().ok().filter(|p| *p != 0)?;
+    let ok = if let Some(v6) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        !v6.is_empty() && v6.chars().all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.')
+    } else {
+        !host.is_empty()
+            && !host.starts_with(['-', '.'])
+            && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_')
+    };
+    ok.then_some((host, port))
+}
+
+/// Which source a device id belongs to; `None` for an invalid id.
+pub fn kind_of(id: &str) -> Option<SourceKind> {
+    if id.len() > 90 || id.chars().any(char::is_control) {
+        return None;
+    }
+    if synthetic::DEVICES.iter().any(|d| d.id == id) {
+        Some(SourceKind::Synthetic)
+    } else if id == "replay" {
+        Some(SourceKind::Replay)
+    } else if let Some(addr) = id.strip_prefix("tcp:") {
+        parse_tcp_addr(addr).map(|_| SourceKind::RtlTcp)
+    } else if id.strip_prefix("idx:").is_some_and(|n| n.parse::<u32>().is_ok())
+        || id.strip_prefix("sn:").is_some_and(|s| !s.is_empty())
+    {
+        Some(SourceKind::Rtlsdr)
+    } else {
+        None
     }
 }
 
-/// The device to open at start-up: the one last chosen in the UI if it's
-/// still a valid id, else what the environment says.
+/// Whether `id` can be opened by this build and configuration.
+fn usable(cfg: &Config, id: &str) -> bool {
+    match kind_of(id) {
+        Some(SourceKind::Rtlsdr) => cfg!(feature = "rtlsdr"),
+        Some(SourceKind::Replay) => cfg.replay_file.is_some(),
+        Some(_) => true,
+        None => false,
+    }
+}
+
+/// The device to open at start-up: the one last chosen in the UI if it can
+/// still be opened, else what the environment says.
 fn initial_device(cfg: &Config, saved: Option<String>) -> String {
-    if let Some(id) = saved.filter(|id| valid_id(cfg.source, id)) {
+    if let Some(id) = saved.filter(|id| usable(cfg, id)) {
         return id;
     }
     match cfg.source {
         SourceKind::Synthetic => synthetic::DEVICES[0].id.to_string(),
         SourceKind::Replay => "replay".into(),
+        SourceKind::RtlTcp => format!("tcp:{}", cfg.rtltcp_addr.as_deref().unwrap_or_default()),
         SourceKind::Rtlsdr => match &cfg.device_serial {
             Some(s) => format!("sn:{s}"),
             None => format!("idx:{}", cfg.device_index),
@@ -411,6 +545,7 @@ pub fn spawn(
     cfg: &Config,
     iq_tx: broadcast::Sender<Arc<IqBlock>>,
     saved_device: Option<String>,
+    saved_tcp: Vec<String>,
 ) -> Result<RadioHandle> {
     let settings = RadioSettings {
         center_hz: cfg.center_hz,
@@ -420,11 +555,10 @@ pub fn spawn(
         bias_tee: cfg.bias_tee,
         direct_sampling: 0,
     };
-    let can_tune = cfg.source != SourceKind::Replay;
     let (state_tx, state_rx) = watch::channel(RadioState {
         source: cfg.source.name(),
-        can_tune,
-        can_select: cfg.source != SourceKind::Replay,
+        can_tune: false,
+        can_select: true,
         connected: false,
         device_id: None,
         device_index: None,
@@ -437,36 +571,54 @@ pub fn spawn(
         error: None,
     });
     let (cmd_tx, cmd_rx) = mpsc::channel();
-    let desired = Arc::new(Mutex::new(settings.clone()));
-    let ctx = SourceCtx {
+    let desired = Arc::new(Mutex::new(settings));
+    let tuners = Arc::new(Mutex::new(HashMap::new()));
+    let mut ctx = SourceCtx {
         cmd_rx,
         state_tx,
         iq_tx,
         desired: desired.clone(),
         pending: Pending::default(),
-        initial: settings,
         device: initial_device(cfg, saved_device),
+        tuners: tuners.clone(),
     };
 
-    let cfg = cfg.clone();
-    std::thread::Builder::new()
-        .name("radio".into())
-        .spawn(move || match cfg.source {
-            SourceKind::Synthetic => synthetic::run(ctx),
-            SourceKind::Replay => replay::run(ctx, cfg.replay_file.clone().unwrap()),
+    let mut servers: Vec<String> = cfg.rtltcp_addr.iter().cloned().collect();
+    for a in saved_tcp {
+        if parse_tcp_addr(&a).is_some() && !servers.contains(&a) {
+            servers.push(a);
+        }
+    }
+    servers.truncate(MAX_TCP_SERVERS);
+
+    let replay_file = cfg.replay_file.clone();
+    let file = replay_file.clone();
+    std::thread::Builder::new().name("radio".into()).spawn(move || loop {
+        // Each source runs until a device of another kind is selected, and
+        // returns its id.
+        let kind = kind_of(&ctx.device).unwrap_or(SourceKind::Synthetic);
+        ctx.begin(kind);
+        ctx.device = match kind {
+            SourceKind::Synthetic => synthetic::run(&mut ctx),
+            SourceKind::Replay => replay::run(&mut ctx, file.as_deref()),
+            SourceKind::RtlTcp => rtltcp::run(&mut ctx),
             #[cfg(feature = "rtlsdr")]
-            SourceKind::Rtlsdr => rtlsdr::run(ctx),
+            SourceKind::Rtlsdr => rtlsdr::run(&mut ctx),
             #[cfg(not(feature = "rtlsdr"))]
-            SourceKind::Rtlsdr => unreachable!("checked in Config::from_env"),
-        })?;
+            SourceKind::Rtlsdr => {
+                ctx.update_state(|st| st.error = Some("sdrd was built without USB RTL-SDR support".into()));
+                ctx.park()
+            }
+        };
+    })?;
 
     Ok(RadioHandle {
         cmd_tx,
         state_rx,
         desired,
-        can_tune,
-        source: cfg.source,
-        tuners: Arc::new(Mutex::new(HashMap::new())),
+        replay_file,
+        tcp_servers: Arc::new(Mutex::new(servers)),
+        tuners,
     })
 }
 
@@ -538,12 +690,20 @@ mod tests {
 
     #[test]
     fn device_ids() {
-        assert!(valid_id(SourceKind::Rtlsdr, "idx:0"));
-        assert!(valid_id(SourceKind::Rtlsdr, "sn:00000001"));
-        assert!(!valid_id(SourceKind::Rtlsdr, "idx:x"));
-        assert!(!valid_id(SourceKind::Rtlsdr, "sn:"));
-        assert!(valid_id(SourceKind::Synthetic, "sim-r820t"));
-        assert!(!valid_id(SourceKind::Synthetic, "idx:0"));
+        assert_eq!(kind_of("idx:0"), Some(SourceKind::Rtlsdr));
+        assert_eq!(kind_of("sn:00000001"), Some(SourceKind::Rtlsdr));
+        assert_eq!(kind_of("idx:x"), None);
+        assert_eq!(kind_of("sn:"), None);
+        assert_eq!(kind_of("sim-r820t"), Some(SourceKind::Synthetic));
+        assert_eq!(kind_of("sim-nope"), None);
+        assert_eq!(kind_of("replay"), Some(SourceKind::Replay));
+        assert_eq!(kind_of("tcp:host.docker.internal:1234"), Some(SourceKind::RtlTcp));
+        assert_eq!(kind_of("tcp:192.168.0.20:1234"), Some(SourceKind::RtlTcp));
+        assert_eq!(kind_of("tcp:[::1]:1234"), Some(SourceKind::RtlTcp));
+        assert_eq!(kind_of("tcp:host:0"), None);
+        assert_eq!(kind_of("tcp:host"), None);
+        assert_eq!(kind_of("tcp:a b:1234"), None);
+        assert_eq!(kind_of("tcp:-x:1234"), None);
     }
 
     #[test]

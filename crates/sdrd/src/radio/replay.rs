@@ -4,26 +4,29 @@
 
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
-use std::path::PathBuf;
+use std::path::Path;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use super::{block_len, IqBlock, SourceCtx};
 
-pub(super) fn run(mut ctx: SourceCtx, path: PathBuf) {
-    let s = ctx.initial.clone();
-    let file = match File::open(&path) {
+/// Runs until another device is selected; returns its id.
+pub(super) fn run(ctx: &mut SourceCtx, path: Option<&Path>) -> String {
+    let fail = |ctx: &mut SourceCtx, msg: String| {
+        tracing::error!("{msg}");
+        ctx.update_state(|st| st.error = Some(msg));
+        ctx.park()
+    };
+    let Some(path) = path else {
+        return fail(ctx, "no recording configured (SDRD_REPLAY_FILE)".into());
+    };
+    let s = ctx.current();
+    let file = match File::open(path) {
         Ok(f) => f,
-        Err(e) => {
-            let msg = format!("cannot open replay file {}: {e}", path.display());
-            tracing::error!("{msg}");
-            ctx.update_state(|st| st.error = Some(msg));
-            return;
-        }
+        Err(e) => return fail(ctx, format!("cannot open replay file {}: {e}", path.display())),
     };
     if file.metadata().map(|m| m.len()).unwrap_or(0) < 2 {
-        ctx.update_state(|st| st.error = Some("replay file is empty".into()));
-        return;
+        return fail(ctx, "replay file is empty".into());
     }
     let mut reader = BufReader::new(file);
     ctx.update_state(|st| {
@@ -39,7 +42,9 @@ pub(super) fn run(mut ctx: SourceCtx, path: PathBuf) {
     let mut next = Instant::now();
     loop {
         // Replay cannot be retuned; drain commands so the queue doesn't grow.
-        let _ = ctx.take();
+        if let Some(d) = ctx.take().device.filter(|d| d != "replay") {
+            return d;
+        }
 
         let mut data = vec![0u8; len];
         let mut filled = 0;
@@ -48,15 +53,11 @@ pub(super) fn run(mut ctx: SourceCtx, path: PathBuf) {
                 Ok(0) => {
                     // End of file: loop back to the start.
                     if let Err(e) = reader.seek(SeekFrom::Start(0)) {
-                        ctx.update_state(|st| st.error = Some(format!("replay seek error: {e}")));
-                        return;
+                        return fail(ctx, format!("replay seek error: {e}"));
                     }
                 }
                 Ok(n) => filled += n,
-                Err(e) => {
-                    ctx.update_state(|st| st.error = Some(format!("replay read error: {e}")));
-                    return;
-                }
+                Err(e) => return fail(ctx, format!("replay read error: {e}")),
             }
         }
         ctx.publish(IqBlock {

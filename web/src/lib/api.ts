@@ -41,8 +41,12 @@ export interface RadioState {
   error: string | null;
 }
 
+/** Kind of receiver: a USB dongle, an rtl_tcp server, a recording or the simulator. */
+export type SdrSource = 'rtlsdr' | 'rtl_tcp' | 'replay' | 'synthetic';
+
 export interface SdrDevice {
   id: string;
+  source: SdrSource;
   name: string;
   serial: string | null;
   tuner: string | null;
@@ -63,6 +67,10 @@ export interface SdrFeature {
 
 export interface SdrDevices {
   can_select: boolean;
+  /** sdrd was built with USB RTL-SDR support. */
+  usb_supported: boolean;
+  /** A recording is configured (SDRD_REPLAY_FILE). */
+  replay_available: boolean;
   devices: SdrDevice[];
   features: SdrFeature[];
 }
@@ -362,6 +370,7 @@ export const api = {
   configure: (patch: RadioPatch) => req<RadioSettings>('POST', '/radio', patch),
   sdrDevices: () => req<SdrDevices>('GET', '/radio/devices'),
   selectSdr: (id: string) => req('POST', '/radio/device', { id }),
+  forgetRtlTcp: (addr: string) => req('DELETE', '/radio/rtl_tcp', { addr }),
   users: () => req<UserRow[]>('GET', '/users'),
   createUser: (username: string, password: string, role: Role) =>
     req<{ id: number }>('POST', '/users', { username, password, role }),
