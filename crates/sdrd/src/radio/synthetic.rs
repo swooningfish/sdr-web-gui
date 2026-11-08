@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::{to_cu8, IqBlock, SourceCtx};
 use crate::aprs::ax25;
+use crate::sstv::{encode, modes};
 
 const BLOCK_SECS: f64 = 0.05;
 
@@ -15,8 +16,8 @@ const BLOCK_SECS: f64 = 0.05;
 enum Kind {
     /// Real APRS packets: AX.25 in HDLC, 1200 baud AFSK on NFM.
     Aprs { period: f64, channel: AprsChannel },
-    /// FM carrier with a sweeping audio tone (SSTV-ish).
-    SweepFm,
+    /// SSTV images on NFM, cycling through a few modes with `gap` s between.
+    Sstv { gap: f64 },
     /// Nexus-TH temperature/humidity sensor (OOK PPM) that rtl_433 decodes.
     Nexus { period: f64, id: u8, channel: u8, base_c: f64, humidity: u8 },
     /// Unmodulated carrier drifting like a LEO satellite's Doppler.
@@ -37,6 +38,9 @@ struct Emitter {
     next: f64,
     pulses: Vec<(f64, f64)>,
     pulse_idx: usize,
+    /// SSTV: (tone Hz, end time relative to `tx_start`) and the current tone.
+    sstv: Vec<(f32, f64)>,
+    sstv_idx: usize,
 }
 
 pub(super) struct SynthGen {
@@ -59,6 +63,8 @@ impl SynthGen {
             next: 0.0,
             pulses: Vec::new(),
             pulse_idx: 0,
+            sstv: Vec::new(),
+            sstv_idx: 0,
         };
         let nexus = |id, channel, base_c, humidity, first: f64| {
             let mut em = e(
@@ -73,7 +79,11 @@ impl SynthGen {
             emitters: vec![
                 e(144_800_000.0, 0.25, Kind::Aprs { period: 10.0, channel: AprsChannel::Terrestrial }),
                 e(145_825_000.0, 0.12, Kind::Aprs { period: 30.0, channel: AprsChannel::Iss }),
-                e(145_800_000.0, 0.15, Kind::SweepFm),
+                {
+                    let mut em = e(145_800_000.0, 0.15, Kind::Sstv { gap: 20.0 });
+                    em.next = 3.0;
+                    em
+                },
                 nexus(0x5a, 1, 19.0, 55, 1.0),
                 nexus(0x21, 2, 6.0, 82, 8.5),
                 e(437_550_000.0, 0.12, Kind::Doppler { span_hz: 10_000.0, period: 120.0 }),
@@ -140,10 +150,30 @@ impl SynthGen {
                             None => (offset, false),
                         }
                     }
-                    Kind::SweepFm => {
-                        let tone = 1500.0 + 800.0 * ((t * 2.0) % 1.0);
-                        em.tone_phase = (em.tone_phase + TAU * tone * dt) % TAU;
-                        (offset + 3000.0 * em.tone_phase.sin(), true)
+                    Kind::Sstv { gap } => {
+                        if t >= em.next {
+                            if t - em.next < 0.5 {
+                                em.sstv = sstv_transmission(em.seq);
+                                em.sstv_idx = 0;
+                                em.tx_start = t;
+                                em.seq = em.seq.wrapping_add(1);
+                                em.next = t + em.sstv.last().map_or(0.0, |s| s.1) + gap;
+                            } else {
+                                // Came back into band after missing one: start shortly.
+                                em.next = t + 5.0;
+                            }
+                        }
+                        let rel = t - em.tx_start;
+                        while em.sstv_idx < em.sstv.len() && em.sstv[em.sstv_idx].1 <= rel {
+                            em.sstv_idx += 1;
+                        }
+                        match em.sstv.get(em.sstv_idx) {
+                            Some(&(tone, _)) => {
+                                em.tone_phase = (em.tone_phase + TAU * tone as f64 * dt) % TAU;
+                                (offset + 3000.0 * em.tone_phase.sin(), true)
+                            }
+                            None => (offset, false),
+                        }
                     }
                     Kind::Nexus { period, id, channel, base_c, humidity } => {
                         if t >= em.next {
@@ -190,6 +220,22 @@ fn wall_secs() -> f64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0)
+}
+
+/// The next synthetic SSTV image: a test card in one of a few modes, as
+/// (tone, cumulative end time) pairs.
+fn sstv_transmission(seq: u32) -> Vec<(f32, f64)> {
+    const CYCLE: [&str; 4] = ["Robot 36", "Martin M2", "Scottie S2", "PD 90"];
+    let mode = modes::by_name(CYCLE[seq as usize % CYCLE.len()]).expect("known mode");
+    let img = encode::test_pattern(mode.width as usize, mode.height as usize, seq);
+    let mut end = 0.0;
+    encode::tones(mode, &img)
+        .into_iter()
+        .map(|(f, d)| {
+            end += d;
+            (f, end)
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy)]

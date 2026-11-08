@@ -6,3 +6,8 @@ members = ["crates/sdrd"]
 lto = "thin"
 codegen-units = 4
 strip = true
+
+# DSP-heavy tests (SSTV encode → decode of whole images) are far too slow
+# unoptimised.
+[profile.test]
+opt-level = 2

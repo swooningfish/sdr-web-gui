@@ -17,6 +17,7 @@ use tokio::sync::broadcast;
 use tracing_subscriber::EnvFilter;
 
 mod aprs;
+mod sstv;
 mod auth;
 mod config;
 mod db;
@@ -71,7 +72,16 @@ async fn serve() -> Result<()> {
     // Decoders → events → SQLite, WebSocket clients and MQTT.
     let (events_tx, events_rx) = tokio::sync::mpsc::channel(1024);
     let rtl433 = decoders::rtl433::spawn(&db, cfg.rtl433_path.clone(), iq_tx.subscribe(), events_tx.clone()).await?;
-    let aprs = decoders::aprs::spawn(&db, cfg.direwolf_path.clone(), iq_tx.subscribe(), events_tx).await?;
+    let aprs = decoders::aprs::spawn(&db, cfg.direwolf_path.clone(), iq_tx.subscribe(), events_tx.clone()).await?;
+    let (sstv_rows_tx, _) = broadcast::channel(256);
+    let sstv = decoders::sstv::spawn(
+        &db,
+        cfg.data_dir.join("sstv"),
+        iq_tx.subscribe(),
+        events_tx,
+        sstv_rows_tx.clone(),
+    )
+    .await?;
     let mqtt = cfg.mqtt.clone().map(|m| mqtt::spawn(m, db.clone()));
     let (event_feed, _) = broadcast::channel(256);
     tokio::spawn(events::run(db.clone(), events_rx, event_feed.clone(), mqtt.clone()));
@@ -110,6 +120,8 @@ async fn serve() -> Result<()> {
         limiter: Arc::new(Mutex::new(auth::RateLimiter::new(Duration::from_secs(15 * 60)))),
         rtl433,
         aprs,
+        sstv,
+        sstv_rows_tx,
         event_feed,
         mqtt,
     };

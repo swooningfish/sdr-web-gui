@@ -12,15 +12,18 @@
   import DecoderSettings from './components/DecoderSettings.svelte';
   import Aprs from './components/Aprs.svelte';
   import AprsSettings from './components/AprsSettings.svelte';
+  import Sstv from './components/Sstv.svelte';
+  import SstvSettings from './components/SstvSettings.svelte';
 
   let user = $state<User | null>(null);
   let checking = $state(true);
   let radio = $state<RadioState | null>(null);
   let wsUp = $state(false);
-  let view = $state<'spectrum' | 'sensors' | 'aprs' | 'settings'>('spectrum');
+  let view = $state<'spectrum' | 'sensors' | 'aprs' | 'sstv' | 'settings'>('spectrum');
   let waterfall = $state<ReturnType<typeof Waterfall> | undefined>();
   let sensors = $state<ReturnType<typeof Sensors> | undefined>();
   let aprs = $state<ReturnType<typeof Aprs> | undefined>();
+  let sstv = $state<ReturnType<typeof Sstv> | undefined>();
 
   const isAdmin = $derived(user?.role === 'admin');
 
@@ -39,7 +42,12 @@
     const s = new Stream({
       onFrame: (f) => waterfall?.push(f),
       onRadio: (st) => (radio = st),
-      onEvent: (d, ev) => (d.decoder === 'aprs' ? aprs?.push(d, ev) : sensors?.push(d, ev)),
+      onEvent: (d, ev) => {
+        if (d.decoder === 'aprs') aprs?.push(d, ev);
+        else if (d.decoder === 'sstv') sstv?.push(d, ev);
+        else sensors?.push(d, ev);
+      },
+      onSstvRows: (r) => sstv?.rows(r),
       onConnection: (c) => (wsUp = c),
       onAuthLost: () => {
         user = null;
@@ -92,6 +100,7 @@
       <button type="button" class="tab" class:active={view === 'spectrum'} onclick={() => (view = 'spectrum')}>Spectrum</button>
       <button type="button" class="tab" class:active={view === 'sensors'} onclick={() => (view = 'sensors')}>Sensors</button>
       <button type="button" class="tab" class:active={view === 'aprs'} onclick={() => (view = 'aprs')}>APRS</button>
+      <button type="button" class="tab" class:active={view === 'sstv'} onclick={() => (view = 'sstv')}>SSTV</button>
       <button type="button" class="tab" class:active={view === 'settings'} onclick={() => (view = 'settings')}>Settings</button>
     </nav>
     <div class="status-bar">
@@ -124,11 +133,15 @@
     <div hidden={view !== 'aprs'}>
       <Aprs bind:this={aprs} {isAdmin} {radio} />
     </div>
+    <div hidden={view !== 'sstv'}>
+      <Sstv bind:this={sstv} {isAdmin} {radio} />
+    </div>
     {#if view === 'settings'}
       <div class="settings-view">
         <Account {user} />
         {#if isAdmin}<DecoderSettings />{/if}
         {#if isAdmin}<AprsSettings />{/if}
+        {#if isAdmin}<SstvSettings />{/if}
         {#if isAdmin}<Users me={user} />{/if}
       </div>
     {/if}
@@ -228,6 +241,16 @@
     }
     .status-bar {
       margin-left: 0;
+    }
+    /* Five tabs don't fit a phone at full padding. */
+    nav {
+      width: 100%;
+      justify-content: space-between;
+      gap: 0;
+    }
+    .tab {
+      padding: 6px 7px;
+      font-size: 14px;
     }
   }
 </style>

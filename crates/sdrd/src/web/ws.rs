@@ -34,6 +34,7 @@ fn radio_msg(s: &RadioState) -> String {
 
 async fn client(mut socket: WebSocket, state: AppState, token_hash: String, ism: bool) {
     let mut wf = state.waterfall_tx.subscribe();
+    let mut sstv = state.sstv_rows_tx.subscribe();
     let mut events = state.event_feed.subscribe();
     let mut radio = state.radio.subscribe();
     let initial = radio_msg(&radio.borrow_and_update());
@@ -53,6 +54,14 @@ async fn client(mut socket: WebSocket, state: AppState, token_hash: String, ism:
                     if socket.send(Message::Binary(f)).await.is_err() { break; }
                 }
                 Err(RecvError::Lagged(_)) => continue, // slow client: drop frames
+                Err(RecvError::Closed) => break,
+            },
+            rows = sstv.recv() => match rows {
+                Ok(f) => {
+                    if socket.send(Message::Binary(f)).await.is_err() { break; }
+                }
+                // Missed rows only leave a gap in the live view; the saved image is whole.
+                Err(RecvError::Lagged(_)) => continue,
                 Err(RecvError::Closed) => break,
             },
             ev = events.recv() => match ev {

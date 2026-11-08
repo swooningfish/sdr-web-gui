@@ -13,11 +13,44 @@ export interface StreamHandlers {
   onFrame: (f: WaterfallFrame) => void;
   onRadio: (s: RadioState) => void;
   onEvent: (device: Device, event: EventRow) => void;
+  onSstvRows: (f: SstvRows) => void;
   onConnection: (connected: boolean) => void;
   onAuthLost: () => void;
 }
 
+/** Live SSTV rows (layout documented in decoders/sstv.rs). */
+export interface SstvRows {
+  channel: number;
+  vis: number;
+  width: number;
+  height: number;
+  firstLine: number;
+  lines: number;
+  session: number;
+  rgb: Uint8Array;
+}
+
 const FRAME_WATERFALL = 1;
+const FRAME_SSTV_ROWS = 2;
+
+export function parseSstvRows(buf: ArrayBuffer): SstvRows | null {
+  if (buf.byteLength < 16) return null;
+  const dv = new DataView(buf);
+  if (dv.getUint8(0) !== FRAME_SSTV_ROWS) return null;
+  const width = dv.getUint16(4, true);
+  const lines = dv.getUint16(10, true);
+  if (buf.byteLength < 16 + width * lines * 3) return null;
+  return {
+    channel: dv.getUint8(2),
+    vis: dv.getUint8(3),
+    width,
+    height: dv.getUint16(6, true),
+    firstLine: dv.getUint16(8, true),
+    lines,
+    session: dv.getUint32(12, true),
+    rgb: new Uint8Array(buf, 16, width * lines * 3),
+  };
+}
 const HEADER_LEN = 32;
 
 /** Parse a binary frame from sdrd (layout documented in dsp/waterfall.rs). */
@@ -77,8 +110,15 @@ export class Stream {
           /* ignore malformed */
         }
       } else {
-        const f = parseFrame(ev.data as ArrayBuffer);
-        if (f) this.h.onFrame(f);
+        const buf = ev.data as ArrayBuffer;
+        const kind = buf.byteLength ? new DataView(buf).getUint8(0) : 0;
+        if (kind === FRAME_SSTV_ROWS) {
+          const r = parseSstvRows(buf);
+          if (r) this.h.onSstvRows(r);
+        } else {
+          const f = parseFrame(buf);
+          if (f) this.h.onFrame(f);
+        }
       }
     };
     ws.onclose = () => {

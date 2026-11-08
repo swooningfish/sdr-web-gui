@@ -17,6 +17,15 @@ impl FmDemod {
         }
     }
 
+    /// Demodulate to float audio (±1.0 at full-scale deviation).
+    pub fn process_f32(&mut self, iq: &[Complex32], out: &mut Vec<f32>) {
+        for &x in iq {
+            let d = (x * self.prev.conj()).arg();
+            self.prev = x;
+            out.push((d * self.gain).clamp(-1.5, 1.5));
+        }
+    }
+
     /// Demodulate to signed 16-bit little-endian audio, appended to `out`.
     pub fn process_s16le(&mut self, iq: &[Complex32], out: &mut Vec<u8>) {
         for &x in iq {

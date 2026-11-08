@@ -107,7 +107,7 @@ impl Ddc {
 
 /// Windowed-sinc (Blackman) low-pass, unity gain at DC. `cutoff` is a fraction
 /// of the sample rate.
-fn lowpass(n: usize, cutoff: f64) -> Vec<f32> {
+pub(crate) fn lowpass(n: usize, cutoff: f64) -> Vec<f32> {
     let m = (n - 1) as f64;
     let mut taps: Vec<f64> = (0..n)
         .map(|i| {

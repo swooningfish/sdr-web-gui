@@ -6,7 +6,7 @@ monitoring: TPMS/ISM sensors (rtl_433), APRS, and SSTV, including automatic ISS/
 
 See [SPEC.md](SPEC.md) for the full design and roadmap.
 
-## Status: milestone 3 (APRS)
+## Status: milestone 4 (SSTV)
 
 - [x] Rust core (`sdrd`) owns the dongle via librtlsdr (rtl-sdr-blog fork: V4, V3, generic)
 - [x] Live spectrum and waterfall in the browser over WebSocket
@@ -16,7 +16,7 @@ See [SPEC.md](SPEC.md) for the full design and roadmap.
 - [x] Docker image plus Caddy (automatic HTTPS) compose setup for the Pi
 - [x] M2: rtl_433 / TPMS with a flex-decoder editor, sensor history charts, MQTT and Home Assistant
 - [x] M3: APRS (Direwolf) with a live map, station tracks, packet log and weather charts
-- [ ] M4: native SSTV decoder and image gallery
+- [x] M4: native SSTV decoder (13 modes, slant correction) with live view and image gallery
 - [ ] M5: scheduler and ISS passes with Doppler correction
 - [ ] M6: live audio
 
@@ -51,6 +51,8 @@ carrier). Use the presets to see them. The test signals are real, decodable tran
 - **144.800 / 145.825 (VHF block, the default):** APRS packets that Direwolf decodes: a car
   driving a loop around central London, a weather station, a status beacon, and an "ISS" on
   145.825. Open the APRS tab.
+- **145.800 (also in the VHF block):** SSTV test cards cycling through Robot 36, Martin M2,
+  Scottie S2 and PD 90, with 20 s gaps. Open the SSTV tab to watch them arrive line by line.
 - **433.92 (ISM preset, or *Tune* on the Sensors page):** two Nexus temperature/humidity
   sensors that rtl_433 decodes within ~15 s.
 
@@ -123,6 +125,30 @@ alongside ISS SSTV on 145.800.
 - The map uses OpenStreetMap's tile server. Set `SDRD_MAP_TILE_URL` to use another one (the
   Content-Security-Policy follows it).
 
+## SSTV
+
+A native Rust decoder (no external program). Each SSTV channel is filtered out of the
+capture, demodulated (FM, or USB/LSB for HF), and turned into a tone-frequency track. The
+VIS header picks the mode automatically:
+
+- Robot 36 and 72
+- Martin M1 and M2
+- Scottie S1, S2 and DX
+- PD 50, 90, 120, 160, 180 and 240
+
+Every line's sync pulse is tracked, so slant from clock differences is corrected.
+
+- Default channels: **ISS SSTV 145.800 MHz** (in the default VHF block) and **ARISS UHF
+  437.550 MHz**, both FM. Up to 4 channels under Settings → SSTV decoder.
+- **SSTV** tab: images appear line by line as they are received, then go into the gallery
+  with thumbnails, a full-size viewer, download and (admins) delete.
+- If the signal fades or the radio is retuned mid-image, whatever was received is still
+  saved, marked as partial, as long as at least a fifth of the image came through.
+- Images are PNG files in `/data/sstv` and are **not** removed by the event retention period.
+- SSTV is public amateur traffic, so viewer accounts can see it.
+- Doppler on 437.550 MHz (±10 kHz for the ISS) is only partly inside the channel filter
+  until Doppler tracking arrives with the ISS pass scheduler (M5).
+
 ## MQTT / Home Assistant
 
 Set `SDRD_MQTT_HOST` (and user/password if needed) in `.env`. sdrd publishes:
@@ -130,7 +156,7 @@ Set `SDRD_MQTT_HOST` (and user/password if needed) in `.env`. sdrd publishes:
 | Topic | Content |
 |---|---|
 | `sdrd/status` | `online` / `offline` (retained, last will) |
-| `sdrd/events/rtl_433`, `sdrd/events/aprs` | every decoded event as JSON (turn off with `SDRD_MQTT_EVENTS=false`) |
+| `sdrd/events/rtl_433`, `…/aprs`, `…/sstv` | every decoded event as JSON (turn off with `SDRD_MQTT_EVENTS=false`) |
 | `sdrd/devices/<device>/state` | latest data of tracked devices (retained) |
 | `homeassistant/sensor/…/config` | HA discovery for tracked devices: temperature, humidity, pressure, battery, signal, … |
 | `homeassistant/device_tracker/…/config` | HA device tracker for tracked APRS stations (shows them on the HA map) |
@@ -169,8 +195,9 @@ All settings are `SDRD_*` environment variables. See [.env.example](.env.example
 RTL-SDR ─USB─► radio thread (librtlsdr) ─► IQ broadcast ─┬► waterfall FFT ─────────────────► WebSocket ─► browser
                     ▲ retune                              ├► DDC 433.92 → rtl_433 ──────────┐
                REST /api/radio  ◄── admin UI             ├► DDC 144.800 → FM → Direwolf ───┼► events ─► SQLite, WebSocket, MQTT
-                                                          └► DDC 145.825 → FM → Direwolf ───┘
-                                                             (M4+) SSTV …
+                                                          ├► DDC 145.825 → FM → Direwolf ───┤
+                                                          └► DDC 145.800 → FM → SSTV ───────┘─► PNG in /data/sstv
+                                                                 (tone demod, VIS, sync tracking)   + live rows ─► WebSocket
 ```
 
 - `crates/sdrd`: Rust daemon (axum, tokio, rustfft, sqlx/SQLite)

@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 
 pub mod aprs;
 pub mod rtl433;
+pub mod sstv;
 
 #[derive(Debug, Clone)]
 pub struct DecodedEvent {

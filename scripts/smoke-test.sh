@@ -54,6 +54,15 @@ check "APRS config"            200 "$(code -b "$JAR" "$BASE/api/aprs")"
 check "APRS rejects 5 channels" 400 "$(code -X PUT -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
   -d '{"enabled":true,"channels":[{"label":"a","frequency_hz":144800000,"enabled":true},{"label":"b","frequency_hz":144800000,"enabled":true},{"label":"c","frequency_hz":144800000,"enabled":true},{"label":"d","frequency_hz":144800000,"enabled":true},{"label":"e","frequency_hz":144800000,"enabled":true}]}' \
   "$BASE/api/aprs")"
+check "SSTV config"            200 "$(code -b "$JAR" "$BASE/api/sstv")"
+check "SSTV rejects bad demod" 422 "$(code -X PUT -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"channels":[{"label":"x","frequency_hz":145800000,"demod":"am","enabled":true}]}' "$BASE/api/sstv")"
+check "SSTV image 404"         404 "$(code -b "$JAR" "$BASE/api/sstv/image/999999999")"
+SSTV_ID=$(curl -s -b "$JAR" "$BASE/api/events?decoder=sstv&limit=1" | sed -n 's/^\[{"id":\([0-9]*\).*/\1/p')
+if [[ -n "$SSTV_ID" ]]; then
+  check "SSTV image is a PNG" "image/png" "$(curl -s -o /dev/null -w '%{content_type}' -b "$JAR" "$BASE/api/sstv/image/$SSTV_ID")"
+  check "SSTV thumbnail"      200 "$(code -b "$JAR" "$BASE/api/sstv/image/$SSTV_ID?thumb=true")"
+fi
 CSP=$(curl -sI "$BASE/" | tr -d '\r' | grep -i '^content-security-policy:')
 grep -q "img-src 'self' data: blob: https://tile.openstreetmap.org" <<<"$CSP"; check "CSP allows map tiles" 0 $?
 CHECK=$(curl -s -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
@@ -74,6 +83,12 @@ check "viewer can't see rtl_433 devices" 403 "$(code -b "$VJAR" "$BASE/api/devic
 check "viewer sees APRS stations" 200 "$(code -b "$VJAR" "$BASE/api/devices?decoder=aprs")"
 check "viewer sees APRS config"   200 "$(code -b "$VJAR" "$BASE/api/aprs")"
 check "viewer sees APRS tracks"   200 "$(code -b "$VJAR" "$BASE/api/aprs/tracks")"
+# --- milestone 4: SSTV is public too
+check "viewer sees SSTV config"   200 "$(code -b "$VJAR" "$BASE/api/sstv")"
+check "viewer sees SSTV gallery"  200 "$(code -b "$VJAR" "$BASE/api/events?decoder=sstv")"
+check "viewer can't change SSTV"  403 "$(code -X PUT -b "$VJAR" -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"channels":[]}' "$BASE/api/sstv")"
+check "viewer can't delete images" 403 "$(code -X DELETE -b "$VJAR" "$BASE/api/sstv/image/1")"
 check "viewer can't change APRS"  403 "$(code -X PUT -b "$VJAR" -H 'Content-Type: application/json' \
   -d '{"enabled":true,"channels":[]}' "$BASE/api/aprs")"
 rm -f "$VJAR"

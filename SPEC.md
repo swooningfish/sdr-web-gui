@@ -81,7 +81,10 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
 3. **APRS** ✅ — channelizer + FM demod, Direwolf (one per channel, KISS over TCP), APRS parser
    (positions, compressed, Mic-E, objects, items, status, messages, weather), station table,
    Leaflet map with tracks, packet log, HA device tracker for tracked stations.
-4. **SSTV** — native decoder + test WAVs, gallery, per-image WAV.
+4. **SSTV** ✅ — native decoder (Robot 36/72, Martin M1/M2, Scottie S1/S2/DX, PD 50–240;
+   VIS auto-detect, per-line sync tracking + least-squares slant correction, partial images),
+   encoder for tests and the synthetic source, live line-by-line view, gallery. FM/USB/LSB.
+   Per-image WAV recording moved to M5 (whole-pass recording).
 5. **Scheduler + ISS** — profiles, dwell times, TLE/sgp4 passes, Doppler, pass recordings.
 6. **Live audio + polish** — Opus streaming, settings UI, health/diagnostics, docs.
 

@@ -32,7 +32,7 @@ fn dedupe_window(decoder: &str) -> Duration {
 /// Amateur radio traffic is public; everything else (TPMS, neighbours'
 /// sensors) is shown to admins only unless configured otherwise.
 pub fn is_public(decoder: &str) -> bool {
-    decoder == crate::decoders::aprs::NAME
+    decoder == crate::decoders::aprs::NAME || decoder == crate::decoders::sstv::NAME
 }
 
 #[derive(Clone, Debug, Serialize, sqlx::FromRow)]
@@ -232,14 +232,43 @@ pub async fn recent_events(db: &SqlitePool, decoder: Option<&str>, limit: i64) -
 }
 
 /// Delete events older than `days`, and untracked devices not heard since.
+/// SSTV images are kept until deleted by hand.
 pub async fn purge(db: &SqlitePool, days: i64) -> Result<(u64, u64)> {
     let cutoff = db::now_ms() - days * 86_400_000;
-    let e = sqlx::query("DELETE FROM events WHERE ts < ?").bind(cutoff).execute(db).await?;
-    let d = sqlx::query("DELETE FROM devices WHERE last_seen < ? AND tracked = 0")
+    let e = sqlx::query(
+        "DELETE FROM events WHERE ts < ? \
+         AND device_id NOT IN (SELECT id FROM devices WHERE decoder = 'sstv')",
+    )
+    .bind(cutoff)
+    .execute(db)
+    .await?;
+    let d = sqlx::query("DELETE FROM devices WHERE last_seen < ? AND tracked = 0 AND decoder != 'sstv'")
         .bind(cutoff)
         .execute(db)
         .await?;
     Ok((e.rows_affected(), d.rows_affected()))
+}
+
+/// (id, device_id, ts, freq_hz, rssi, snr, data, decoder)
+type EventDecoderRow = (i64, i64, i64, Option<i64>, Option<f64>, Option<f64>, String, String);
+
+/// An event and the decoder of its device.
+pub async fn get_event(db: &SqlitePool, id: i64) -> Result<Option<(EventRow, String)>> {
+    let row: Option<EventDecoderRow> = sqlx::query_as(
+        "SELECT e.id, e.device_id, e.ts, e.freq_hz, e.rssi, e.snr, e.data, d.decoder \
+         FROM events e JOIN devices d ON d.id = e.device_id WHERE e.id = ?",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.map(|(id, device_id, ts, freq_hz, rssi, snr, data, decoder)| {
+        (EventRow { id, device_id, ts, freq_hz, rssi, snr, data }, decoder)
+    }))
+}
+
+pub async fn delete_event(db: &SqlitePool, id: i64) -> Result<bool> {
+    let r = sqlx::query("DELETE FROM events WHERE id = ?").bind(id).execute(db).await?;
+    Ok(r.rows_affected() > 0)
 }
 
 async fn store(db: &SqlitePool, ev: &DecodedEvent) -> Result<(Device, EventRow)> {

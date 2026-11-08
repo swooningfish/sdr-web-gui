@@ -127,6 +127,31 @@ export interface Rtl433Info {
   mqtt: MqttStatus | null;
 }
 
+export type Demod = 'fm' | 'usb' | 'lsb';
+
+export interface SstvChannel {
+  label: string;
+  frequency_hz: number;
+  demod: Demod;
+  enabled: boolean;
+}
+
+export interface SstvConfig {
+  enabled: boolean;
+  channels: SstvChannel[];
+}
+
+export interface SstvChannelStatus extends SstvChannel {
+  in_band: boolean;
+  receiving: { mode: string; lines: number; height: number } | null;
+  images: number;
+}
+
+export interface SstvInfo {
+  config: SstvConfig;
+  status: { enabled: boolean; channels: SstvChannelStatus[] };
+}
+
 export type RadioPatch = Partial<RadioSettings> & { auto_gain?: boolean };
 
 export class ApiError extends Error {
@@ -201,6 +226,9 @@ export const api = {
     req<EventRow[]>('GET', `/events?limit=${limit}${decoder ? `&decoder=${decoder}` : ''}`),
   aprs: () => req<AprsInfo>('GET', '/aprs'),
   setAprs: (config: AprsConfig) => req<{ config: AprsConfig }>('PUT', '/aprs', config),
+  sstv: () => req<SstvInfo>('GET', '/sstv'),
+  setSstv: (config: SstvConfig) => req<{ config: SstvConfig }>('PUT', '/sstv', config),
+  deleteSstvImage: (id: number) => req('DELETE', `/sstv/image/${id}`),
   aprsTracks: (since: number) => req<Track[]>('GET', `/aprs/tracks?since=${Math.floor(since)}`),
   rtl433: () => req<Rtl433Info>('GET', '/decoders/rtl_433'),
   setRtl433: (config: Rtl433Config) => req<{ config: Rtl433Config }>('PUT', '/decoders/rtl_433', config),

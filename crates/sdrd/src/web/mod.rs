@@ -21,6 +21,7 @@ use crate::auth::{self, RateLimiter, Role, Session};
 use crate::config::Config;
 use crate::decoders::aprs::AprsHandle;
 use crate::decoders::rtl433::Rtl433Handle;
+use crate::decoders::sstv::SstvHandle;
 use crate::events::EventFeed;
 use crate::mqtt::MqttHandle;
 use crate::radio::RadioHandle;
@@ -29,6 +30,7 @@ mod aprs_routes;
 mod auth_routes;
 mod radio_routes;
 mod sensors;
+mod sstv_routes;
 mod users;
 mod ws;
 
@@ -41,6 +43,9 @@ pub struct AppState {
     pub limiter: Arc<Mutex<RateLimiter>>,
     pub rtl433: Rtl433Handle,
     pub aprs: AprsHandle,
+    pub sstv: SstvHandle,
+    /// Live SSTV rows (binary frames) for WebSocket clients.
+    pub sstv_rows_tx: broadcast::Sender<Bytes>,
     pub event_feed: EventFeed,
     pub mqtt: Option<MqttHandle>,
 }
@@ -85,9 +90,11 @@ pub fn router(state: AppState) -> Router {
         .route("/decoders/rtl_433/check", post(sensors::check_spec))
         .route("/aprs", get(aprs_routes::get_config).put(aprs_routes::set_config))
         .route("/aprs/tracks", get(aprs_routes::tracks))
+        .route("/sstv", get(sstv_routes::get_config).put(sstv_routes::set_config))
+        .route("/sstv/image/{id}", get(sstv_routes::image).delete(sstv_routes::delete_image))
         .route("/ws", get(ws::handler))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "not found") })
-        .layer(SetResponseHeaderLayer::overriding(
+        .layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),
         ));
