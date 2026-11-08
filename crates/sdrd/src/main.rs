@@ -25,6 +25,9 @@ mod decoders;
 mod dsp;
 mod events;
 mod mqtt;
+mod orbit;
+mod recorder;
+mod scheduler;
 mod radio;
 mod web;
 
@@ -71,15 +74,36 @@ async fn serve() -> Result<()> {
 
     // Decoders → events → SQLite, WebSocket clients and MQTT.
     let (events_tx, events_rx) = tokio::sync::mpsc::channel(1024);
+    // The scheduler publishes the Doppler shift of the satellite being tracked.
+    let (doppler_tx, doppler_rx) = tokio::sync::watch::channel(None);
     let rtl433 = decoders::rtl433::spawn(&db, cfg.rtl433_path.clone(), iq_tx.subscribe(), events_tx.clone()).await?;
-    let aprs = decoders::aprs::spawn(&db, cfg.direwolf_path.clone(), iq_tx.subscribe(), events_tx.clone()).await?;
+    let aprs = decoders::aprs::spawn(
+        &db,
+        cfg.direwolf_path.clone(),
+        iq_tx.subscribe(),
+        events_tx.clone(),
+        doppler_rx.clone(),
+    )
+    .await?;
     let (sstv_rows_tx, _) = broadcast::channel(256);
     let sstv = decoders::sstv::spawn(
         &db,
         cfg.data_dir.join("sstv"),
         iq_tx.subscribe(),
-        events_tx,
+        events_tx.clone(),
         sstv_rows_tx.clone(),
+        doppler_rx.clone(),
+    )
+    .await?;
+    let recorder = recorder::spawn(iq_tx.subscribe(), doppler_rx)?;
+    let schedule = scheduler::spawn(
+        db.clone(),
+        cfg.data_dir.clone(),
+        radio.clone(),
+        sstv.clone(),
+        recorder,
+        doppler_tx,
+        events_tx,
     )
     .await?;
     let mqtt = cfg.mqtt.clone().map(|m| mqtt::spawn(m, db.clone()));
@@ -122,6 +146,7 @@ async fn serve() -> Result<()> {
         aprs,
         sstv,
         sstv_rows_tx,
+        schedule,
         event_feed,
         mqtt,
     };

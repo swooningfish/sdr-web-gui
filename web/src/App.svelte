@@ -15,17 +15,20 @@
   import AprsSettings from './components/AprsSettings.svelte';
   import Sstv from './components/Sstv.svelte';
   import SstvSettings from './components/SstvSettings.svelte';
+  import Passes from './components/Passes.svelte';
+  import ScheduleSettings from './components/ScheduleSettings.svelte';
 
   let user = $state<User | null>(null);
   let checking = $state(true);
   let radio = $state<RadioState | null>(null);
   let wsUp = $state(false);
-  let view = $state<'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'sstv' | 'settings'>('spectrum');
+  let view = $state<'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'sstv' | 'passes' | 'settings'>('spectrum');
   let waterfall = $state<ReturnType<typeof Waterfall> | undefined>();
   let sensors = $state<ReturnType<typeof Sensors> | undefined>();
   let dashboard = $state<ReturnType<typeof Dashboard> | undefined>();
   let aprs = $state<ReturnType<typeof Aprs> | undefined>();
   let sstv = $state<ReturnType<typeof Sstv> | undefined>();
+  let passes = $state<ReturnType<typeof Passes> | undefined>();
 
   const isAdmin = $derived(user?.role === 'admin');
 
@@ -46,7 +49,10 @@
       onRadio: (st) => (radio = st),
       onEvent: (d, ev) => {
         if (d.decoder === 'aprs') aprs?.push(d, ev);
-        else if (d.decoder === 'sstv') sstv?.push(d, ev);
+        else if (d.decoder === 'sstv') {
+          sstv?.push(d, ev);
+          passes?.push(d, ev);
+        } else if (d.decoder === 'passes') passes?.push(d, ev);
         else {
           sensors?.push(d, ev);
           dashboard?.push(d, ev);
@@ -112,6 +118,7 @@
       <button type="button" class="tab" class:active={view === 'sensors'} onclick={() => (view = 'sensors')}>Sensors</button>
       <button type="button" class="tab" class:active={view === 'aprs'} onclick={() => (view = 'aprs')}>APRS</button>
       <button type="button" class="tab" class:active={view === 'sstv'} onclick={() => (view = 'sstv')}>SSTV</button>
+      <button type="button" class="tab" class:active={view === 'passes'} onclick={() => (view = 'passes')}>Passes</button>
       <button type="button" class="tab" class:active={view === 'settings'} onclick={() => (view = 'settings')}>Settings</button>
     </nav>
     <div class="status-bar">
@@ -150,12 +157,16 @@
     <div hidden={view !== 'sstv'}>
       <Sstv bind:this={sstv} {isAdmin} {radio} />
     </div>
+    <div hidden={view !== 'passes'}>
+      <Passes bind:this={passes} {isAdmin} onsettings={() => (view = 'settings')} />
+    </div>
     {#if view === 'settings'}
       <div class="settings-view">
         <Account {user} />
         {#if isAdmin}<DecoderSettings />{/if}
         {#if isAdmin}<AprsSettings />{/if}
         {#if isAdmin}<SstvSettings />{/if}
+        {#if isAdmin}<ScheduleSettings />{/if}
         {#if isAdmin}<Users me={user} />{/if}
       </div>
     {/if}
@@ -256,11 +267,18 @@
     .status-bar {
       margin-left: 0;
     }
-    /* Five tabs don't fit a phone at full padding. */
+    /* The tabs don't all fit a phone: let the bar scroll sideways. */
     nav {
       width: 100%;
-      justify-content: space-between;
       gap: 0;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    nav::-webkit-scrollbar {
+      display: none;
+    }
+    .tab {
+      flex: none;
     }
     .tab {
       padding: 6px 7px;

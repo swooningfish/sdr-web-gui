@@ -78,6 +78,13 @@ impl Ddc {
         }
     }
 
+    /// Retune the mixer without disturbing the filter state (Doppler
+    /// tracking). The phase stays continuous.
+    pub fn set_offset(&mut self, in_rate: u32, offset_hz: f64) {
+        let w = -std::f64::consts::TAU * offset_hz / in_rate as f64;
+        self.step = Complex::new(w.cos(), w.sin());
+    }
+
     /// Feed interleaved cu8 samples; appends complex output (±1.0 full scale).
     pub fn process_cu8(&mut self, data: &[u8], out: &mut Vec<Complex32>) {
         let keep = self.taps.len() - 1;

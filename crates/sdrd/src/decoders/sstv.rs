@@ -34,6 +34,7 @@ use crate::db;
 use crate::dsp::ddc::{audio_decimation, fits, Ddc};
 use crate::dsp::fm::FmDemod;
 use crate::radio::{IqBlock, MAX_FREQ_HZ, MIN_FREQ_HZ};
+use crate::scheduler::{shift_hz, DopplerRx};
 use crate::sstv::decode::{Decoder, Image, Output};
 use crate::sstv::tone::ToneDemod;
 
@@ -78,6 +79,9 @@ pub struct SstvChannel {
     pub frequency_hz: u64,
     pub demod: Demod,
     pub enabled: bool,
+    /// Satellite downlink: follow the Doppler shift during passes.
+    #[serde(default)]
+    pub doppler: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -94,6 +98,7 @@ impl Default for SstvConfig {
             frequency_hz,
             demod: Demod::Fm,
             enabled: true,
+            doppler: true,
         };
         SstvConfig {
             enabled: true,
@@ -173,6 +178,7 @@ pub async fn spawn(
     iq_rx: broadcast::Receiver<Arc<IqBlock>>,
     events: mpsc::Sender<DecodedEvent>,
     rows_tx: broadcast::Sender<Bytes>,
+    doppler: DopplerRx,
 ) -> anyhow::Result<SstvHandle> {
     std::fs::create_dir_all(&images_dir)?;
     let cfg = match db::get_setting::<SstvConfig>(db, SETTINGS_KEY).await {
@@ -193,6 +199,7 @@ pub async fn spawn(
         events,
         rows_tx,
         images_dir: images_dir.clone(),
+        doppler,
     };
     std::thread::Builder::new()
         .name("sstv".into())
@@ -244,6 +251,8 @@ struct Dsp {
     key: (u64, u32),
     ddc: Ddc,
     audio: AudioDemod,
+    /// Doppler shift currently applied to the mixer.
+    shift: f64,
 }
 
 struct Rx {
@@ -265,6 +274,7 @@ struct Worker {
     events: mpsc::Sender<DecodedEvent>,
     rows_tx: broadcast::Sender<Bytes>,
     images_dir: Arc<Path>,
+    doppler: DopplerRx,
 }
 
 impl Worker {
@@ -334,12 +344,19 @@ impl Worker {
                     self.stop_rx(i, ch);
                 }
                 let key = (block.center_hz, block.sample_rate);
+                let shift = if ch.cfg.doppler { shift_hz(&self.doppler, ch.cfg.frequency_hz) } else { 0.0 };
+                let offset = target + shift - block.center_hz as f64;
                 if ch.dsp.as_ref().map(|s| s.key) != Some(key) {
                     ch.dsp = Some(Dsp {
                         key,
-                        ddc: Ddc::with_cutoff(block.sample_rate, target - block.center_hz as f64, decim, d.cutoff_hz()),
+                        ddc: Ddc::with_cutoff(block.sample_rate, offset, decim, d.cutoff_hz()),
                         audio: AudioDemod::new(d, rate),
+                        shift,
                     });
+                }
+                if let Some(s) = ch.dsp.as_mut().filter(|s| (s.shift - shift).abs() > 1.0) {
+                    s.ddc.set_offset(block.sample_rate, offset);
+                    s.shift = shift;
                 }
                 let rx = ch.rx.get_or_insert_with(|| {
                     let tone = ToneDemod::new(rate as f64);

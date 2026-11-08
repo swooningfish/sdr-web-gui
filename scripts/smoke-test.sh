@@ -63,6 +63,18 @@ if [[ -n "$SSTV_ID" ]]; then
   check "SSTV image is a PNG" "image/png" "$(curl -s -o /dev/null -w '%{content_type}' -b "$JAR" "$BASE/api/sstv/image/$SSTV_ID")"
   check "SSTV thumbnail"      200 "$(code -b "$JAR" "$BASE/api/sstv/image/$SSTV_ID?thumb=true")"
 fi
+check "schedule"               200 "$(code -b "$JAR" "$BASE/api/schedule")"
+check "location out of range"  400 "$(code -X PUT -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"lat_deg":200,"lon_deg":0,"alt_m":0}' "$BASE/api/schedule/location")"
+check "test pass too short"    400 "$(code -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"seconds":1}' "$BASE/api/schedule/test")"
+check "bad TLE rejected"       400 "$(code -X PUT -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"name":"X","line1":"1 nonsense","line2":"2 nonsense"}' "$BASE/api/schedule/tle")"
+SCHED=$(curl -s -b "$JAR" "$BASE/api/schedule" | sed -n 's/^{"config":\(.*\),"status":.*/\1/p')
+BAD=$(sed 's/"dwell_s":[0-9]*/"dwell_s":1/' <<<"$SCHED")
+check "schedule rejects 1 s dwell" 400 "$(code -X PUT -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d "$BAD" "$BASE/api/schedule")"
+check "audio for non-pass 404" 404 "$(code -b "$JAR" "$BASE/api/passes/1/audio")"
 CSP=$(curl -sI "$BASE/" | tr -d '\r' | grep -i '^content-security-policy:')
 grep -q "img-src 'self' data: blob: https://tile.openstreetmap.org" <<<"$CSP"; check "CSP allows map tiles" 0 $?
 CHECK=$(curl -s -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
@@ -89,6 +101,12 @@ check "viewer sees SSTV gallery"  200 "$(code -b "$VJAR" "$BASE/api/events?decod
 check "viewer can't change SSTV"  403 "$(code -X PUT -b "$VJAR" -H 'Content-Type: application/json' \
   -d '{"enabled":true,"channels":[]}' "$BASE/api/sstv")"
 check "viewer can't delete images" 403 "$(code -X DELETE -b "$VJAR" "$BASE/api/sstv/image/1")"
+# --- milestone 5: passes and scheduling
+check "viewer sees schedule"      200 "$(code -b "$VJAR" "$BASE/api/schedule")"
+check "viewer can't set location" 403 "$(code -X PUT -b "$VJAR" -H 'Content-Type: application/json' \
+  -d '{"lat_deg":51.5,"lon_deg":0,"alt_m":0}' "$BASE/api/schedule/location")"
+check "viewer can't start test pass" 403 "$(code -b "$VJAR" -H 'Content-Type: application/json' \
+  -d '{"seconds":30}' "$BASE/api/schedule/test")"
 check "viewer can't change APRS"  403 "$(code -X PUT -b "$VJAR" -H 'Content-Type: application/json' \
   -d '{"enabled":true,"channels":[]}' "$BASE/api/aprs")"
 rm -f "$VJAR"

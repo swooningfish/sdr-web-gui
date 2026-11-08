@@ -32,7 +32,9 @@ fn dedupe_window(decoder: &str) -> Duration {
 /// Amateur radio traffic is public; everything else (TPMS, neighbours'
 /// sensors) is shown to admins only unless configured otherwise.
 pub fn is_public(decoder: &str) -> bool {
-    decoder == crate::decoders::aprs::NAME || decoder == crate::decoders::sstv::NAME
+    decoder == crate::decoders::aprs::NAME
+        || decoder == crate::decoders::sstv::NAME
+        || decoder == crate::scheduler::PASSES
 }
 
 #[derive(Clone, Debug, Serialize, sqlx::FromRow)]
@@ -284,17 +286,17 @@ pub async fn recent_events(db: &SqlitePool, decoder: Option<&str>, limit: i64) -
 }
 
 /// Delete events older than `days`, and untracked devices not heard since.
-/// SSTV images are kept until deleted by hand.
+/// SSTV images and pass recordings are kept until deleted by hand.
 pub async fn purge(db: &SqlitePool, days: i64) -> Result<(u64, u64)> {
     let cutoff = db::now_ms() - days * 86_400_000;
     let e = sqlx::query(
         "DELETE FROM events WHERE ts < ? \
-         AND device_id NOT IN (SELECT id FROM devices WHERE decoder = 'sstv')",
+         AND device_id NOT IN (SELECT id FROM devices WHERE decoder IN ('sstv', 'passes'))",
     )
     .bind(cutoff)
     .execute(db)
     .await?;
-    let d = sqlx::query("DELETE FROM devices WHERE last_seen < ? AND tracked = 0 AND decoder != 'sstv'")
+    let d = sqlx::query("DELETE FROM devices WHERE last_seen < ? AND tracked = 0 AND decoder NOT IN ('sstv', 'passes')")
         .bind(cutoff)
         .execute(db)
         .await?;

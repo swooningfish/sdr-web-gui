@@ -20,6 +20,7 @@ use crate::db;
 use crate::dsp::ddc::{audio_decimation, fits, Ddc};
 use crate::dsp::fm::FmDemod;
 use crate::radio::{IqBlock, MAX_FREQ_HZ, MIN_FREQ_HZ};
+use crate::scheduler::{shift_hz, DopplerRx};
 
 pub const NAME: &str = "aprs";
 const SETTINGS_KEY: &str = "decoder.aprs";
@@ -36,6 +37,9 @@ pub struct AprsChannel {
     pub label: String,
     pub frequency_hz: u64,
     pub enabled: bool,
+    /// Satellite downlink: follow the Doppler shift during passes.
+    #[serde(default)]
+    pub doppler: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -47,10 +51,15 @@ pub struct AprsConfig {
 
 impl Default for AprsConfig {
     fn default() -> Self {
-        let ch = |label: &str, frequency_hz| AprsChannel { label: label.into(), frequency_hz, enabled: true };
+        let ch = |label: &str, frequency_hz, doppler| AprsChannel {
+            label: label.into(),
+            frequency_hz,
+            enabled: true,
+            doppler,
+        };
         AprsConfig {
             enabled: true,
-            channels: vec![ch("APRS", 144_800_000), ch("ISS APRS", 145_825_000)],
+            channels: vec![ch("APRS", 144_800_000, false), ch("ISS APRS", 145_825_000, true)],
         }
     }
 }
@@ -119,6 +128,7 @@ pub async fn spawn(
     path: String,
     iq_rx: broadcast::Receiver<Arc<IqBlock>>,
     events: mpsc::Sender<DecodedEvent>,
+    doppler: DopplerRx,
 ) -> anyhow::Result<AprsHandle> {
     let cfg = match db::get_setting::<AprsConfig>(db, SETTINGS_KEY).await {
         Ok(Some(c)) if c.validate().is_ok() => c,
@@ -136,6 +146,7 @@ pub async fn spawn(
         cfg_rx,
         status: Arc::new(status_tx),
         events,
+        doppler,
     };
     std::thread::Builder::new()
         .name("aprs".into())
@@ -182,7 +193,8 @@ impl Drop for Proc {
 struct Chan {
     cfg: AprsChannel,
     proc: Option<Proc>,
-    dsp: Option<((u64, u32), Ddc, FmDemod)>,
+    /// (centre, rate) it was built for, the filter, the demod, applied Doppler shift.
+    dsp: Option<((u64, u32), Ddc, FmDemod, f64)>,
     retry_at: Instant,
     backoff: Duration,
 }
@@ -193,6 +205,7 @@ struct Worker {
     cfg_rx: watch::Receiver<AprsConfig>,
     status: Status,
     events: mpsc::Sender<DecodedEvent>,
+    doppler: DopplerRx,
 }
 
 impl Worker {
@@ -294,15 +307,21 @@ impl Worker {
                 }
 
                 let key = (block.center_hz, block.sample_rate);
+                let shift = if ch.cfg.doppler { shift_hz(&self.doppler, ch.cfg.frequency_hz) } else { 0.0 };
+                let offset = ch.cfg.frequency_hz as f64 + shift - block.center_hz as f64;
                 if ch.dsp.as_ref().map(|(k, ..)| *k) != Some(key) {
-                    let offset = ch.cfg.frequency_hz as f64 - block.center_hz as f64;
                     ch.dsp = Some((
                         key,
                         Ddc::with_cutoff(block.sample_rate, offset, decim, CHANNEL_BW / 2.0),
                         FmDemod::new(rate, FULL_SCALE_DEV),
+                        shift,
                     ));
                 }
-                let (_, ddc, fm) = ch.dsp.as_mut().unwrap();
+                let (_, ddc, fm, applied) = ch.dsp.as_mut().unwrap();
+                if (*applied - shift).abs() > 1.0 {
+                    ddc.set_offset(block.sample_rate, offset);
+                    *applied = shift;
+                }
                 iq.clear();
                 ddc.process_cu8(&block.data, &mut iq);
                 audio.clear();

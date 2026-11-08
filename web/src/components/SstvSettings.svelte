@@ -17,6 +17,7 @@
       label: c.label,
       demod: c.demod,
       enabled: c.enabled,
+      doppler: c.doppler,
       freq: (c.frequency_hz / 1e6).toFixed(3),
     }));
   }
@@ -36,7 +37,13 @@
         err = `"${c.freq}" is not a frequency`;
         return;
       }
-      out.push({ label: c.label.trim() || formatMHz(hz, 3), frequency_hz: hz, demod: c.demod, enabled: c.enabled });
+      out.push({
+        label: c.label.trim() || formatMHz(hz, 3),
+        frequency_hz: hz,
+        demod: c.demod,
+        enabled: c.enabled,
+        doppler: c.doppler,
+      });
     }
     busy = true;
     try {
@@ -76,6 +83,9 @@
           <select bind:value={c.demod} aria-label="Channel {i + 1} demodulation">
             {#each DEMODS as d (d.value)}<option value={d.value}>{d.label}</option>{/each}
           </select>
+          <label class="dop" title="Satellite downlink: follow the Doppler shift during passes"
+            ><input type="checkbox" bind:checked={c.doppler} /> Doppler</label
+          >
           <button type="button" class="small danger" onclick={() => channels.splice(i, 1)} aria-label="Remove channel {i + 1}"
             >✕</button
           >
@@ -85,7 +95,7 @@
         type="button"
         class="small"
         disabled={channels.length >= 4}
-        onclick={() => channels.push({ label: '', freq: '145.800', demod: 'fm', enabled: true })}>Add channel</button
+        onclick={() => channels.push({ label: '', freq: '145.800', demod: 'fm', enabled: true, doppler: true })}>Add channel</button
       >
       <div class="save"><button type="submit" class="primary" disabled={busy}>Save</button></div>
       {#if err}<p class="error">{err}</p>{/if}
@@ -110,15 +120,23 @@
   }
   .row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
   }
   .row .label {
-    flex: 1 1 auto;
+    flex: 1 1 8em;
     min-width: 0;
   }
   .row .freq {
     width: 6.5em;
+    flex: none;
+  }
+  .dop {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
     flex: none;
   }
   .row select {

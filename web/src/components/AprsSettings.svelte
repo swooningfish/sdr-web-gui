@@ -13,7 +13,12 @@
   function fill(i: AprsInfo) {
     info = i;
     enabled = i.config.enabled;
-    channels = i.config.channels.map((c) => ({ label: c.label, enabled: c.enabled, freq: (c.frequency_hz / 1e6).toFixed(3) }));
+    channels = i.config.channels.map((c) => ({
+      label: c.label,
+      enabled: c.enabled,
+      doppler: c.doppler,
+      freq: (c.frequency_hz / 1e6).toFixed(3),
+    }));
   }
 
   onMount(() => {
@@ -40,7 +45,7 @@
         err = `"${c.freq}" is not a frequency`;
         return;
       }
-      out.push({ label: c.label.trim() || formatMHz(hz, 3), frequency_hz: hz, enabled: c.enabled });
+      out.push({ label: c.label.trim() || formatMHz(hz, 3), frequency_hz: hz, enabled: c.enabled, doppler: c.doppler });
     }
     busy = true;
     try {
@@ -72,6 +77,9 @@
           <input class="label" bind:value={c.label} maxlength="24" placeholder="Label" aria-label="Channel {i + 1} label" />
           <input class="freq" bind:value={c.freq} inputmode="decimal" aria-label="Channel {i + 1} frequency in MHz" />
           <span class="muted small-text">MHz</span>
+          <label class="dop" title="Satellite downlink: follow the Doppler shift during passes"
+            ><input type="checkbox" bind:checked={c.doppler} /> Doppler</label
+          >
           <button type="button" class="small danger" onclick={() => channels.splice(i, 1)} aria-label="Remove channel {i + 1}"
             >✕</button
           >
@@ -81,7 +89,7 @@
         type="button"
         class="small"
         disabled={channels.length >= 4}
-        onclick={() => channels.push({ label: '', freq: '144.800', enabled: true })}>Add channel</button
+        onclick={() => channels.push({ label: '', freq: '144.800', enabled: true, doppler: false })}>Add channel</button
       >
       <div class="save"><button type="submit" class="primary" disabled={busy}>Save and restart Direwolf</button></div>
       {#if err}<p class="error">{err}</p>{/if}
@@ -119,12 +127,20 @@
   }
   .row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
   }
   .row .label {
-    flex: 1 1 auto;
+    flex: 1 1 8em;
     min-width: 0;
+  }
+  .dop {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+    flex: none;
   }
   .row .freq {
     width: 6.5em;

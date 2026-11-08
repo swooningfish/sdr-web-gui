@@ -25,10 +25,12 @@ use crate::decoders::sstv::SstvHandle;
 use crate::events::EventFeed;
 use crate::mqtt::MqttHandle;
 use crate::radio::RadioHandle;
+use crate::scheduler::SchedulerHandle;
 
 mod aprs_routes;
 mod auth_routes;
 mod radio_routes;
+mod schedule_routes;
 mod sensors;
 mod sstv_routes;
 mod users;
@@ -46,6 +48,7 @@ pub struct AppState {
     pub sstv: SstvHandle,
     /// Live SSTV rows (binary frames) for WebSocket clients.
     pub sstv_rows_tx: broadcast::Sender<Bytes>,
+    pub schedule: SchedulerHandle,
     pub event_feed: EventFeed,
     pub mqtt: Option<MqttHandle>,
 }
@@ -93,6 +96,13 @@ pub fn router(state: AppState) -> Router {
         .route("/aprs", get(aprs_routes::get_config).put(aprs_routes::set_config))
         .route("/aprs/tracks", get(aprs_routes::tracks))
         .route("/sstv", get(sstv_routes::get_config).put(sstv_routes::set_config))
+        .route("/schedule", get(schedule_routes::get).put(schedule_routes::set_config))
+        .route("/schedule/location", axum::routing::put(schedule_routes::set_location))
+        .route("/schedule/tle", axum::routing::put(schedule_routes::set_tle))
+        .route("/schedule/tle/refresh", post(schedule_routes::refresh_tle))
+        .route("/schedule/test", post(schedule_routes::test_pass))
+        .route("/passes/{id}/audio", get(schedule_routes::audio))
+        .route("/passes/{id}", axum::routing::delete(schedule_routes::delete_pass))
         .route("/sstv/image/{id}", get(sstv_routes::image).delete(sstv_routes::delete_image))
         .route("/ws", get(ws::handler))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "not found") })

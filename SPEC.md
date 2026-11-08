@@ -85,7 +85,10 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
    VIS auto-detect, per-line sync tracking + least-squares slant correction, partial images),
    encoder for tests and the synthetic source, live line-by-line view, gallery. FM/USB/LSB.
    Per-image WAV recording moved to M5 (whole-pass recording).
-5. **Scheduler + ISS** — profiles, dwell times, TLE/sgp4 passes, Doppler, pass recordings.
+5. **Scheduler + ISS** ✅ — profiles with dwell times (rotation, SSTV hold), CelesTrak TLEs +
+   SGP4 pass prediction (cross-checked against skyfield), automatic pass tuning, Doppler
+   tracking for flagged decoder channels, Doppler-corrected WAV recording per pass, sky plot,
+   test passes.
 6. **Live audio + polish** — Opus streaming, settings UI, health/diagnostics, docs.
 
 ## Open items

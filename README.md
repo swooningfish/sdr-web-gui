@@ -6,7 +6,7 @@ monitoring: TPMS/ISM sensors (rtl_433), APRS, and SSTV, including automatic ISS/
 
 See [SPEC.md](SPEC.md) for the full design and roadmap.
 
-## Status: milestone 4 (SSTV)
+## Status: milestone 5 (passes and scheduling)
 
 - [x] Rust core (`sdrd`) owns the dongle via librtlsdr (rtl-sdr-blog fork: V4, V3, generic)
 - [x] Live spectrum and waterfall in the browser over WebSocket
@@ -17,7 +17,7 @@ See [SPEC.md](SPEC.md) for the full design and roadmap.
 - [x] M2: rtl_433 / TPMS with a flex-decoder editor, sensor history charts, MQTT and Home Assistant
 - [x] M3: APRS (Direwolf) with a live map, station tracks, packet log and weather charts
 - [x] M4: native SSTV decoder (13 modes, slant correction) with live view and image gallery
-- [ ] M5: scheduler and ISS passes with Doppler correction
+- [x] M5: ISS pass prediction (SGP4, CelesTrak TLEs), automatic pass tuning, Doppler tracking, pass recordings, profile rotation
 - [ ] M6: live audio
 
 ## Prerequisites
@@ -146,8 +146,38 @@ Every line's sync pulse is tracked, so slant from clock differences is corrected
   saved, marked as partial, as long as at least a fifth of the image came through.
 - Images are PNG files in `/data/sstv` and are **not** removed by the event retention period.
 - SSTV is public amateur traffic, so viewer accounts can see it.
-- Doppler on 437.550 MHz (±10 kHz for the ISS) is only partly inside the channel filter
-  until Doppler tracking arrives with the ISS pass scheduler (M5).
+- During ISS passes, channels marked **Doppler** follow the satellite's Doppler shift
+  (±3.5 kHz at 145.8 MHz, ±10 kHz at 437.55 MHz).
+
+## Passes and scheduling
+
+Set the station location under **Settings → Passes & schedule** (or press *Use this device's
+location*). sdrd then predicts passes for 48 hours ahead with SGP4. Orbit data (TLE) comes
+from CelesTrak and is refreshed every 12 h; it can also be pasted in by hand for offline
+setups. Predictions were cross-checked against skyfield: AOS/LOS within a second, look
+angles and range-rate matching to 0.001.
+
+During a pass of an enabled satellite (ISS by default, above 10°):
+
+1. From 30 s before AOS the radio is tuned to the satellite's profile (default the VHF
+   block, which covers ISS SSTV 145.800 and ISS APRS 145.825).
+2. The Doppler shift is published to the decoders, so channels marked *Doppler* track it.
+3. The downlink (default 145.800 MHz FM) is recorded to WAV, Doppler-corrected, in
+   `/data/passes`. Recordings are kept until deleted.
+4. At LOS the previous tuning is restored, or rotation carries on.
+
+The **Passes** tab has:
+
+- a live sky plot with azimuth, elevation, range and Doppler during a pass
+- the next passes with their tracks
+- recordings with an audio player, plus any SSTV images received during each pass
+
+For ARISS events on 437.550 MHz, change the ISS tune and recording frequencies to 437.6 and
+437.550 MHz.
+
+**Rotation** (off by default) cycles through profiles when no pass is on, for example VHF
+block 60 s then ISM 30 s. It never hops away while an SSTV image is coming in (up to 5 min).
+Admins can run a **test pass** to check tuning and recording end to end.
 
 ## MQTT / Home Assistant
 
@@ -196,8 +226,10 @@ RTL-SDR ─USB─► radio thread (librtlsdr) ─► IQ broadcast ─┬► wate
                     ▲ retune                              ├► DDC 433.92 → rtl_433 ──────────┐
                REST /api/radio  ◄── admin UI             ├► DDC 144.800 → FM → Direwolf ───┼► events ─► SQLite, WebSocket, MQTT
                                                           ├► DDC 145.825 → FM → Direwolf ───┤
-                                                          └► DDC 145.800 → FM → SSTV ───────┘─► PNG in /data/sstv
-                                                                 (tone demod, VIS, sync tracking)   + live rows ─► WebSocket
+                                                          ├► DDC 145.800 → FM → SSTV ───────┘─► PNG in /data/sstv
+                                                          │      (tone demod, VIS, sync tracking)   + live rows ─► WebSocket
+                                                          └► recorder (FM, Doppler) ─► WAV in /data/passes
+  scheduler ── TLE (CelesTrak) + SGP4 ─► passes ─► retune radio, Doppler ─► decoders/recorder
 ```
 
 - `crates/sdrd`: Rust daemon (axum, tokio, rustfft, sqlx/SQLite)

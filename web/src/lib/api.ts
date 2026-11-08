@@ -65,6 +65,7 @@ export interface AprsChannel {
   label: string;
   frequency_hz: number;
   enabled: boolean;
+  doppler: boolean;
 }
 
 export interface AprsConfig {
@@ -142,6 +143,97 @@ export interface SstvChannel {
   frequency_hz: number;
   demod: Demod;
   enabled: boolean;
+  doppler: boolean;
+}
+
+export interface Observer {
+  lat_deg: number;
+  lon_deg: number;
+  alt_m: number;
+}
+
+export interface Profile {
+  name: string;
+  center_hz: number;
+  sample_rate: number;
+  dwell_s: number;
+}
+
+export interface SatConfig {
+  name: string;
+  norad_id: number;
+  enabled: boolean;
+  min_elevation_deg: number;
+  center_hz: number;
+  sample_rate: number;
+  record: boolean;
+  record_hz: number;
+}
+
+export interface ScheduleConfig {
+  rotation: boolean;
+  profiles: Profile[];
+  satellites: SatConfig[];
+  lead_s: number;
+}
+
+/** [time ms, azimuth°, elevation°] */
+export type TrackPoint = [number, number, number];
+
+export interface Pass {
+  satellite: string;
+  aos_ms: number;
+  los_ms: number;
+  max_ms: number;
+  max_el_deg: number;
+  aos_az_deg: number;
+  los_az_deg: number;
+  track: TrackPoint[];
+}
+
+export interface Look {
+  az_deg: number;
+  el_deg: number;
+  range_km: number;
+  range_rate_km_s: number;
+}
+
+export interface ActivePass {
+  satellite: string;
+  aos_ms: number;
+  los_ms: number;
+  max_el_deg: number;
+  test: boolean;
+  recording: boolean;
+  look: Look | null;
+  doppler_hz: number | null;
+  record_hz: number;
+  track: TrackPoint[];
+}
+
+export interface TleInfo {
+  norad_id: number;
+  name: string;
+  epoch_ms: number | null;
+  fetched_ms: number | null;
+  source: string | null;
+  error: string | null;
+}
+
+export interface ScheduleStatus {
+  mode: 'manual' | 'rotation' | 'pass';
+  profile: string | null;
+  until_ms: number | null;
+  holding: boolean;
+  active: ActivePass | null;
+  location: Observer | null;
+  passes: Pass[];
+  tles: TleInfo[];
+}
+
+export interface ScheduleInfo {
+  config: ScheduleConfig;
+  status: ScheduleStatus;
 }
 
 export interface SstvConfig {
@@ -238,6 +330,14 @@ export const api = {
   sstv: () => req<SstvInfo>('GET', '/sstv'),
   setSstv: (config: SstvConfig) => req<{ config: SstvConfig }>('PUT', '/sstv', config),
   deleteSstvImage: (id: number) => req('DELETE', `/sstv/image/${id}`),
+  schedule: () => req<ScheduleInfo>('GET', '/schedule'),
+  setSchedule: (config: ScheduleConfig) => req<{ config: ScheduleConfig }>('PUT', '/schedule', config),
+  setLocation: (obs: Observer) => req<{ location: Observer }>('PUT', '/schedule/location', obs),
+  setTle: (name: string, line1: string, line2: string) =>
+    req<{ norad_id: number }>('PUT', '/schedule/tle', { name, line1, line2 }),
+  refreshTle: () => req('POST', '/schedule/tle/refresh'),
+  testPass: (seconds: number) => req('POST', '/schedule/test', { seconds }),
+  deletePass: (id: number) => req('DELETE', `/passes/${id}`),
   aprsTracks: (since: number) => req<Track[]>('GET', `/aprs/tracks?since=${Math.floor(since)}`),
   rtl433: () => req<Rtl433Info>('GET', '/decoders/rtl_433'),
   setRtl433: (config: Rtl433Config) => req<{ config: Rtl433Config }>('PUT', '/decoders/rtl_433', config),
