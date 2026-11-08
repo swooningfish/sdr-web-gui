@@ -129,9 +129,120 @@ export interface PlayerStats {
   underruns: number;
 }
 
+const TARGET = 0.25;
+const MAX = 0.8;
+
+/** FIFO with a small jitter buffer, used on the main thread when AudioWorklet
+ * is unavailable. Same behaviour as public/audio-worklet.js: starts once
+ * TARGET seconds are buffered, re-buffers after an underrun, and trims back to
+ * TARGET if the buffer grows past MAX. */
+export class JitterBuffer {
+  private buf: Float32Array;
+  private r = 0;
+  private w = 0;
+  private n = 0;
+  playing = false;
+  underruns = 0;
+
+  constructor(private sampleRate: number) {
+    this.buf = new Float32Array(Math.ceil(sampleRate * 4));
+  }
+
+  get buffered() {
+    return this.n / this.sampleRate;
+  }
+
+  reset() {
+    this.r = this.w = this.n = 0;
+    this.playing = false;
+  }
+
+  push(s: Float32Array) {
+    const L = this.buf.length;
+    for (let i = 0; i < s.length; i++) {
+      if (this.n === L) {
+        this.r = (this.r + 1) % L;
+        this.n--;
+      }
+      this.buf[this.w] = s[i];
+      this.w = (this.w + 1) % L;
+      this.n++;
+    }
+    if (this.n > this.sampleRate * MAX) {
+      const skip = this.n - Math.floor(this.sampleRate * TARGET);
+      this.r = (this.r + skip) % L;
+      this.n -= skip;
+    }
+  }
+
+  pull(out: Float32Array) {
+    const L = this.buf.length;
+    if (!this.playing && this.n >= this.sampleRate * TARGET) this.playing = true;
+    for (let i = 0; i < out.length; i++) {
+      if (this.playing && this.n > 0) {
+        out[i] = this.buf[this.r];
+        this.r = (this.r + 1) % L;
+        this.n--;
+      } else {
+        out[i] = 0;
+        if (this.playing) {
+          this.playing = false;
+          this.underruns++;
+        }
+      }
+    }
+  }
+}
+
+/** Where resampled audio goes: an AudioWorklet, or a ScriptProcessor fallback. */
+interface Sink {
+  node: AudioNode;
+  push(s: Float32Array): void;
+  reset(): void;
+  close(): void;
+}
+
+async function workletSink(ctx: AudioContext, onstats: (s: PlayerStats) => void): Promise<Sink> {
+  await ctx.audioWorklet.addModule('/audio-worklet.js');
+  const node = new AudioWorkletNode(ctx, 'sdr-player', { outputChannelCount: [1] });
+  node.port.onmessage = (e) => onstats(e.data as PlayerStats);
+  return {
+    node,
+    push: (s) => node.port.postMessage({ samples: s }, [s.buffer]),
+    reset: () => node.port.postMessage({ reset: true }),
+    close: () => node.disconnect(),
+  };
+}
+
+/** AudioWorklet is only exposed in secure contexts (HTTPS or localhost), so a
+ * page opened over plain HTTP on a LAN address falls back to this. */
+function scriptSink(ctx: AudioContext, onstats: (s: PlayerStats) => void): Sink {
+  const fifo = new JitterBuffer(ctx.sampleRate);
+  const node = ctx.createScriptProcessor(4096, 0, 1);
+  let sinceReport = 0;
+  node.onaudioprocess = (e) => {
+    const out = e.outputBuffer.getChannelData(0);
+    fifo.pull(out);
+    sinceReport += out.length;
+    if (sinceReport >= ctx.sampleRate / 4) {
+      sinceReport = 0;
+      onstats({ buffered: fifo.buffered, playing: fifo.playing, underruns: fifo.underruns });
+    }
+  };
+  return {
+    node,
+    push: (s) => fifo.push(s),
+    reset: () => fifo.reset(),
+    close: () => {
+      node.onaudioprocess = null;
+      node.disconnect();
+    },
+  };
+}
+
 export class AudioPlayer {
   private ctx: AudioContext | null = null;
-  private node: AudioWorkletNode | null = null;
+  private sink: Sink | null = null;
   private gain: GainNode | null = null;
   private res = new Resampler();
   private rate = 0;
@@ -141,30 +252,33 @@ export class AudioPlayer {
   async start(volume: number) {
     if (this.ctx) return;
     const ctx = new AudioContext({ latencyHint: 'playback' });
-    await ctx.audioWorklet.addModule('/audio-worklet.js');
-    const node = new AudioWorkletNode(ctx, 'sdr-player', { outputChannelCount: [1] });
-    const gain = ctx.createGain();
-    gain.gain.value = volume;
-    node.connect(gain).connect(ctx.destination);
-    node.port.onmessage = (e) => this.onstats(e.data as PlayerStats);
-    await ctx.resume();
-    this.ctx = ctx;
-    this.node = node;
-    this.gain = gain;
-    this.rate = 0;
+    try {
+      const onstats = (s: PlayerStats) => this.onstats(s);
+      const sink = ctx.audioWorklet ? await workletSink(ctx, onstats) : scriptSink(ctx, onstats);
+      const gain = ctx.createGain();
+      gain.gain.value = volume;
+      sink.node.connect(gain).connect(ctx.destination);
+      await ctx.resume();
+      this.ctx = ctx;
+      this.sink = sink;
+      this.gain = gain;
+      this.rate = 0;
+    } catch (e) {
+      await ctx.close();
+      throw e;
+    }
   }
 
   feed(f: AudioFrame) {
-    if (!this.ctx || !this.node || f.samples === 0) return;
+    if (!this.ctx || !this.sink || f.samples === 0) return;
     if (f.rate !== this.rate) {
       // New mode or capture rate: start the buffer afresh.
       this.rate = f.rate;
       this.res.reset();
-      this.node.port.postMessage({ reset: true });
+      this.sink.reset();
     }
     const pcm = decodeAdpcm(f);
-    const out = this.res.process(pcm, f.rate / this.ctx.sampleRate);
-    this.node.port.postMessage({ samples: out }, [out.buffer]);
+    this.sink.push(this.res.process(pcm, f.rate / this.ctx.sampleRate));
   }
 
   setVolume(v: number) {
@@ -173,8 +287,9 @@ export class AudioPlayer {
 
   async stop() {
     const ctx = this.ctx;
+    this.sink?.close();
     this.ctx = null;
-    this.node = null;
+    this.sink = null;
     this.gain = null;
     await ctx?.close();
   }
