@@ -2,8 +2,19 @@
   import { onMount } from 'svelte';
   import { needle, sReading } from '../lib/smeter';
 
-  /** Analogue S-meter: a needle over an S1–S9 / +60 dB scale. */
-  let { dbm, s9 = -73, label = '' }: { dbm: number | null; s9?: number; label?: string } = $props();
+  /** Analogue S-meter: a needle over an S1–S9 / +60 dB scale. `bar` draws it
+   * as a slim edgewise meter (a straight scale) for the folded receiver bar. */
+  let {
+    dbm,
+    s9 = -73,
+    label = '',
+    bar = false,
+  }: { dbm: number | null; s9?: number; label?: string; bar?: boolean } = $props();
+
+  // Edgewise (bar) geometry: the scale runs from BX0 to BX1.
+  const BX0 = 9;
+  const BX1 = 141;
+  const bx = (pos: number) => BX0 + pos * (BX1 - BX0);
 
   const CX = 120;
   const CY = 152;
@@ -46,6 +57,8 @@
 
 <div
   class="smeter"
+  class:bar
+  title={bar ? (dbm === null ? 'No signal reading' : `${dbm.toFixed(1)} dBm · ${sReading(dbm, s9)}`) : undefined}
   role="meter"
   aria-label="Signal strength{label ? ` at ${label}` : ''}"
   aria-valuemin={s9 - 54}
@@ -53,6 +66,28 @@
   aria-valuenow={dbm ?? undefined}
   aria-valuetext={dbm === null ? 'no signal reading' : `${dbm.toFixed(1)} dBm, ${sReading(dbm, s9)}`}
 >
+  {#if bar}
+    <svg viewBox="0 0 150 26" aria-hidden="true">
+      <defs>
+        <linearGradient id="sm-bar-face" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#f2efdc" />
+          <stop offset="1" stop-color="#ddd8bd" />
+        </linearGradient>
+      </defs>
+      <rect x="0.5" y="0.5" width="149" height="25" rx="3" fill="url(#sm-bar-face)" stroke="#8a8778" />
+      <line x1={BX0} y1="19" x2={bx(0.6)} y2="19" stroke="#1b1b1b" stroke-width="1.5" />
+      <line x1={bx(0.6)} y1="19" x2={BX1} y2="19" stroke="#c81e1e" stroke-width="3.5" />
+      {#each sTicks as t (t.pos)}
+        <line x1={bx(t.pos)} y1="19" x2={bx(t.pos)} y2={t.label ? 14 : 16} stroke="#1b1b1b" stroke-width="1" />
+        {#if t.label}<text x={bx(t.pos)} y="10" class="tick bar-tick">{t.label}</text>{/if}
+      {/each}
+      {#each dbTicks as t (t.pos)}
+        <line x1={bx(t.pos)} y1="18" x2={bx(t.pos)} y2={t.label ? 14 : 16} stroke="#c81e1e" stroke-width="1" />
+        {#if t.label}<text x={bx(t.pos)} y="10" class="tick bar-tick red">{t.label}</text>{/if}
+      {/each}
+      <line x1={bx(shown)} y1="2.5" x2={bx(shown)} y2="23.5" stroke="#2a2a2a" stroke-width="1.6" stroke-linecap="round" />
+    </svg>
+  {:else}
   <svg viewBox="0 0 240 132" aria-hidden="true">
     <defs>
       <linearGradient id="sm-face" x1="0" y1="0" x2="0" y2="1">
@@ -83,6 +118,7 @@
     <text x="224" y="122" class="readout" text-anchor="end">{dbm === null ? '' : sReading(dbm, s9)}</text>
     <line x1={base[0]} y1={base[1]} x2={tip[0]} y2={tip[1]} stroke="#2a2a2a" stroke-width="2.2" stroke-linecap="round" />
   </svg>
+  {/if}
 </div>
 
 <style>
@@ -95,6 +131,11 @@
     background: linear-gradient(#5b5e66, #2d3038);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
   }
+  .smeter.bar {
+    max-width: 150px;
+    border-radius: 5px;
+    padding: 2px;
+  }
   svg {
     width: 100%;
     height: auto;
@@ -105,6 +146,9 @@
     fill: #1b1b1b;
     text-anchor: middle;
     dominant-baseline: middle;
+  }
+  .bar-tick {
+    font-size: 8px;
   }
   .unit {
     font: 700 14px ui-sans-serif, system-ui, sans-serif;

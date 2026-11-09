@@ -197,7 +197,8 @@
         <span class="dot" class:ok={radio.connected} class:bad={!radio.connected}></span>
         <strong class="num">{formatMHz(radio.settings.center_hz, 4)}</strong>
         <span class="muted small-text hide-xs">{formatRate(radio.settings.sample_rate)}</span>
-        {#if dbm !== null}<span class="s-mini small-text">{sReading(dbm, s9)}</span>{/if}
+        <span class="bar-meter"><SMeter bar {dbm} {s9} label={formatMHz(listen.hz, 4)} /></span>
+        {#if dbm !== null}<span class="s-mini small-text hide-xs">{sReading(dbm, s9)}</span>{/if}
       </span>
     {/if}
     <button
@@ -474,6 +475,7 @@
     gap: 6px;
   }
   .mini {
+    flex: 1 1 auto;
     display: inline-flex;
     align-items: center;
     gap: 8px;
@@ -483,6 +485,11 @@
   }
   .num {
     font-variant-numeric: tabular-nums;
+  }
+  .bar-meter {
+    flex: 0 1 150px;
+    min-width: 80px;
+    display: flex;
   }
   .s-mini {
     padding: 1px 8px;
@@ -694,6 +701,15 @@
     }
     .hide-xs {
       display: none;
+    }
+    /* Folded on a phone: give the heading's room to the bar meter (still read out). */
+    .collapsed .top h2 {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
     }
   }
 </style>
