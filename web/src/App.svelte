@@ -7,13 +7,14 @@
   import Settings, { type SettingsTab } from './components/Settings.svelte';
   import Profile from './components/Profile.svelte';
   import Waterfall from './components/Waterfall.svelte';
-  import RadioPanel from './components/RadioPanel.svelte';
+  import ReceiverBar from './components/ReceiverBar.svelte';
+  import PassNotice from './components/PassNotice.svelte';
+  import { schedule } from './lib/schedule.svelte';
   import ListenPanel from './components/ListenPanel.svelte';
   import HarmonicsPanel from './components/HarmonicsPanel.svelte';
   import { MODES, snap, type AudioMode, type Listen } from './lib/audio';
   import { ALL_GROUPS, modeAt } from './lib/bandplan';
   import { bookmarks, type Bookmark } from './lib/bookmarks.svelte';
-  import BookmarksPanel from './components/BookmarksPanel.svelte';
   import BookmarksPage from './components/BookmarksPage.svelte';
   import Sensors from './components/Sensors.svelte';
   import Dashboard from './components/Dashboard.svelte';
@@ -42,6 +43,10 @@
   let aprs = $state<ReturnType<typeof Aprs> | undefined>();
   let sstv = $state<ReturnType<typeof Sstv> | undefined>();
   let passes = $state<ReturnType<typeof Passes> | undefined>();
+  let receiver = $state<ReturnType<typeof ReceiverBar> | undefined>();
+  /** AOS of a pass this browser opted not to jump to the Passes page for. */
+  let keepPage = $state<number | null>(null);
+  let switchedFor: number | null = null;
 
   const isAdmin = $derived(user?.role === 'admin');
 
@@ -67,6 +72,7 @@
       onFrame: (f) => {
         waterfall?.push(f);
         harmonics?.push(f);
+        receiver?.push(f);
       },
       onRadio: (st) => (radio = st),
       onEvent: (d, ev) => {
@@ -99,6 +105,20 @@
       s.stop();
       stream = null;
     };
+  });
+
+  // Scheduler status for the whole app while signed in.
+  $effect(() => {
+    if (user) return schedule.use();
+  });
+
+  // A real pass started with auto-switch on: show the Passes page (once per
+  // pass, unless this browser said to keep its page).
+  $effect(() => {
+    const a = schedule.info?.status.active;
+    if (!a || a.test || !schedule.info?.config.auto_switch || switchedFor === a.aos_ms) return;
+    switchedFor = a.aos_ms;
+    if (keepPage !== a.aos_ms) view = 'passes';
   });
 
   async function logout() {
@@ -210,6 +230,21 @@
   </header>
 
   <main class="content">
+    <div class="rx-area">
+      <ReceiverBar
+        bind:this={receiver}
+        {radio}
+        {isAdmin}
+        {listen}
+        onbookmark={selectBookmark}
+        onmanage={() => (view = 'bookmarks')}
+        onsettings={() => {
+          settingsTab = 'rotation';
+          view = 'settings';
+        }}
+      />
+      <PassNotice {isAdmin} {radio} {keepPage} onkeeppage={(a) => (keepPage = a)} onopen={() => (view = 'passes')} />
+    </div>
     <div class="spectrum-view" hidden={view !== 'spectrum'}>
       <div class="panel wf-panel">
         <Waterfall
@@ -229,8 +264,6 @@
       <div class="side">
         <ListenPanel bind:this={listenPanel} {radio} bind:listen bind:autoMode send={(m) => stream?.send(m)} />
         <HarmonicsPanel bind:this={harmonics} {radio} {listen} {isAdmin} />
-        <BookmarksPanel {listen} {isAdmin} onselect={selectBookmark} onmanage={() => (view = 'bookmarks')} />
-        <RadioPanel {radio} {isAdmin} />
       </div>
     </div>
     <!-- Kept mounted so live events keep arriving while another tab is open. -->
@@ -258,8 +291,8 @@
       <Sstv bind:this={sstv} {isAdmin} {radio} />
     </div>
     <div hidden={view !== 'passes'}>
-      <Passes bind:this={passes} {isAdmin} {radio} onsettings={() => {
-          settingsTab = 'passes';
+      <Passes bind:this={passes} {isAdmin} {radio} onsettings={(t = 'passes') => {
+          settingsTab = t;
           view = 'settings';
         }} />
     </div>
@@ -351,6 +384,12 @@
     padding: 16px;
     max-width: 1600px;
     margin: 0 auto;
+  }
+  .rx-area {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 16px;
+    min-width: 0;
   }
   .spectrum-view {
     display: grid;

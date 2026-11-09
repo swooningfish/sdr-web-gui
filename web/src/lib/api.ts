@@ -315,6 +315,51 @@ export interface ScheduleConfig {
   profiles: Profile[];
   satellites: SatConfig[];
   lead_s: number;
+  /** Retune for passes automatically and switch browsers to the Passes page. */
+  auto_switch: boolean;
+  /** Warn this many seconds before retuning for a pass. */
+  notice_s: number;
+}
+
+/** The next pass the scheduler would tune for. */
+export interface Upcoming {
+  satellite: string;
+  aos_ms: number;
+  los_ms: number;
+  max_el_deg: number;
+  tune_ms: number;
+  center_hz: number;
+  sample_rate: number;
+  /** An admin chose to stay on the current frequency for this pass. */
+  skipped: boolean;
+}
+
+export interface Repeater {
+  callsign: string;
+  freq_hz: number;
+  input_hz: number | null;
+  tone: string | null;
+  city: string;
+  mode: string;
+  status: string | null;
+  distance_mi: number;
+}
+
+export interface RepeaterList {
+  enabled: boolean;
+  radius_miles?: number;
+  fetched_ms?: number | null;
+  fetching?: boolean;
+  error?: string | null;
+  repeaters: Repeater[];
+}
+
+export interface RepeaterConfig {
+  enabled: boolean;
+  has_token: boolean;
+  email: string;
+  country: string;
+  radius_miles: number;
 }
 
 /** [time ms, azimuth°, elevation°] */
@@ -366,6 +411,7 @@ export interface ScheduleStatus {
   until_ms: number | null;
   holding: boolean;
   active: ActivePass | null;
+  upcoming: Upcoming | null;
   location: Observer | null;
   passes: Pass[];
   tles: TleInfo[];
@@ -498,6 +544,12 @@ export const api = {
   refreshTle: () => req('POST', '/schedule/tle/refresh'),
   testPass: (seconds: number) => req('POST', '/schedule/test', { seconds }),
   stopPass: () => req('POST', '/schedule/stop'),
+  skipPass: (aos_ms: number, skip: boolean) => req('POST', '/schedule/skip', { aos_ms, skip }),
+  repeaters: () => req<RepeaterList>('GET', '/repeaters'),
+  repeaterConfig: () => req<RepeaterConfig>('GET', '/repeaters/config'),
+  setRepeaterConfig: (c: Omit<RepeaterConfig, 'has_token'> & { token?: string }) =>
+    req<RepeaterConfig>('PUT', '/repeaters/config', c),
+  refreshRepeaters: () => req<{ count: number }>('POST', '/repeaters/refresh'),
   setRotation: (enabled: boolean) => req<{ rotation: boolean }>('PUT', '/schedule/rotation', { enabled }),
   bookmarks: () => req<Bookmark[]>('GET', '/bookmarks'),
   addBookmark: (b: BookmarkInput) => req<{ id: number }>('POST', '/bookmarks', b),

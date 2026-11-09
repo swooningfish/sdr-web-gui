@@ -15,6 +15,14 @@ async function openTab(page: Page, name: string) {
   await page.waitForTimeout(400);
 }
 
+/** Unfold a section under the receiver (Presets & rotation, Bookmarks, …). */
+async function openDrawer(page: Page, name: RegExp) {
+  const fold = page.getByRole('button', { name: /^(Show|Hide)$/ });
+  if ((await fold.getAttribute('aria-expanded')) === 'false') await fold.click();
+  const btn = page.locator('.drawers').getByRole('button', { name });
+  if ((await btn.getAttribute('aria-expanded')) !== 'true') await btn.click();
+}
+
 /** Pixels the page is wider than the window (0 = no sideways scrolling). */
 async function overflow(page: Page) {
   return page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
@@ -58,8 +66,8 @@ test('spectrum toolbar does not move when hovering the spectrum', async ({ page 
 test('settings are split into tabs, admin only', async ({ page }) => {
   await openTab(page, 'Settings');
   const tabs = page.getByRole('tab');
-  await expect(tabs).toHaveCount(6);
-  for (const name of ['Receiver', 'Decoders', 'Passes', 'Integrations', 'Users', 'System']) {
+  await expect(tabs).toHaveCount(7);
+  for (const name of ['Receiver', 'Decoders', 'Rotation', 'Passes', 'Integrations', 'Users', 'System']) {
     await page.getByRole('tab', { name }).click();
     await expect(page.getByRole('tab', { name })).toHaveAttribute('aria-selected', 'true');
     await expect(page.locator('#settings-panel .panel').first()).toBeVisible();
@@ -160,7 +168,7 @@ test('APRS map shows home and can centre on it', async ({ page }) => {
   expect(Math.abs(h.y + h.height / 2 - (m.y + m.height / 2))).toBeLessThan(25);
 });
 
-test('rotation can be switched on and off from the Receiver panel', async ({ page }, info) => {
+test('rotation can be switched on and off from the receiver presets', async ({ page }, info) => {
   // This changes server state, so run it at one screen size only (the sizes
   // run in parallel against the same server).
   test.skip(info.project.name !== 'desktop-1920', 'state-changing test runs once');
@@ -168,6 +176,7 @@ test('rotation can be switched on and off from the Receiver panel', async ({ pag
   test.skip(!cfg.profiles.length, 'no rotation profiles');
   const before: boolean = cfg.rotation;
   await openTab(page, 'Spectrum');
+  await openDrawer(page, /^Presets/);
   const sw = page.locator('.rotation-box').getByRole('switch', { name: 'Rotation between profiles' });
   await expect(sw).toHaveAttribute('aria-checked', String(before));
   await sw.click();
@@ -196,9 +205,15 @@ test('band plan strip shows and its groups are remembered', async ({ page }) => 
   expect(await overflow(page)).toBeLessThanOrEqual(0);
 });
 
-test('bookmarks panel opens the bookmarks page, which fits the screen', async ({ page }) => {
+test('bookmarks under the receiver open the bookmarks page, which fits the screen', async ({ page }) => {
   await openTab(page, 'Spectrum');
-  await expect(page.getByRole('heading', { name: 'Bookmarks' })).toBeVisible();
+  await openDrawer(page, /^Bookmarks$/);
+  await expect(page.getByRole('list', { name: 'Bookmarks' }).or(page.getByText('No bookmarks yet.'))).toBeVisible();
+  // Calling frequencies are always there.
+  await page.getByRole('button', { name: 'Calling', exact: true }).click();
+  await expect(page.getByRole('list', { name: 'Bookmarks' })).toContainText('FM calling');
+  expect(await overflow(page), 'bookmarks list is wider than the window').toBeLessThanOrEqual(0);
+  await page.getByRole('button', { name: 'Saved', exact: true }).click();
   await page.getByRole('button', { name: '★ Save' }).click();
   await expect(page.getByRole('form', { name: /Bookmark/ })).toBeVisible();
   expect(await overflow(page), 'add form is wider than the window').toBeLessThanOrEqual(0);
@@ -225,8 +240,10 @@ test('a bookmark can be added, listened to and deleted', async ({ page }, info) 
   const row = page.locator('tbody tr').filter({ hasText: name });
   await expect(row).toContainText('mine');
   await row.getByRole('button', { name: 'Listen' }).click();
-  // Back on the spectrum, tuned to it, and it's in the side list.
+  // Back on the spectrum, tuned to it, and it's in the list under the receiver.
   await expect(page.locator('#listen-freq')).toHaveValue('145.5000');
+  await openDrawer(page, /^Bookmarks$/);
+  await page.getByRole('button', { name: 'Saved', exact: true }).click();
   await expect(page.getByRole('list', { name: 'Bookmarks' })).toContainText(name);
   // Delete it again from the page.
   await page.getByRole('button', { name: 'Manage bookmarks' }).click();
@@ -460,4 +477,16 @@ test('a simulated ADS-B receiver can be chosen in settings', async ({ page }, in
   await expect(select.locator('option', { hasText: 'FC2580' })).toBeDisabled();
   await select.selectOption(before);
   await expect.poll(async () => (await adsbInfo(page)).status.receiver.device_id ?? 'off', { timeout: 10000 }).toBe(before);
+});
+
+test('receiver bar is on every page and fits the screen', async ({ page }) => {
+  const tabs = await page.locator('nav button').allInnerTexts();
+  for (const t of tabs) {
+    await openTab(page, t.trim());
+    await expect(page.getByRole('region', { name: 'Receiver' }), `no receiver on "${t}"`).toBeVisible();
+  }
+  await openTab(page, 'Spectrum');
+  await openDrawer(page, /^Gain/);
+  await expect(page.getByRole('meter', { name: /Signal strength/ })).toBeVisible();
+  expect(await overflow(page), 'receiver bar is wider than the window').toBeLessThanOrEqual(0);
 });

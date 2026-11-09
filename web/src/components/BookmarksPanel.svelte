@@ -1,35 +1,141 @@
 <script lang="ts">
-  import { formatMHz } from '../lib/format';
+  import { onMount } from 'svelte';
+  import { formatMHz, relTime } from '../lib/format';
   import type { Listen } from '../lib/audio';
+  import { api, type RepeaterList } from '../lib/api';
+  import { CALLING } from '../lib/calling';
   import { bookmarks, colourOf, matches, type Bookmark, type BookmarkInput, type Scope } from '../lib/bookmarks.svelte';
   import BookmarkEditor from './BookmarkEditor.svelte';
 
-  /** Bookmarks beside the spectrum: find one and click to listen. */
+  /** Bookmarks: the saved list, standard calling frequencies and nearby
+   * repeaters. Find one and click to listen. */
   let {
     listen,
     isAdmin,
     onselect,
     onmanage,
+    bare = false,
   }: {
     listen: Listen;
     isAdmin: boolean;
     onselect: (b: Bookmark) => void;
     onmanage: () => void;
+    /** Inside another panel: no frame or heading of its own. */
+    bare?: boolean;
   } = $props();
+
+  type Source = 'saved' | 'calling' | 'repeaters';
+  const SRC_KEY = 'sdr.bookmarks.source';
+  function savedSource(): Source {
+    try {
+      const v = localStorage.getItem(SRC_KEY);
+      return v === 'calling' || v === 'repeaters' ? v : 'saved';
+    } catch {
+      return 'saved';
+    }
+  }
+  let source = $state<Source>(savedSource());
 
   let q = $state('');
   let scope = $state<Scope>('all');
   let group = $state('');
   let adding = $state<BookmarkInput | null>(null);
   let saved = $state<string | null>(null);
+  let rpt = $state<RepeaterList | null>(null);
 
-  const shown = $derived(bookmarks.list.filter((b) => matches(b, q, scope, group)));
+  function pick(s: Source) {
+    source = s;
+    group = '';
+    try {
+      localStorage.setItem(SRC_KEY, s);
+    } catch {
+      /* private mode */
+    }
+    if (s === 'repeaters') loadRepeaters();
+  }
+
+  async function loadRepeaters() {
+    try {
+      rpt = await api.repeaters();
+    } catch (e) {
+      rpt = { enabled: true, error: e instanceof Error ? e.message : String(e), repeaters: [] };
+    }
+  }
+  onMount(() => {
+    loadRepeaters();
+    // Check again soon while RepeaterBook is being asked, else every 10 minutes.
+    let t: ReturnType<typeof setTimeout>;
+    const again = () => {
+      t = setTimeout(
+        async () => {
+          await loadRepeaters();
+          again();
+        },
+        rpt?.fetching ? 4000 : 600_000,
+      );
+    };
+    again();
+    return () => clearTimeout(t);
+  });
+
+  /** Built-in rows look like bookmarks, so the list and onselect treat them alike. */
+  function pseudo(
+    id: number,
+    name: string,
+    freq_hz: number,
+    mode: Bookmark['mode'],
+    group: string,
+    notes: string | null,
+    colour: string,
+  ): Bookmark {
+    return { id, name, freq_hz, mode, group, colour, notes, shared: true, can_edit: false, updated_at: 0 };
+  }
+  const calling = CALLING.map((c, i) => pseudo(-1 - i, c.name, c.freq_hz, c.mode, c.group, null, '#a3e635'));
+  const repeaters = $derived(
+    (rpt?.repeaters ?? []).map((r, i) =>
+      pseudo(
+        -1000 - i,
+        `${r.callsign}${r.city ? ` · ${r.city}` : ''}`,
+        r.freq_hz,
+        'nfm',
+        r.mode,
+        [
+          r.input_hz ? `in ${(r.input_hz / 1e6).toFixed(4)}` : null,
+          r.tone ? `CTCSS ${r.tone}` : null,
+          `${r.distance_mi} mi`,
+          r.status,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        '#fb923c',
+      ),
+    ),
+  );
+  const pool = $derived(source === 'saved' ? bookmarks.list : source === 'calling' ? calling : repeaters);
+  const groups = $derived(
+    source === 'saved' ? bookmarks.groups : [...new Set(pool.map((b) => b.group).filter((g): g is string => !!g))],
+  );
+  const shown = $derived(pool.filter((b) => matches(b, q, source === 'saved' ? scope : 'all', group)));
   const hasShared = $derived(bookmarks.list.some((b) => b.shared));
   const hasMine = $derived(bookmarks.list.some((b) => !b.shared));
 
   function startAdd() {
     saved = null;
     adding = { name: '', freq_hz: listen.hz, mode: listen.mode, group: null, colour: null, notes: null, shared: isAdmin };
+  }
+
+  /** Keep a calling frequency or repeater as a real bookmark. */
+  function keep(b: Bookmark) {
+    saved = null;
+    adding = {
+      name: (source === 'calling' ? `${b.group} ${b.name}` : b.name).slice(0, 64),
+      freq_hz: b.freq_hz,
+      mode: b.mode,
+      group: source === 'calling' ? 'Calling' : 'Repeaters',
+      colour: null,
+      notes: b.notes,
+      shared: isAdmin,
+    };
   }
 
   async function save(b: BookmarkInput) {
@@ -39,9 +145,30 @@
   }
 </script>
 
-<section class="panel">
+<section class:panel={!bare} class:bare>
   <div class="head">
-    <h2>Bookmarks</h2>
+    {#if !bare}<h2>Bookmarks</h2>{/if}
+    <div class="sources" role="group" aria-label="Which list">
+      <button type="button" class="small" class:active={source === 'saved'} aria-pressed={source === 'saved'} onclick={() => pick('saved')}
+        >Saved</button
+      >
+      <button
+        type="button"
+        class="small"
+        class:active={source === 'calling'}
+        aria-pressed={source === 'calling'}
+        title="Standard calling frequencies (IARU Region 1 / UK band plans)"
+        onclick={() => pick('calling')}>Calling</button
+      >
+      <button
+        type="button"
+        class="small"
+        class:active={source === 'repeaters'}
+        aria-pressed={source === 'repeaters'}
+        title="Repeaters near the station, from RepeaterBook"
+        onclick={() => pick('repeaters')}>Repeaters</button
+      >
+    </div>
     <div class="tools">
       <button
         type="button"
@@ -72,20 +199,41 @@
   {/if}
   {#if saved}<p class="success small-text">{saved}</p>{/if}
 
-  {#if bookmarks.list.length}
+  {#if source === 'repeaters'}
+    {#if !rpt}
+      <p class="muted small-text note">Loading…</p>
+    {:else if !rpt.enabled}
+      <p class="muted small-text note">
+        Nearby repeaters come from RepeaterBook. {isAdmin
+          ? 'Switch it on with your RepeaterBook API token in Settings → Integrations.'
+          : 'An admin can switch this on.'}
+      </p>
+    {:else if rpt.error}
+      <p class="small-text note error-text">{rpt.error}</p>
+    {:else if rpt.fetching && !rpt.repeaters.length}
+      <p class="muted small-text note">Fetching from RepeaterBook…</p>
+    {:else if rpt.fetched_ms}
+      <p class="muted small-text note">
+        {rpt.repeaters.length} within {rpt.radius_miles} mi, updated {relTime(rpt.fetched_ms)}. Data courtesy of
+        RepeaterBook.com.
+      </p>
+    {/if}
+  {/if}
+
+  {#if pool.length}
     <div class="filters">
       <input type="search" bind:value={q} placeholder="Search…" aria-label="Search bookmarks" />
-      {#if hasShared && hasMine}
+      {#if source === 'saved' && hasShared && hasMine}
         <select bind:value={scope} aria-label="Which bookmarks">
           <option value="all">All</option>
           <option value="shared">Station</option>
           <option value="mine">Mine</option>
         </select>
       {/if}
-      {#if bookmarks.groups.length}
+      {#if groups.length}
         <select bind:value={group} aria-label="Group">
-          <option value="">All groups</option>
-          {#each bookmarks.groups as g (g)}<option value={g}>{g}</option>{/each}
+          <option value="">{source === 'saved' ? 'All groups' : source === 'calling' ? 'All bands' : 'All modes'}</option>
+          {#each groups as g (g)}<option value={g}>{g}</option>{/each}
         </select>
       {/if}
     </div>
@@ -100,17 +248,33 @@
             title={b.notes ?? ''}
           >
             <span class="swatch" style:background={colourOf(b)}></span>
-            <span class="name">{b.name}{#if !b.shared}<span class="mine" title="Only you see this"> · mine</span>{/if}</span>
+            <span class="name"
+              >{#if source === 'calling'}<span class="band">{b.group}</span>
+              {/if}{b.name}{#if !b.shared}<span class="mine" title="Only you see this"> · mine</span
+                >{/if}{#if source === 'repeaters' && b.notes}<span class="sub">{b.notes}</span>{/if}</span
+            >
             <span class="freq">{(b.freq_hz / 1e6).toFixed(4)}</span>
-            <span class="mode">{b.mode.toUpperCase()}</span>
+            <span class="mode">{source === 'repeaters' ? b.group : b.mode.toUpperCase()}</span>
           </button>
+          {#if b.id < 0}
+            <button
+              type="button"
+              class="keep small"
+              aria-label="Save {b.name} as a bookmark"
+              title="Save as a bookmark"
+              disabled={!!adding}
+              onclick={() => keep(b)}>☆</button
+            >
+          {/if}
         </li>
       {:else}
         <li class="muted small-text empty">Nothing matches.</li>
       {/each}
     </ul>
-  {:else if bookmarks.loaded && !adding}
-    <p class="muted small-text">No bookmarks yet. <strong>★ Save</strong> keeps the frequency you're tuned to.</p>
+  {:else if source === 'saved' && bookmarks.loaded && !adding}
+    <p class="muted small-text note">No bookmarks yet. <strong>★ Save</strong> keeps the frequency you're tuned to.</p>
+  {:else if source === 'repeaters' && rpt?.enabled && !rpt.error && !rpt.fetching && rpt.fetched_ms}
+    <p class="muted small-text note">Nothing within {rpt.radius_miles} mi. Widen the radius in Settings → Integrations.</p>
   {/if}
   {#if bookmarks.error}<p class="error">{bookmarks.error}</p>{/if}
 </section>
@@ -118,18 +282,34 @@
 <style>
   .head {
     display: flex;
-    align-items: baseline;
+    flex-wrap: wrap;
+    align-items: center;
     justify-content: space-between;
     gap: 8px;
   }
+  .panel .head h2 {
+    margin: 0;
+  }
+  .sources,
   .tools {
     display: flex;
-    gap: 6px;
+    gap: 4px;
+  }
+  .sources .active {
+    background: var(--accent);
+    color: var(--accent-text);
+    border-color: var(--accent);
   }
   .icon {
     display: inline-grid;
     place-items: center;
     padding: 4px 7px;
+  }
+  .note {
+    margin: 8px 0 0;
+  }
+  .error-text {
+    color: var(--bad);
   }
   .filters {
     display: flex;
@@ -155,8 +335,14 @@
     display: grid;
     gap: 2px;
   }
+  li {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+  }
   .item {
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     display: grid;
     grid-template-columns: 10px minmax(0, 1fr) auto 3.4em;
     align-items: center;
@@ -174,6 +360,17 @@
     background: var(--surface-2);
     border-color: var(--ok);
   }
+  .keep {
+    flex: none;
+    padding: 2px 7px;
+    background: transparent;
+    border-color: transparent;
+    color: var(--muted);
+  }
+  .keep:hover:not(:disabled) {
+    color: var(--accent);
+    border-color: var(--border);
+  }
   .swatch {
     width: 10px;
     height: 10px;
@@ -184,9 +381,17 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .band,
   .mine {
     color: var(--muted);
     font-size: 12px;
+  }
+  .sub {
+    display: block;
+    color: var(--muted);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .freq {
     font-variant-numeric: tabular-nums;

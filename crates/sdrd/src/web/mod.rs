@@ -33,6 +33,7 @@ mod aprs_routes;
 mod auth_routes;
 mod bookmark_routes;
 mod radio_routes;
+mod repeater_routes;
 mod schedule_routes;
 mod sensors;
 mod sstv_routes;
@@ -124,6 +125,7 @@ pub fn router(state: AppState) -> Router {
         .route("/schedule/tle/refresh", post(schedule_routes::refresh_tle))
         .route("/schedule/test", post(schedule_routes::test_pass))
         .route("/schedule/stop", post(schedule_routes::stop_pass))
+        .route("/schedule/skip", post(schedule_routes::skip_pass))
         .route("/system", get(system_routes::get))
         .route("/schedule/geocode", get(schedule_routes::geocode))
         .route("/passes/{id}/audio", get(schedule_routes::audio))
@@ -140,6 +142,9 @@ pub fn router(state: AppState) -> Router {
         .route("/bookmarks/delete", post(bookmark_routes::remove_many))
         .route("/bookmarks/export.csv", get(bookmark_routes::export))
         .route("/bookmarks/import", post(bookmark_routes::import))
+        .route("/repeaters", get(repeater_routes::list))
+        .route("/repeaters/config", get(repeater_routes::get_config).put(repeater_routes::set_config))
+        .route("/repeaters/refresh", post(repeater_routes::refresh_now))
         .route("/ws", get(ws::handler))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "not found") })
         .layer(SetResponseHeaderLayer::if_not_present(

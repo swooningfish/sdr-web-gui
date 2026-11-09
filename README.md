@@ -365,11 +365,22 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
   marker to move the radio) and click the level (e.g. **×8**) to fit the whole range
   again. An arrow at the edge points to the radio when it's off the part shown. Hide it
   under **Band plan**.
-- **Bookmarks:** flags above the spectrum and a list under *Listen*; click one to listen
-  (admins also retune if it's outside the band). **★ Save** keeps the current frequency.
-  The **station list** is shared with everyone (admins edit it); **mine** are yours
-  alone. The cog opens the Bookmarks page: edit, delete several, export CSV, or import a
-  CSV (our own export, CHIRP or gqrx `bookmarks.csv`).
+- **Receiver bar:** at the top of every page, under the tabs: the device, centre frequency
+  and nudges, and an analogue **S-meter** for the channel you're listening to (read from the
+  spectrum, so it works without audio; dBm is estimated from the gain, with a per-browser
+  trim and an optional IARU VHF scale under *Gain & settings*). **Presets & rotation**,
+  **Bookmarks** and **Gain & settings** fold out below it; **Hide** folds the whole bar to
+  one line. Each browser remembers what's open.
+- **Presets & rotation:** the built-in presets plus every rotation profile as a quick-tune
+  button, and the rotation switch.
+- **Bookmarks:** flags above the spectrum and a list in the receiver bar; click one to
+  listen (admins also retune if it's outside the band). **★ Save** keeps the current
+  frequency. The **station list** is shared with everyone (admins edit it); **mine** are
+  yours alone. **Calling** lists standard calling frequencies (IARU Region 1 / UK band
+  plans) and **Repeaters** lists repeaters near the station from RepeaterBook (see
+  [Settings](#settings)); ☆ saves one as a bookmark. The cog opens the Bookmarks page:
+  edit, delete several, export CSV, or import a CSV (our own export, CHIRP or gqrx
+  `bookmarks.csv`).
 - **Harmonics check (admins):** click a short-range device's signal (a key fob, sensor or
   telemetry link) so you're listening to it, then **Check harmonics** in the side column.
   It measures the carrier, retunes to the 2nd–5th harmonics (as far as the dongle reaches),
@@ -389,8 +400,16 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
 ## Settings
 
 Admins get **Settings**, split into tabs: Receiver (SDR devices), Decoders (rtl_433, APRS,
-SSTV), Passes (location, satellites, rotation, TLEs, test pass), Integrations (MQTT / Home
-Assistant), Users and System (read-only server settings). Everyone can open their
+SSTV), Rotation (profiles), Passes (location, satellites, auto-switch, TLEs, test pass),
+Integrations (MQTT / Home Assistant, RepeaterBook), Users and System (read-only server
+settings).
+
+**RepeaterBook** (Integrations) fills *Bookmarks → Repeaters* with repeaters within a radius
+(default 1 mile) of the station location. RepeaterBook only serves approved clients:
+request API access at repeaterbook.com, then enter the token and a contact email (it goes
+in the User-Agent, as RepeaterBook requires). The token stays on the server. The country
+list is fetched at most once a day and only repeaters inside the radius are kept. Their
+terms allow personal use; check them before sharing the station more widely. Everyone can open their
 **profile** from their username in the header to change their password or sign out.
 
 ## Passes and scheduling
@@ -405,6 +424,11 @@ angles and range-rate matching to 0.001.
 
 During a pass of an enabled satellite (ISS by default, above 10°):
 
+0. With **auto-switch** on (Settings → Passes, the default), a notice under the receiver
+   counts down to the pass (from 2 min before tuning). Admins can press **Stay** to keep
+   the current tuning for that pass; anyone can **Keep this page**. Otherwise it switches
+   on its own, and every open page jumps to Passes when the pass starts. With auto-switch
+   off, passes are only predicted and shown.
 1. From 30 s before AOS the radio is tuned to the satellite's profile (default the VHF
    block, which covers ISS SSTV 145.800 and ISS APRS 145.825).
 2. The Doppler shift is published to the decoders, so channels marked *Doppler* track it.
@@ -423,9 +447,9 @@ For ARISS events on 437.550 MHz, change the ISS tune and recording frequencies t
 
 **Rotation** (off by default) cycles through profiles when no pass is on, for example VHF
 block 60 s then ISM 30 s. It never hops away while an SSTV image is coming in (up to 5 min).
-Admins switch it on or off with the **Rotation** switch in the Receiver panel or on the
-Passes tab (or `PUT /api/schedule/rotation {"enabled": true}`); profiles are edited in
-Settings → Passes.
+Admins switch it on or off with the **Rotation** switch under the receiver's presets or on
+the Passes tab (or `PUT /api/schedule/rotation {"enabled": true}`); profiles are edited in
+Settings → Rotation and show as quick-tune buttons under the receiver's presets.
 Admins can run a **test pass** to check tuning and recording end to end. A pass in progress
 (real or test) can be stopped from the Passes tab or Settings.
 

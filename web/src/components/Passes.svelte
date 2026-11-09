@@ -8,8 +8,11 @@
   import SkyPlot from './SkyPlot.svelte';
   import RotationToggle from './RotationToggle.svelte';
 
-  let { isAdmin, radio, onsettings }: { isAdmin: boolean; radio: RadioState | null; onsettings: () => void } =
-    $props();
+  let {
+    isAdmin,
+    radio,
+    onsettings,
+  }: { isAdmin: boolean; radio: RadioState | null; onsettings: (tab?: 'passes' | 'rotation') => void } = $props();
 
   let info = $state<ScheduleInfo | null>(null);
   let recordings = $state<EventRow[]>([]);
@@ -114,7 +117,7 @@
         </span>
       {/if}
     </div>
-    <div class="rotation-row"><RotationToggle {isAdmin} {onsettings} /></div>
+    <div class="rotation-row"><RotationToggle {isAdmin} onsettings={() => onsettings('rotation')} /></div>
     {#if err}<p class="error">{err}</p>{/if}
     {#each [...skipped] as [name, why] (name)}
       <p class="callout small-text"><span class="na-tag">Disabled</span> {name} passes are skipped. {why}.</p>
@@ -122,7 +125,7 @@
     {#if st && !st.location}
       <p class="callout small-text">
         Set the station's location to predict passes.
-        {#if isAdmin}<button type="button" class="small" onclick={onsettings}>Open settings</button>{/if}
+        {#if isAdmin}<button type="button" class="small" onclick={() => onsettings()}>Open settings</button>{/if}
       </p>
     {/if}
     {#if st}

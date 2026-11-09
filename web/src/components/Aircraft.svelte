@@ -25,7 +25,7 @@
     radio: RadioState | null;
     /** The tab is showing: poll only then. */
     active: boolean;
-    onsettings: (tab: 'receiver' | 'passes') => void;
+    onsettings: (tab: 'receiver' | 'passes' | 'rotation') => void;
   } = $props();
 
   type SortKey = 'name' | 'type' | 'alt' | 'speed' | 'dist' | 'squawk' | 'seen';

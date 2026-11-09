@@ -83,6 +83,21 @@ pub struct ScheduleConfig {
     pub satellites: Vec<SatConfig>,
     /// Tune this many seconds before AOS.
     pub lead_s: u32,
+    /// Retune (and record) automatically for passes, and have browsers
+    /// switch to the Passes page. Off: passes are only predicted and shown.
+    #[serde(default = "default_true")]
+    pub auto_switch: bool,
+    /// Warn browsers this many seconds before the radio is retuned for a pass.
+    #[serde(default = "default_notice_s")]
+    pub notice_s: u32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_notice_s() -> u32 {
+    120
 }
 
 impl Default for ScheduleConfig {
@@ -105,6 +120,8 @@ impl Default for ScheduleConfig {
                 record_hz: 145_800_000,
             }],
             lead_s: 30,
+            auto_switch: true,
+            notice_s: default_notice_s(),
         }
     }
 }
@@ -134,6 +151,9 @@ impl ScheduleConfig {
         }
         if self.lead_s > 300 {
             return Err("lead time must be at most 300 s".into());
+        }
+        if !(10..=1800).contains(&self.notice_s) {
+            return Err("pass notice must be 10–1800 s".into());
         }
         for p in &self.profiles {
             check_name(&p.name)?;
@@ -194,6 +214,21 @@ pub struct ActiveStatus {
     pub track: Vec<(i64, f32, f32)>,
 }
 
+/// The next pass the scheduler would tune for.
+#[derive(Clone, Debug, Serialize)]
+pub struct Upcoming {
+    pub satellite: String,
+    pub aos_ms: i64,
+    pub los_ms: i64,
+    pub max_el_deg: f64,
+    /// When the radio will be retuned (AOS minus the lead time).
+    pub tune_ms: i64,
+    pub center_hz: u64,
+    pub sample_rate: u32,
+    /// An admin chose to stay on the current frequency for this pass.
+    pub skipped: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Default)]
 pub struct ScheduleStatus {
     /// "manual", "rotation" or "pass".
@@ -203,6 +238,7 @@ pub struct ScheduleStatus {
     /// Rotation is waiting for an SSTV image to finish.
     pub holding: bool,
     pub active: Option<ActiveStatus>,
+    pub upcoming: Option<Upcoming>,
     pub location: Option<Observer>,
     pub passes: Vec<Pass>,
     pub tles: Vec<TleInfo>,
@@ -213,6 +249,8 @@ enum Cmd {
     TestPass(u32),
     /// End the pass in progress (test or real) now.
     Stop,
+    /// Stay on the current tuning for (or un-skip) the pass with this AOS.
+    Skip(i64, bool),
     Reload,
 }
 
@@ -269,6 +307,10 @@ impl SchedulerHandle {
     /// Stop the pass in progress; a real pass is then skipped, not restarted.
     pub async fn stop_pass(&self) {
         let _ = self.cmd_tx.send(Cmd::Stop).await;
+    }
+
+    pub async fn skip_pass(&self, aos_ms: i64, skip: bool) {
+        let _ = self.cmd_tx.send(Cmd::Skip(aos_ms, skip)).await;
     }
 
     pub async fn test_pass(&self, seconds: u32) {
@@ -378,7 +420,8 @@ struct Run {
     /// Recordings being finalised → the pass they belong to.
     pending: HashMap<PathBuf, (SatConfig, Pass, bool)>,
     tune_error: bool,
-    /// AOS times of real passes stopped by hand (so they aren't restarted).
+    /// AOS times of real passes stopped or skipped by hand (so they aren't
+    /// started or restarted).
     skipped: Vec<i64>,
 }
 
@@ -420,6 +463,14 @@ impl Run {
                         self.rot_until = 0;
                     }
                     Cmd::TestPass(secs) => self.start_test(secs),
+                    Cmd::Skip(aos, skip) => {
+                        self.skipped.retain(|&a| a != aos);
+                        if skip {
+                            self.skipped.push(aos);
+                            tracing::info!(aos_ms = aos, "upcoming pass skipped by hand");
+                        }
+                        self.step().await;
+                    }
                     Cmd::Stop => {
                         if let Some(a) = self.active.as_ref() {
                             if !a.test {
@@ -655,23 +706,41 @@ impl Run {
         if self.active.as_ref().is_some_and(|a| now > a.pass.los_ms + 5_000) {
             self.end().await;
         }
-        if self.active.is_none() {
-            let lead = cfg.lead_s as i64 * 1000;
-            self.skipped.retain(|aos| now - aos < 3 * 3_600_000);
+        let lead = cfg.lead_s as i64 * 1000;
+        self.skipped.retain(|aos| now - aos < 3 * 3_600_000);
+        let eligible = |id: u32| {
+            cfg.satellites
+                .iter()
+                .any(|s| s.norad_id == id && s.enabled && covers(&ranges, s.center_hz))
+        };
+        if self.active.is_none() && cfg.auto_switch {
             let next = self.passes.iter().find(|(id, p)| {
-                now >= p.aos_ms - lead
-                    && now < p.los_ms
-                    && !self.skipped.contains(&p.aos_ms)
-                    && cfg
-                        .satellites
-                        .iter()
-                        .any(|s| s.norad_id == *id && s.enabled && covers(&ranges, s.center_hz))
+                now >= p.aos_ms - lead && now < p.los_ms && !self.skipped.contains(&p.aos_ms) && eligible(*id)
             });
             if let Some((id, p)) = next.cloned() {
                 let sat = cfg.satellites.iter().find(|s| s.norad_id == id).cloned().unwrap();
                 self.start(sat, p, false);
             }
         }
+        // The next pass we'd tune for, so browsers can warn before it happens.
+        let active_aos = self.active.as_ref().map(|a| a.pass.aos_ms);
+        let upcoming = self
+            .passes
+            .iter()
+            .find(|(id, p)| now < p.los_ms && Some(p.aos_ms) != active_aos && eligible(*id))
+            .and_then(|(id, p)| {
+                let s = cfg.satellites.iter().find(|s| s.norad_id == *id)?;
+                Some(Upcoming {
+                    satellite: s.name.clone(),
+                    aos_ms: p.aos_ms,
+                    los_ms: p.los_ms,
+                    max_el_deg: p.max_el_deg,
+                    tune_ms: p.aos_ms - lead,
+                    center_hz: s.center_hz,
+                    sample_rate: s.sample_rate,
+                    skipped: self.skipped.contains(&p.aos_ms),
+                })
+            });
 
         // Doppler and live look angles for the pass in progress.
         let mut active_status = None;
@@ -737,6 +806,7 @@ impl Run {
             until_ms: until,
             holding,
             active: active_status,
+            upcoming,
             location: *self.loc_rx.borrow(),
             passes: self.passes.iter().map(|(_, p)| p.clone()).collect(),
             tles: self.tles.clone(),

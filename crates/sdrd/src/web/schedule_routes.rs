@@ -49,7 +49,7 @@ pub async fn set_rotation(
 ) -> Result<Json<Value>, ApiError> {
     let mut cfg = state.schedule.config();
     if r.enabled && cfg.profiles.is_empty() {
-        return Err(ApiError::bad_request("add a rotation profile in Settings → Passes first"));
+        return Err(ApiError::bad_request("add a rotation profile in Settings → Rotation first"));
     }
     cfg.rotation = r.enabled;
     state
@@ -119,6 +119,36 @@ pub async fn stop_pass(State(state): State<AppState>, AdminUser(admin): AdminUse
     }
     state.schedule.stop_pass().await;
     tracing::info!(by = %admin.user.username, "pass stopped");
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkipReq {
+    aos_ms: i64,
+    #[serde(default = "yes")]
+    skip: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// Stay on the current tuning for an upcoming pass (or change your mind).
+pub async fn skip_pass(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Json(r): Json<SkipReq>,
+) -> Result<Json<Value>, ApiError> {
+    let st = state.schedule.status();
+    if !st.passes.iter().any(|p| p.aos_ms == r.aos_ms) {
+        return Err(ApiError::bad_request("no such pass"));
+    }
+    if st.active.as_ref().is_some_and(|a| a.aos_ms == r.aos_ms && !a.test) {
+        return Err(ApiError::bad_request("that pass has started; stop it on the Passes page"));
+    }
+    state.schedule.skip_pass(r.aos_ms, r.skip).await;
+    tracing::info!(by = %admin.user.username, aos_ms = r.aos_ms, skip = r.skip, "pass skip changed");
     Ok(Json(json!({ "ok": true })))
 }
 

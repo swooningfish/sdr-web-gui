@@ -1,30 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type ScheduleInfo } from '../lib/api';
+  import { api } from '../lib/api';
   import { countdown } from '../lib/passes';
+  import { schedule } from '../lib/schedule.svelte';
 
   /** Quick on/off for profile rotation, with what it's doing right now. */
   let { isAdmin, onsettings }: { isAdmin: boolean; onsettings?: () => void } = $props();
 
-  let info = $state<ScheduleInfo | null>(null);
   let busy = $state(false);
   let err = $state<string | null>(null);
-  let now = $state(Date.now());
 
-  async function load() {
-    try {
-      info = await api.schedule();
-      now = Date.now();
-    } catch {
-      /* keep the last state */
-    }
-  }
-
-  onMount(() => {
-    load();
-    const t = setInterval(load, 3000);
-    return () => clearInterval(t);
-  });
+  onMount(() => schedule.use());
+  const info = $derived(schedule.info);
+  const now = $derived(schedule.now);
+  const load = () => schedule.load();
 
   const on = $derived(info?.config.rotation ?? false);
   const profiles = $derived(info?.config.profiles ?? []);
@@ -58,7 +47,7 @@
         title={!isAdmin
           ? 'Only admins can change this'
           : profiles.length === 0
-            ? 'Add rotation profiles in Settings → Passes'
+            ? 'Add rotation profiles in Settings → Rotation'
             : on
               ? 'Stop rotating; the radio stays where it is'
               : 'Cycle through the rotation profiles'}

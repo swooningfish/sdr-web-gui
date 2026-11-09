@@ -7,11 +7,13 @@
   import SstvSettings from './SstvSettings.svelte';
   import LocationSettings from './LocationSettings.svelte';
   import ScheduleSettings from './ScheduleSettings.svelte';
+  import RotationSettings from './RotationSettings.svelte';
+  import RepeaterSettings from './RepeaterSettings.svelte';
   import Integrations from './Integrations.svelte';
   import Users from './Users.svelte';
   import SystemInfo from './SystemInfo.svelte';
 
-  export type SettingsTab = 'receiver' | 'decoders' | 'passes' | 'integrations' | 'users' | 'system';
+  export type SettingsTab = 'receiver' | 'decoders' | 'rotation' | 'passes' | 'integrations' | 'users' | 'system';
 
   let {
     radio,
@@ -22,6 +24,7 @@
   const TABS: { id: SettingsTab; label: string }[] = [
     { id: 'receiver', label: 'Receiver' },
     { id: 'decoders', label: 'Decoders' },
+    { id: 'rotation', label: 'Rotation' },
     { id: 'passes', label: 'Passes' },
     { id: 'integrations', label: 'Integrations' },
     { id: 'users', label: 'Users' },
@@ -52,11 +55,14 @@
       <DecoderSettings {radio} />
       <AprsSettings {radio} />
       <SstvSettings {radio} />
+    {:else if tab === 'rotation'}
+      <RotationSettings {radio} />
     {:else if tab === 'passes'}
       <LocationSettings />
       <ScheduleSettings {radio} />
     {:else if tab === 'integrations'}
       <Integrations />
+      <RepeaterSettings />
     {:else if tab === 'users'}
       <Users {me} />
     {:else}

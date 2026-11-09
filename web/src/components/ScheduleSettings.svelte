@@ -12,7 +12,6 @@
   let info = $state<ScheduleInfo | null>(null);
   let cfg = $state<ScheduleConfig | null>(null);
   // Frequencies are edited as MHz text.
-  let profFreq = $state<string[]>([]);
   let satFreq = $state<string[]>([]);
   let satRec = $state<string[]>([]);
   let tleText = $state('');
@@ -26,7 +25,6 @@
   function fill(i: ScheduleInfo) {
     info = i;
     cfg = structuredClone(i.config);
-    profFreq = i.config.profiles.map((p) => mhz(p.center_hz));
     satFreq = i.config.satellites.map((s) => mhz(s.center_hz));
     satRec = i.config.satellites.map((s) => mhz(s.record_hz));
   }
@@ -66,11 +64,6 @@
     e.preventDefault();
     if (!cfg) return;
     const out = structuredClone($state.snapshot(cfg)) as ScheduleConfig;
-    for (const [i, p] of out.profiles.entries()) {
-      const hz = parseFrequency(profFreq[i]);
-      if (hz === null) return void (msg = { ok: false, text: `"${profFreq[i]}" is not a frequency` });
-      p.center_hz = hz;
-    }
     for (const [i, s] of out.satellites.entries()) {
       const hz = parseFrequency(satFreq[i]);
       const rec = parseFrequency(satRec[i]);
@@ -79,16 +72,13 @@
       s.record_hz = rec;
     }
     act(async () => {
-      // Rotation is switched on its own (here or on the Spectrum/Passes pages);
-      // keep whatever the server has now rather than this form's copy.
-      out.rotation = (await api.schedule()).config.rotation;
+      // Rotation lives in its own settings tab (and is switched from the
+      // receiver and Passes page): keep whatever the server has now.
+      const cur = (await api.schedule()).config;
+      out.rotation = cur.rotation;
+      out.profiles = cur.profiles;
       fill({ ...info!, config: (await api.setSchedule(out)).config });
     }, 'Schedule saved');
-  }
-
-  function addProfile() {
-    cfg!.profiles.push({ name: 'Profile', center_hz: 145_300_000, sample_rate: 2_048_000, dwell_s: 60 });
-    profFreq.push('145.300');
   }
 
   function addSatellite() {
@@ -161,41 +151,23 @@
       {/each}
       <button type="button" class="small" disabled={cfg.satellites.length >= 4} onclick={addSatellite}>Add satellite</button>
 
-      <h3>Rotation</h3>
+      <h3>Auto-switch for passes</h3>
       <label class="check"
-        ><input
-          type="checkbox"
-          checked={cfg.rotation}
-          disabled={busy}
-          onchange={(e) => {
-            const on = (e.currentTarget as HTMLInputElement).checked;
-            act(async () => {
-              await api.setRotation(on);
-              cfg!.rotation = on;
-            }, on ? 'Rotation on' : 'Rotation off');
-          }}
-        /> Cycle through these profiles when no pass is on (takes effect straight away)</label
+        ><input type="checkbox" bind:checked={cfg.auto_switch} /> Tune to each pass automatically and switch everyone's page to
+        Passes</label
       >
-      <p class="muted small-text hint">Holds while an SSTV image is being received (up to 5 minutes).</p>
-      {#each cfg.profiles as p, i (i)}
-        {@const na = why(profFreq[i])}
-        <div class="row" class:na-row={!!na}>
-          <input class="grow" bind:value={p.name} maxlength="32" aria-label="Profile name" />
-          <input class="f" bind:value={profFreq[i]} inputmode="decimal" aria-label="{p.name} centre frequency in MHz" />
-          <span class="muted small-text">MHz</span>
-          {#if na}<span class="na-tag" title="{na}. Rotation skips this profile.">Not supported</span>{/if}
-          <select bind:value={p.sample_rate} aria-label="{p.name} sample rate">
-            {#each RATES as r (r)}<option value={r}>{formatRate(r)}</option>{/each}
-          </select>
-          <input class="n" type="number" bind:value={p.dwell_s} min="10" max="3600" aria-label="{p.name} dwell in seconds" />
-          <span class="muted small-text">s</span>
-          <button type="button" class="small danger" aria-label="Remove {p.name}" onclick={() => {
-            cfg!.profiles.splice(i, 1);
-            profFreq.splice(i, 1);
-          }}>✕</button>
-        </div>
-      {/each}
-      <button type="button" class="small" disabled={cfg.profiles.length >= 8} onclick={addProfile}>Add profile</button>
+      <p class="muted small-text hint">
+        A notice appears under the receiver beforehand. Admins can choose <strong>Stay</strong> on it to keep the current
+        tuning for that pass; if nobody does, it switches on its own. Off: passes are predicted and shown, but the radio
+        stays where it is (and nothing is recorded).
+      </p>
+      <div class="row">
+        <label
+          >Warn <input class="n" type="number" bind:value={cfg.notice_s} min="10" max="1800" disabled={!cfg.auto_switch} /> s before
+          tuning</label
+        >
+        <label>Tune <input class="n" type="number" bind:value={cfg.lead_s} min="0" max="300" /> s before the satellite rises</label>
+      </div>
       <div class="buttons"><button type="submit" class="primary" disabled={busy}>Save schedule</button></div>
     </form>
 
