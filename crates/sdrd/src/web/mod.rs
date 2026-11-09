@@ -106,6 +106,7 @@ pub fn router(state: AppState) -> Router {
         .route("/aprs/tracks", get(aprs_routes::tracks))
         .route("/sstv", get(sstv_routes::get_config).put(sstv_routes::set_config))
         .route("/schedule", get(schedule_routes::get).put(schedule_routes::set_config))
+        .route("/schedule/rotation", axum::routing::put(schedule_routes::set_rotation))
         .route("/schedule/location", axum::routing::put(schedule_routes::set_location))
         .route("/schedule/tle", axum::routing::put(schedule_routes::set_tle))
         .route("/schedule/tle/refresh", post(schedule_routes::refresh_tle))

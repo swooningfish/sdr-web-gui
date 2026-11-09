@@ -35,6 +35,32 @@ pub async fn set_config(
     Ok(Json(json!({ "config": cfg })))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RotationReq {
+    enabled: bool,
+}
+
+/// Turn profile rotation on or off without touching the rest of the schedule.
+pub async fn set_rotation(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Json(r): Json<RotationReq>,
+) -> Result<Json<Value>, ApiError> {
+    let mut cfg = state.schedule.config();
+    if r.enabled && cfg.profiles.is_empty() {
+        return Err(ApiError::bad_request("add a rotation profile in Settings → Passes first"));
+    }
+    cfg.rotation = r.enabled;
+    state
+        .schedule
+        .set_config(&state.db, cfg)
+        .await
+        .map_err(ApiError::internal)?;
+    tracing::info!(by = %admin.user.username, enabled = r.enabled, "rotation switched");
+    Ok(Json(json!({ "rotation": r.enabled })))
+}
+
 pub async fn set_location(
     State(state): State<AppState>,
     AdminUser(admin): AdminUser,

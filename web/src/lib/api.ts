@@ -402,6 +402,7 @@ export const api = {
   refreshTle: () => req('POST', '/schedule/tle/refresh'),
   testPass: (seconds: number) => req('POST', '/schedule/test', { seconds }),
   stopPass: () => req('POST', '/schedule/stop'),
+  setRotation: (enabled: boolean) => req<{ rotation: boolean }>('PUT', '/schedule/rotation', { enabled }),
   geocode: (q: string) =>
     req<{ places: { name: string; lat_deg: number; lon_deg: number }[] }>(
       'GET',

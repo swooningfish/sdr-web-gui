@@ -6,6 +6,7 @@
   import { compass, countdown, duration } from '../lib/passes';
   import { imageUrl } from '../lib/sstv';
   import SkyPlot from './SkyPlot.svelte';
+  import RotationToggle from './RotationToggle.svelte';
 
   let { isAdmin, radio, onsettings }: { isAdmin: boolean; radio: RadioState | null; onsettings: () => void } =
     $props();
@@ -113,6 +114,7 @@
         </span>
       {/if}
     </div>
+    <div class="rotation-row"><RotationToggle {isAdmin} {onsettings} /></div>
     {#if err}<p class="error">{err}</p>{/if}
     {#each [...skipped] as [name, why] (name)}
       <p class="callout small-text"><span class="na-tag">Disabled</span> {name} passes are skipped. {why}.</p>
@@ -276,6 +278,9 @@
     padding: 2px 9px;
     border: 1px solid var(--border);
     border-radius: 999px;
+  }
+  .rotation-row {
+    margin: 4px 0 10px;
   }
   .callout {
     display: flex;

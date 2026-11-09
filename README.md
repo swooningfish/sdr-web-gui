@@ -328,6 +328,9 @@ For ARISS events on 437.550 MHz, change the ISS tune and recording frequencies t
 
 **Rotation** (off by default) cycles through profiles when no pass is on, for example VHF
 block 60 s then ISM 30 s. It never hops away while an SSTV image is coming in (up to 5 min).
+Admins switch it on or off with the **Rotation** switch in the Receiver panel or on the
+Passes tab (or `PUT /api/schedule/rotation {"enabled": true}`); profiles are edited in
+Settings → Passes.
 Admins can run a **test pass** to check tuning and recording end to end. A pass in progress
 (real or test) can be stopped from the Passes tab or Settings.
 

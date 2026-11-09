@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RotationToggle from './RotationToggle.svelte';
   import { api, type RadioPatch, type RadioState, type SdrDevice } from '../lib/api';
   import { describeRanges, unsupported } from '../lib/coverage';
   import { formatMHz, formatRate, parseFrequency, PRESETS } from '../lib/format';
@@ -167,6 +168,10 @@
       {/each}
     </div>
 
+    <div class="rotation-box">
+      <RotationToggle {isAdmin} />
+    </div>
+
     <div class="grid">
       <label for="rate">Sample rate</label>
       <select
@@ -280,6 +285,11 @@
   }
   .nudges button {
     flex: 1;
+  }
+  .rotation-box {
+    margin: 12px 0 4px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
   }
   .presets {
     display: flex;

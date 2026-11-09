@@ -78,7 +78,12 @@
       s.center_hz = hz;
       s.record_hz = rec;
     }
-    act(async () => fill({ ...info!, config: (await api.setSchedule(out)).config }), 'Schedule saved');
+    act(async () => {
+      // Rotation is switched on its own (here or on the Spectrum/Passes pages);
+      // keep whatever the server has now rather than this form's copy.
+      out.rotation = (await api.schedule()).config.rotation;
+      fill({ ...info!, config: (await api.setSchedule(out)).config });
+    }, 'Schedule saved');
   }
 
   function addProfile() {
@@ -158,7 +163,18 @@
 
       <h3>Rotation</h3>
       <label class="check"
-        ><input type="checkbox" bind:checked={cfg.rotation} /> Cycle through these profiles when no pass is on</label
+        ><input
+          type="checkbox"
+          checked={cfg.rotation}
+          disabled={busy}
+          onchange={(e) => {
+            const on = (e.currentTarget as HTMLInputElement).checked;
+            act(async () => {
+              await api.setRotation(on);
+              cfg!.rotation = on;
+            }, on ? 'Rotation on' : 'Rotation off');
+          }}
+        /> Cycle through these profiles when no pass is on (takes effect straight away)</label
       >
       <p class="muted small-text hint">Holds while an SSTV image is being received (up to 5 minutes).</p>
       {#each cfg.profiles as p, i (i)}

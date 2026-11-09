@@ -156,3 +156,24 @@ test('APRS map shows home and can centre on it', async ({ page }) => {
   expect(Math.abs(h.x + h.width / 2 - (m.x + m.width / 2))).toBeLessThan(25);
   expect(Math.abs(h.y + h.height / 2 - (m.y + m.height / 2))).toBeLessThan(25);
 });
+
+test('rotation can be switched on and off from the Receiver panel', async ({ page }, info) => {
+  // This changes server state, so run it at one screen size only (the sizes
+  // run in parallel against the same server).
+  test.skip(info.project.name !== 'desktop-1920', 'state-changing test runs once');
+  const cfg = (await (await page.request.get('/api/schedule')).json()).config;
+  test.skip(!cfg.profiles.length, 'no rotation profiles');
+  const before: boolean = cfg.rotation;
+  await openTab(page, 'Spectrum');
+  const sw = page.locator('.rotation-box').getByRole('switch', { name: 'Rotation between profiles' });
+  await expect(sw).toHaveAttribute('aria-checked', String(before));
+  await sw.click();
+  await expect(sw).toHaveAttribute('aria-checked', String(!before));
+  expect((await (await page.request.get('/api/schedule')).json()).config.rotation).toBe(!before);
+  // The Passes tab shows the same state.
+  await openTab(page, 'Passes');
+  await expect(page.locator('.rotation-row').getByRole('switch')).toHaveAttribute('aria-checked', String(!before));
+  await page.locator('.rotation-row').getByRole('switch').click(); // put it back
+  await expect(page.locator('.rotation-row').getByRole('switch')).toHaveAttribute('aria-checked', String(before));
+  expect(await overflow(page)).toBeLessThanOrEqual(0);
+});
