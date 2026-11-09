@@ -402,9 +402,17 @@ test('harmonics check rates the simulated SRD against Ofcom and FCC', async ({ p
   const panel = page.locator('section', { has: page.getByRole('heading', { name: 'Harmonics' }) });
   await panel.getByRole('button', { name: 'Check harmonics' }).click();
   await expect(panel.getByLabel('Overall result')).toBeVisible({ timeout: 60_000 });
-  // 2nd at -43 dBc (Ofcom limit -46: fails), 3rd at -33 dBc (fails Ofcom -40, passes FCC -26.8).
+  // 2nd at -43 dBc (Ofcom limit -46: fails), 3rd at -35 dBc (fails Ofcom -40, passes FCC -26.8 by 8 dB).
   await expect(panel.locator('.overall').filter({ hasText: 'Ofcom' }).locator('.badge')).toHaveText('Bad');
   await expect(panel.locator('.overall').filter({ hasText: 'FCC' }).locator('.badge')).toHaveText('Good');
+  // Spurs near the carrier, from the same capture: a comb every 50 kHz keyed with the SRD
+  // (+50 kHz at -40 dBc fails Ofcom's -46), and a steady neighbour 250 kHz up that isn't the SRD's.
+  await expect(panel.getByTestId('near-summary')).toContainText(/every (49|50)\.\d kHz/);
+  const near = panel.locator('ul.near > li');
+  const plus50 = near.filter({ hasText: /\+(49|50)\.\d kHz/ });
+  await expect(plus50.locator('.badge').filter({ hasText: 'Ofcom' })).toHaveText('Ofcom: Bad');
+  await expect(plus50.locator('.badge').filter({ hasText: 'FCC' })).toHaveText('FCC: Good');
+  await expect(near.filter({ hasText: /\+2(49|50)\.\d kHz/ })).toContainText('Not steady with the device');
   // The radio goes back where it was.
   await expect
     .poll(async () => (await (await page.request.get('/api/radio')).json()).settings.center_hz, { timeout: 5000 })

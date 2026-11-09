@@ -172,6 +172,37 @@ export function fccDbc(fundHz: number, harmHz: number, backoffDb: number): Limit
   };
 }
 
+/**
+ * Ofcom limit for an emission close to the carrier (EN 300 220-1 V3.1.1):
+ * within 2.5 × the channel width (OCW) of the carrier it's the out-of-band
+ * mask of Figure 5, 0 dBm/1 kHz at the channel edge sloping to −36 dBm/1 kHz;
+ * beyond that it's the spurious domain (Table 19). Just outside the
+ * operational band it's never above −36 dBm (Figure 6). A spur is a single
+ * line, so all its power falls in the 1 kHz reference bandwidth.
+ */
+export function ofcomNearDbc(fundHz: number, hz: number, ocwHz: number, backoffDb: number): Limit {
+  const band = ofcomBand(fundHz);
+  const carrierDbm = 10 * Math.log10(band?.erpMw ?? 10) - backoffDb;
+  const off = Math.abs(hz - fundHz);
+  let dbm: number;
+  let why: string;
+  if (off < 2.5 * ocwHz) {
+    dbm = -36 * Math.max(0, (off - 0.5 * ocwHz) / (2 * ocwHz));
+    why = `${dbStr(dbm)} dBm out-of-band mask ${kHz(off)} kHz from the carrier (EN 300 220-1 Figure 5, ${kHz(ocwHz)} kHz channel)`;
+  } else {
+    const l = ofcomLimit(hz);
+    dbm = l.dbm;
+    why = `${l.why}, more than 2.5 channel widths out (EN 300 220-1 Table 19)`;
+  }
+  if (band && (hz < band.lo || hz > band.hi) && dbm > -36) {
+    dbm = -36;
+    why = `−36 dBm just outside the ${band.label} band (EN 300 220-1 Figure 6)`;
+  }
+  return { dbc: dbm - carrierDbm, why: `${why} vs a ${fmtDbm(carrierDbm)} carrier` };
+}
+
+const kHz = (hz: number) => (hz / 1000).toFixed(hz < 10_000 ? 1 : 0);
+
 function fmtDbm(dbm: number): string {
   const mw = 10 ** (dbm / 10);
   return `${dbm >= 0 ? '+' : '−'}${Math.abs(dbm).toFixed(1)} dBm (${mw >= 1 ? mw.toFixed(mw < 10 ? 1 : 0) : mw.toFixed(2)} mW ERP)`;
@@ -237,31 +268,7 @@ const dbOf = (p: number) => 10 * Math.log10(Math.max(p, 1e-30));
  * side of the window (as wide as the window, a small gap away).
  */
 export function measure(frames: Captured[], lo: number, hi: number): Measurement {
-  const sig: number[] = [];
-  const noise: number[] = [];
-  let peakBinDb = -Infinity;
-  for (const f of frames) {
-    const n = f.bins.length;
-    const b0 = Math.max(0, Math.floor(binOf(f, lo)));
-    const b1 = Math.min(n - 1, Math.ceil(binOf(f, hi)));
-    if (b1 < b0) continue;
-    const w = b1 - b0 + 1;
-    const gap = Math.max(2, Math.round(w * 0.15));
-    const guard: number[] = [];
-    for (let i = b0 - gap - w; i < b0 - gap; i++) if (i >= 0) guard.push(frameDb(f, i));
-    for (let i = b1 + gap + 1; i <= b1 + gap + w; i++) if (i < n) guard.push(frameDb(f, i));
-    // Narrow window: widen the noise sample so the median is steady.
-    if (guard.length < 16) for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 64))) guard.push(frameDb(f, i));
-    const noisePerBin = lin(median(guard));
-    let p = 0;
-    for (let i = b0; i <= b1; i++) {
-      const db = frameDb(f, i);
-      if (db > peakBinDb) peakBinDb = db;
-      p += lin(db);
-    }
-    noise.push(noisePerBin * w);
-    sig.push(p - noisePerBin * w);
-  }
+  const { sig, noise, peakBinDb } = perFrame(frames, lo, hi);
   if (!sig.length) return { lo, hi, frames: 0, powerDb: null, noiseDb: NaN, ceilingDb: NaN, peakBinDb: NaN, duty: 0 };
 
   // Strongest moment: best running mean, which steadies the noise.
@@ -294,6 +301,36 @@ export function measure(frames: Captured[], lo: number, hi: number): Measurement
     peakBinDb,
     duty: on / sig.length,
   };
+}
+
+/** Per frame: signal power in [lo, hi] (noise removed) and the noise power there. */
+function perFrame(frames: Captured[], lo: number, hi: number): { sig: number[]; noise: number[]; peakBinDb: number } {
+  const sig: number[] = [];
+  const noise: number[] = [];
+  let peakBinDb = -Infinity;
+  for (const f of frames) {
+    const n = f.bins.length;
+    const b0 = Math.max(0, Math.floor(binOf(f, lo)));
+    const b1 = Math.min(n - 1, Math.ceil(binOf(f, hi)));
+    if (b1 < b0) continue;
+    const w = b1 - b0 + 1;
+    const gap = Math.max(2, Math.round(w * 0.15));
+    const guard: number[] = [];
+    for (let i = b0 - gap - w; i < b0 - gap; i++) if (i >= 0) guard.push(frameDb(f, i));
+    for (let i = b1 + gap + 1; i <= b1 + gap + w; i++) if (i < n) guard.push(frameDb(f, i));
+    // Narrow window: widen the noise sample so the median is steady.
+    if (guard.length < 16) for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 64))) guard.push(frameDb(f, i));
+    const noisePerBin = lin(median(guard));
+    let p = 0;
+    for (let i = b0; i <= b1; i++) {
+      const db = frameDb(f, i);
+      if (db > peakBinDb) peakBinDb = db;
+      p += lin(db);
+    }
+    noise.push(noisePerBin * w);
+    sig.push(p - noisePerBin * w);
+  }
+  return { sig, noise, peakBinDb };
 }
 
 /** The carrier: strongest signal within ±`searchHz` of `hz`, and how wide it is. */
@@ -331,6 +368,204 @@ export function findCarrier(
     halfWidth: Math.max(5_000, ((hi - lo) / 2) * 1.25 + 2 * binHz),
     peakDb: hold[pk],
   };
+}
+
+// ----------------------------------------------------- spurs near the carrier
+
+/** Where a nearby spur seems to come from. */
+export type SpurSource = 'device' | 'other' | 'image' | 'unknown';
+
+export interface Spur {
+  hz: number;
+  /** From the carrier (Hz), signed. */
+  offsetHz: number;
+  dbc: number;
+  source: SpurSource;
+}
+
+export interface NearbyScan {
+  /** Span searched (Hz). */
+  lo: number;
+  hi: number;
+  /** Channel width: the carrier's measured 99% occupied bandwidth (Hz). */
+  ocwHz: number;
+  /** Weakest spur that would show, dBc. */
+  ceilingDbc: number;
+  /** Strongest few, in frequency order. */
+  spurs: Spur[];
+  /** Spacing (Hz) if they're evenly spaced around the carrier. */
+  combHz: number | null;
+  /** Whether the carrier switched off long enough to tell its spurs from other signals. */
+  sawOff: boolean;
+}
+
+/** A spur's peak must stand this far above the local floor (averaged, so steady). */
+const SPUR_DB = 6;
+/** Share of each end of the capture ignored: the dongle's filter rolls off there. */
+const EDGE = 0.08;
+/** Bins either side used for the local floor. */
+const FLOOR_SPAN = 32;
+const MAX_SPURS = 12;
+/** Other signals' lines worth listing (so you know they were seen and set aside). */
+const MAX_OTHERS = 4;
+
+/**
+ * Spurs near the carrier, from the frames already captured around it (no
+ * retune). Spectra are averaged over the frames the carrier was on; where it
+ * also went off, each spur is checked against the off frames, as one that
+ * stays when the device stops isn't the device's.
+ */
+export function findSpurs(frames: Captured[], car: { hz: number; halfWidth: number }): NearbyScan | null {
+  const f0 = frames[0];
+  if (!f0) return null;
+  const use = frames.filter((f) => f.bins.length === f0.bins.length && f.centerHz === f0.centerHz);
+  const n = f0.bins.length;
+  const binHz = f0.sampleRate / n;
+
+  // Carrier on or off in each frame (as `measure` counts its duty).
+  const pf = perFrame(use, car.hz - car.halfWidth, car.hz + car.halfWidth);
+  const isOn = pf.sig.map((s, i) => s >= pf.noise[i] * lin(DETECT_DB) * 2);
+  const average = (want: boolean): Float64Array | null => {
+    const acc = new Float64Array(n);
+    let k = 0;
+    use.forEach((f, j) => {
+      if (isOn[j] !== want) return;
+      for (let i = 0; i < n; i++) acc[i] += lin(frameDb(f, i));
+      k++;
+    });
+    if (!k) return null;
+    for (let i = 0; i < n; i++) acc[i] /= k;
+    return acc;
+  };
+  const onCount = isOn.filter(Boolean).length;
+  const offCount = isOn.length - onCount;
+  const onAvg = average(true);
+  if (!onAvg) return null;
+  const offAvg = onCount >= 3 && offCount >= 3 ? average(false) : null;
+  const db = Array.from(onAvg, dbOf);
+
+  // Bins worth searching: not the band edges, the DC spike or the carrier.
+  const edge = Math.ceil(n * EDGE);
+  const dcHalf = Math.max(3, Math.ceil(2_000 / binHz));
+  const cLo = Math.floor(binOf(f0, car.hz - car.halfWidth));
+  const cHi = Math.ceil(binOf(f0, car.hz + car.halfWidth));
+  const usable = (i: number) =>
+    i >= edge && i < n - edge && Math.abs(i - n / 2) > dcHalf && (i < cLo - 2 || i > cHi + 2);
+
+  // Local floor: median of the usable bins around each one.
+  const floor = new Float64Array(n).fill(NaN);
+  for (let i = 0; i < n; i++) {
+    if (!usable(i)) continue;
+    const near: number[] = [];
+    for (let j = i - FLOOR_SPAN; j <= i + FLOOR_SPAN; j++) if (usable(j)) near.push(db[j]);
+    floor[i] = median(near);
+  }
+  const floorNear = (a: number, b: number) => {
+    const xs: number[] = [];
+    for (let j = a; j <= b; j++) if (!Number.isNaN(floor[j])) xs.push(floor[j]);
+    return median(xs);
+  };
+
+  // The carrier on the same footing (averaged, local floor removed).
+  const carFloor = lin(floorNear(cLo - 2 * FLOOR_SPAN, cHi + 2 * FLOOR_SPAN));
+  let carP = 0;
+  for (let i = Math.max(0, cLo); i <= Math.min(n - 1, cHi); i++) carP += Math.max(0, onAvg[i] - carFloor);
+  if (!(carP > 0) || Number.isNaN(carFloor)) return null;
+  const carDb = dbOf(carP);
+  // Occupied bandwidth: the span holding 99% of the carrier's power, which
+  // EN 300 220-1 says the channel (OCW) must contain. Taken as the channel,
+  // as the maker's declared width isn't known here.
+  const excess = (i: number) => Math.max(0, onAvg[i] - carFloor);
+  let kL = Math.max(0, cLo);
+  for (let cut = 0; cut + excess(kL) <= carP * 0.005; kL++) cut += excess(kL);
+  let kR = Math.min(n - 1, cHi);
+  for (let cut = 0; cut + excess(kR) <= carP * 0.005; kR--) cut += excess(kR);
+  const obwHz = Math.max(1, kR - kL + 1) * binHz;
+
+  // Whether a spur in bins [l, r] (average power `p`) was there all through the
+  // carrier's on time, not a burst from something else that happened to land
+  // then: split the on frames into a few stretches and look in each.
+  const onIdx = use.map((_, j) => j).filter((j) => isOn[j]);
+  const chunks = Math.min(4, Math.floor(onIdx.length / 3));
+  const steady = (l: number, r: number, p: number) => {
+    if (chunks < 3) return true;
+    let seen = 0;
+    for (let c = 0; c < chunks; c++) {
+      const part = onIdx.slice(Math.floor((c * onIdx.length) / chunks), Math.floor(((c + 1) * onIdx.length) / chunks));
+      let s = 0;
+      for (const j of part) for (let k = l; k <= r; k++) s += lin(frameDb(use[j], k)) - lin(floor[k]);
+      if (s / part.length >= p / 4) seen++;
+    }
+    return seen >= chunks - 1;
+  };
+
+  const image = 2 * f0.centerHz - car.hz;
+  const spurs: Spur[] = [];
+  for (let i = 1; i < n - 1; i++) {
+    if (!usable(i) || db[i] < floor[i] + SPUR_DB || db[i] < db[i - 1] || db[i] < db[i + 1]) continue;
+    // The spur's extent: out from the peak while 3 dB over the floor.
+    let l = i;
+    while (l > i - 6 && usable(l - 1) && db[l - 1] > floor[l - 1] + 3) l--;
+    let r = i;
+    while (r < i + 6 && usable(r + 1) && db[r + 1] > floor[r + 1] + 3) r++;
+    let p = 0;
+    let pOff = 0;
+    let moment = 0;
+    for (let k = l; k <= r; k++) {
+      const fl = lin(floor[k]);
+      const e = Math.max(0, onAvg[k] - fl);
+      p += e;
+      moment += e * k;
+      if (offAvg) pOff += Math.max(0, offAvg[k] - fl);
+    }
+    if (!(p > 0)) continue;
+    const hz = f0.centerHz - f0.sampleRate / 2 + (moment / p + 0.5) * binHz;
+    let source: SpurSource = 'unknown';
+    if (Math.abs(hz - image) <= car.halfWidth) source = 'image';
+    else if (offAvg && pOff >= p / 2) source = 'other';
+    else if (!steady(l, r, p)) source = 'other';
+    else if (offAvg) source = pOff <= p / 4 ? 'device' : 'unknown';
+    spurs.push({ hz, offsetHz: hz - car.hz, dbc: dbOf(p) - carDb, source });
+    i = r;
+  }
+  // The device's (or maybe the device's) first, then the strongest.
+  const mine = (s: Spur) => s.source === 'device' || s.source === 'unknown';
+  // Other signals: one line per cluster (a burst's sidebands are one signal).
+  const others: Spur[] = [];
+  for (const s of spurs.filter((x) => !mine(x)).sort((a, b) => b.dbc - a.dbc)) {
+    if (others.length >= MAX_OTHERS) break;
+    if (!others.some((o) => Math.abs(o.hz - s.hz) < Math.max(4 * obwHz, 25_000))) others.push(s);
+  }
+  const kept = [...spurs.filter(mine).sort((a, b) => b.dbc - a.dbc).slice(0, MAX_SPURS), ...others].sort(
+    (a, b) => a.hz - b.hz,
+  );
+
+  const lo = f0.centerHz - f0.sampleRate / 2 + edge * binHz;
+  return {
+    lo,
+    hi: lo + (n - 2 * edge) * binHz,
+    ocwHz: obwHz,
+    ceilingDbc: dbOf(lin(floorNear(0, n - 1)) * (lin(SPUR_DB) - 1)) - carDb,
+    spurs: kept,
+    combHz: comb(kept.filter(mine), binHz),
+    sawOff: !!offAvg,
+  };
+}
+
+/** Spacing, if at least three spurs sit at whole multiples of one from the carrier. */
+function comb(spurs: Spur[], binHz: number): number | null {
+  const offs = spurs.map((s) => Math.abs(s.offsetHz)).filter((o) => o > 2 * binHz).sort((a, b) => a - b);
+  for (const d of offs.slice(0, 3)) {
+    const fits = offs.filter((o) => {
+      const k = Math.round(o / d);
+      return k >= 1 && Math.abs(o - k * d) <= Math.max(1.5 * binHz, 0.02 * o);
+    });
+    if (fits.length >= 3) {
+      // Refine from all of them.
+      return fits.reduce((a, o) => a + o / Math.round(o / d), 0) / fits.length;
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------- results
@@ -384,11 +619,17 @@ export function dbStr(v: number): string {
 
 const ORDER: Rating[] = ['bad', 'medium', 'unknown', 'good'];
 
+/** Anything rated: a harmonic or a nearby spur. */
+export interface Rated {
+  skipped: string | null;
+  verdicts: Partial<Record<Regime, Verdict>>;
+}
+
 /**
- * Overall: the worst harmonic measured; "can't tell" only beats "good".
- * Harmonics the receiver can't reach don't count (`checked` says how many did).
+ * Overall: the worst result measured; "can't tell" only beats "good".
+ * Skipped ones (out of range, not this device's) don't count (`checked` says how many did).
  */
-export function overall(results: HarmonicResult[], regime: Regime): { rating: Rating; checked: number; total: number } {
+export function overall(results: Rated[], regime: Regime): { rating: Rating; checked: number; total: number } {
   const vs = results
     .filter((r) => !r.skipped)
     .map((r) => r.verdicts[regime])

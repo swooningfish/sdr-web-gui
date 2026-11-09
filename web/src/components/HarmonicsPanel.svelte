@@ -9,17 +9,23 @@
     fccDbc,
     fccRule,
     findCarrier,
+    findSpurs,
     inRange,
     judge,
     measure,
     ofcomBand,
     ofcomDbc,
+    ofcomNearDbc,
     ordinal,
     overall,
     type Captured,
     type HarmonicResult,
+    type NearbyScan,
+    type Rated,
     type Rating,
     type Regime,
+    type Spur,
+    type Verdict,
   } from '../lib/harmonics';
 
   let { radio, listen, isAdmin }: { radio: RadioState | null; listen: Listen; isAdmin: boolean } = $props();
@@ -52,8 +58,29 @@
     duty: number;
     regimes: Regime[];
     harmonics: HarmonicResult[];
+    near: { scan: NearbyScan; spurs: (Spur & Rated)[] } | null;
     warnings: string[];
     at: number;
+  }
+
+  const SOURCE_NOTE: Record<Spur['source'], string | null> = {
+    device: null,
+    other: 'Not steady with the device: there while it was off, or came and went on its own. Another signal, or the receiver.',
+    image: "Probably the receiver's mirror image of the carrier, not a real emission.",
+    unknown: null,
+  };
+
+  /** Rate the spurs near the carrier (only the ones that could be the device's). */
+  function rateNear(scan: NearbyScan, fundHz: number, regimes: Regime[]): (Spur & Rated)[] {
+    return scan.spurs.map((s) => {
+      const skipped = SOURCE_NOTE[s.source];
+      const verdicts: Partial<Record<Regime, Verdict>> = {};
+      for (const g of regimes) {
+        const limit = g === 'ofcom' ? ofcomNearDbc(fundHz, s.hz, scan.ocwHz, backoff) : fccDbc(fundHz, s.hz, backoff);
+        verdicts[g] = skipped ? { rating: 'unknown', marginDb: null, limit, text: skipped } : judge(s.dbc, null, limit);
+      }
+      return { ...s, skipped, verdicts };
+    });
   }
 
   let running = $state(false);
@@ -212,6 +239,30 @@
         );
       }
 
+      // Spurs near the carrier, from the same capture.
+      const scan = findSpurs(fundFrames, car);
+      const near = scan ? { scan, spurs: rateNear(scan, car.hz, regimes) } : null;
+      if (scan) {
+        const far = car.hz + 3 * scan.ocwHz;
+        const tightest = Math.min(
+          ...regimes.map((g) => (g === 'ofcom' ? ofcomNearDbc(car.hz, far, scan.ocwHz, backoff) : fccDbc(car.hz, far, backoff))?.dbc ?? Infinity),
+        );
+        if (scan.ceilingDbc > tightest) {
+          warnings.push(
+            `Near the carrier, only spurs above ${dbStr(scan.ceilingDbc)} dBc show, but the limit there is ${dbStr(tightest)} dBc: weaker ones could still fail. Move closer or raise the gain (without overloading).`,
+          );
+        }
+        if (scan.spurs.some((s) => s.source === 'unknown') && !scan.sawOff) {
+          warnings.push(
+            "The carrier never switched off, so it can't be told whether the nearby spurs are the device's or another signal's. Stop it transmitting and see which go.",
+          );
+        }
+        const b = ofcomBand(car.hz);
+        if (ofcom && b && (car.hz - scan.ocwHz / 2 < b.lo || car.hz + scan.ocwHz / 2 > b.hi)) {
+          warnings.push(`The signal spills over the edge of the ${b.label} band.`);
+        }
+      }
+
       const harmonics: HarmonicResult[] = [];
       let step = 1;
       for (const n of ns) {
@@ -238,7 +289,7 @@
         }
         harmonics.push(res);
       }
-      report = { fundHz: car.hz, fundPeakDb: car.peakDb, duty: fund.duty, regimes, harmonics, warnings, at: Date.now() };
+      report = { fundHz: car.hz, fundPeakDb: car.peakDb, duty: fund.duty, regimes, harmonics, near, warnings, at: Date.now() };
     } catch (e) {
       if (!(e instanceof Cancelled)) error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -264,7 +315,8 @@
   </div>
 
   <p class="muted small-text intro">
-    Measures the signal you're listening to, then retunes to its harmonics and checks them against SRD limits.
+    Measures the signal you're listening to and any spurs close to it, then retunes to its harmonics and checks them
+    all against SRD limits.
   </p>
 
   <div class="opts">
@@ -305,7 +357,7 @@
       </li>
     {/if}
     <li class="muted">
-      Will measure {harmonicsShown.map((h) => `${ordinal(h.n)} ${(h.hz / 1e6).toFixed(1)}${h.ok ? '' : ' (out of range)'}`).join(', ')} MHz.
+      Will measure spurs near the carrier, then the {harmonicsShown.map((h) => `${ordinal(h.n)} ${(h.hz / 1e6).toFixed(1)}${h.ok ? '' : ' (out of range)'}`).join(', ')} MHz.
     </li>
   </ul>
 
@@ -336,17 +388,38 @@
     {@const r = report}
     <div class="summary" aria-label="Overall result">
       {#each r.regimes as g (g)}
-        {@const o = overall(r.harmonics, g)}
+        {@const nearSpurs = r.near?.spurs ?? []}
+        {@const o = overall([...r.harmonics, ...nearSpurs], g)}
+        {@const oh = overall(r.harmonics, g)}
+        {@const on = overall(nearSpurs, g)}
         <div class="overall {o.rating}">
           <span class="who">{REGIME[g]}</span>
           <span class="badge {o.rating}">{LABEL[o.rating]}</span>
-          <span class="muted small-text">{o.checked} of {o.total} checked</span>
+          <span class="muted small-text">
+            {oh.checked} of {oh.total} harmonics{#if r.near}, {on.checked} nearby spur{on.checked === 1 ? '' : 's'}{/if}
+          </span>
         </div>
       {/each}
     </div>
     <p class="muted small-text">
       Carrier {formatMHz(r.fundHz, 4)}, peak {r.fundPeakDb.toFixed(1)} dBFS, on {Math.round(r.duty * 100)}% of the time.
     </p>
+    {#snippet verdictRows(item: Rated)}
+      {#each r.regimes as g (g)}
+        {@const v = item.verdicts[g]}
+        {#if v}
+          <div class="verdict" title={v.limit?.why ?? ''}>
+            <span class="badge {v.rating}">{REGIME[g].split(' ')[0]}: {LABEL[v.rating]}</span>
+            <span class="small-text">
+              {v.text}
+              {#if v.limit && (v.rating === 'bad' || v.rating === 'medium')}<span class="muted"> {v.limit.why}.</span>{/if}
+            </span>
+          </div>
+        {/if}
+      {/each}
+    {/snippet}
+
+    <h3 class="sub">Harmonics</h3>
     <ul class="harmonics">
       {#each r.harmonics as h (h.n)}
         <li>
@@ -357,21 +430,40 @@
               {#if h.skipped}–{:else if h.dbc !== null}{dbStr(h.dbc)} dBc{:else}&lt; {dbStr(h.ceilingDbc ?? 0)} dBc{/if}
             </span>
           </div>
-          {#each r.regimes as g (g)}
-            {@const v = h.verdicts[g]}
-            {#if v}
-              <div class="verdict" title={v.limit?.why ?? ''}>
-                <span class="badge {v.rating}">{REGIME[g].split(' ')[0]}: {LABEL[v.rating]}</span>
-                <span class="small-text">
-                  {v.text}
-                  {#if v.limit && (v.rating === 'bad' || v.rating === 'medium')}<span class="muted"> {v.limit.why}.</span>{/if}
-                </span>
-              </div>
-            {/if}
-          {/each}
+          {@render verdictRows(h)}
         </li>
       {/each}
     </ul>
+
+    {#if r.near}
+      {@const nr = r.near}
+      <h3 class="sub">Near the carrier</h3>
+      <p class="muted small-text" data-testid="near-summary">
+        Spurs within {formatMHz(nr.scan.lo, 3)}–{formatMHz(nr.scan.hi, 3)} from the same capture, outside a
+        {(nr.scan.ocwHz / 1000).toFixed(1)} kHz channel (99% of the carrier's power, as measured; a wider declared
+        channel loosens the limit close in).
+        {#if nr.spurs.length}Nothing else above {dbStr(nr.scan.ceilingDbc)} dBc.{:else}None above
+          {dbStr(nr.scan.ceilingDbc)} dBc.{/if}
+        {#if nr.scan.combHz}
+          <strong>Evenly spaced every {(nr.scan.combHz / 1000).toFixed(1)} kHz</strong>: usually a clock, switching
+          regulator or the data rate leaking onto the carrier.
+        {/if}
+      </p>
+      {#if nr.spurs.length}
+        <ul class="harmonics near">
+          {#each nr.spurs as s (s.hz)}
+            <li>
+              <div class="row">
+                <span class="n off">{s.offsetHz > 0 ? '+' : '−'}{(Math.abs(s.offsetHz) / 1000).toFixed(1)} kHz</span>
+                <span class="hz">{formatMHz(s.hz, 4)}</span>
+                <span class="level">{dbStr(s.dbc)} dBc</span>
+              </div>
+              {@render verdictRows(s)}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {/if}
     {#each r.warnings as w (w)}<p class="warn small-text">{w}</p>{/each}
     <p class="muted small-text note">
       Indicative only. An RTL-SDR isn't calibrated and its response, like your antenna's, varies by several dB across
@@ -513,6 +605,14 @@
     gap: 4px;
     padding-top: 8px;
     border-top: 1px solid var(--border);
+  }
+  .sub {
+    margin: 12px 0 0;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .n.off {
+    min-width: 5.5em;
   }
   .row {
     display: flex;

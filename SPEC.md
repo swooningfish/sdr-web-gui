@@ -168,7 +168,10 @@ Along the way (from requests during the build, and Greg's own commits):
 - **Harmonics check:** measures a short-range device's carrier and its harmonics (retuning
   to each) and rates them Good / Medium / Bad against Ofcom (EN 300 220-1 Table 19, UK SRD
   ERP limits) and FCC Part 15 (§15.231(b), §15.249, §15.227, §15.205/§15.209) limits, in dBc
-  assuming a carrier at the legal maximum. Simulated SRD on 434.2 MHz with harmonics.
+  assuming a carrier at the legal maximum. Also rates spurs near the carrier from the same
+  capture (EN 300 220-1 Figure 5 OOB mask / Table 19, FCC §15.231(b)), telling the device's
+  spurs from other signals by whether they go when it stops. Simulated SRD on 434.2 MHz
+  with harmonics and a 50 kHz spur comb.
 - **UI:** settings in tabs, profile page (password), system info, waterfall palettes,
   spectrum toolbar that doesn't move on hover, phone-friendly tab bar.
 - **Tests:** API smoke test (`scripts/smoke-test.sh`) and Playwright layout tests at four

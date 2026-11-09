@@ -376,7 +376,12 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
   by how much. Limits assume the carrier is at the legal maximum unless you say it runs
   lower. It's a pre-compliance indicator: the dongle isn't calibrated, so *Good* needs a
   6 dB margin. Use a fixed gain, keep the device transmitting, and switch rotation off
-  first. The simulator has an SRD on 434.2 MHz with harmonics to try it on.
+  first. It also lists **spurs near the carrier** (sidebands, clock or regulator combs)
+  from the same capture, without retuning: each is rated against the EN 300 220-1
+  out-of-band mask (within 2.5 channel widths) or spurious limit beyond, and FCC
+  §15.231(b); spurs still there when the device stops are marked as someone else's, and
+  an evenly spaced comb is called out. The simulator has an SRD on 434.2 MHz with
+  harmonics and a 50 kHz spur comb to try it on.
 
 ## Settings
 

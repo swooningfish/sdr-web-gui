@@ -35,6 +35,10 @@ enum Kind {
     /// harmonic (n > 1) for trying the harmonics check: same keying, n times
     /// the deviation, as a real transmitter's harmonics would be.
     Srd { n: u8 },
+    /// A steady line keyed with the SRD (one of its close-in spurs).
+    SrdSpur,
+    /// An unmodulated carrier that's always on.
+    Steady,
     /// An aircraft's ADS-B squitters on 1090 MHz (index into the flights).
     Aircraft { idx: usize },
 }
@@ -44,8 +48,18 @@ pub(super) const SRD_HZ: f64 = 434_200_000.0;
 const SRD_DEV: f64 = 3_000.0;
 const SRD_BAUD: f64 = 2_400.0;
 /// Harmonic levels in dBc (2nd, 3rd, 4th): marginal, failing and clean
-/// against the Ofcom limits (−46 / −40 / −40 dBc at 10 mW ERP).
-pub(super) const SRD_HARMONICS_DBC: [f64; 3] = [-43.0, -33.0, -60.0];
+/// against the Ofcom limits (−46 / −40 / −40 dBc at 10 mW ERP). The 3rd
+/// passes FCC (−26.8 dBc) by 8 dB, clear of the 6 dB "Good" margin.
+pub(super) const SRD_HARMONICS_DBC: [f64; 3] = [-43.0, -35.0, -60.0];
+/// Close-in spurs every 50 kHz (offset Hz, dBc), as a clock leaking onto the
+/// carrier would make: the inner four fail Ofcom's −46 dBc (−100 kHz only
+/// just), the 150 kHz one is under the simulator's noise floor (about
+/// −51 dBc); all pass FCC's −20 dBc. The inner four are kept well above that
+/// floor so the comb shows every time.
+pub(super) const SRD_SPURS: [(f64, f64); 5] =
+    [(50_000.0, -40.0), (-50_000.0, -42.0), (100_000.0, -44.0), (-100_000.0, -46.0), (150_000.0, -60.0)];
+/// Another transmitter's steady carrier near the SRD (not one of its spurs).
+const SRD_NEIGHBOUR: (f64, f64) = (250_000.0, -35.0);
 const SRD_AMP: f64 = 0.3;
 
 /// Pseudo-random data bit `k` of the SRD's stream (same for every harmonic).
@@ -123,12 +137,19 @@ impl SynthGen {
             let amp = if n == 1 { SRD_AMP } else { SRD_AMP * 10f64.powf(SRD_HARMONICS_DBC[n as usize - 2] / 20.0) };
             e(SRD_HZ * n as f64, amp, Kind::Srd { n })
         };
+        let near = |(off, dbc): (f64, f64), kind: Kind| e(SRD_HZ + off, SRD_AMP * 10f64.powf(dbc / 20.0), kind);
         SynthGen {
             emitters: vec![
                 srd(1),
                 srd(2),
                 srd(3),
                 srd(4),
+                near(SRD_SPURS[0], Kind::SrdSpur),
+                near(SRD_SPURS[1], Kind::SrdSpur),
+                near(SRD_SPURS[2], Kind::SrdSpur),
+                near(SRD_SPURS[3], Kind::SrdSpur),
+                near(SRD_SPURS[4], Kind::SrdSpur),
+                near(SRD_NEIGHBOUR, Kind::Steady),
                 e(144_800_000.0, 0.25, Kind::Aprs { period: 10.0, channel: AprsChannel::Terrestrial }),
                 e(145_825_000.0, 0.12, Kind::Aprs { period: 30.0, channel: AprsChannel::Iss }),
                 {
@@ -340,6 +361,8 @@ impl SynthGen {
                         em.phase2 += (target - em.phase2) * alpha;
                         (offset + n as f64 * SRD_DEV * em.phase2, t.rem_euclid(1.0) < 0.8)
                     }
+                    Kind::SrdSpur => (offset, t.rem_euclid(1.0) < 0.8),
+                    Kind::Steady => (offset, true),
                     Kind::Aircraft { idx } => {
                         if t >= em.next {
                             let wall = wall_secs();
