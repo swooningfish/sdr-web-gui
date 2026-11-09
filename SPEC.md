@@ -156,6 +156,31 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
    carrier / CW / digital mode etc. using a small on-device model (CPU on the Pi 5); labels
    on the waterfall and a "what's this?" readout on hover. Uses bookmarks and band plans
    (M7) as context and for training/validation data.
+10. **Data and pager modes** (later)
+   - Pager decoding: POCSAG (512/1200/2400 baud) and FLEX on NFM, per-channel like APRS
+     (multimon-ng or native); message log with capcode, function, type (numeric/alpha/tone),
+     search and filters; capcode aliases; optional MQTT/HA for chosen capcodes.
+   - Data modes: a Data panel under Listen that decodes the listening channel — e.g. RTTY,
+     PSK31, packet/AFSK1200 outside APRS, FT8/FT4 and WSPR on the usual dial frequencies,
+     and simple ones (DTMF, ZVEI/selcall, EAS). Exact list to settle when it's built.
+   - Bookmarks/band plan pick the decoder where the mode is known; a rotation profile can
+     hold a pager or data channel like the other decoders.
+   - Simulator: a POCSAG pager channel and a data-mode beacon to test against.
+11. **Meshtastic and MeshCore** (later)
+   - LoRa demodulator for the UK/EU 868 MHz presets (Meshtastic LongFast and the others;
+     MeshCore's narrow EU/UK preset), on the main dongle or a second one kept on 868 MHz
+     like ADS-B.
+   - Meshtastic: decode the packet header and protobufs; decrypt the default public channel
+     and any private channels whose PSK an admin adds (keys stored server-side, admin only).
+     Direct messages under PKI can't be read without the node's private key — show them as
+     encrypted, with sender/recipient.
+   - MeshCore: decode adverts (node name, type, position), the public channel, and private
+     channels from admin-added keys; DMs shown as encrypted.
+   - Views: node list (name, short/long ID, hardware, role, battery/telemetry, SNR/RSSI,
+     hops, last heard), nodes on the map (shared with APRS/aircraft maps), channel message
+     view per channel (public/private), and a packet log.
+   - MQTT/HA for tracked nodes (position, battery, telemetry), as for APRS stations.
+   - Simulator: a few Meshtastic and MeshCore nodes with positions and channel chatter.
 
 ## Added beyond the original plan
 Along the way (from requests during the build, and Greg's own commits):
