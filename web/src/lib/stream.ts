@@ -31,6 +31,30 @@ export interface CwMsg {
   wpm: number;
 }
 
+/** A DAB service in the multiplex being heard. */
+export interface DabService {
+  /** Service id, 4 hex digits. */
+  sid: string;
+  label: string;
+  /** Audio coding, once the FIC has said: MP2 ("DAB") or DAB+. */
+  kind: 'mp2' | 'dab+' | 'other' | null;
+  bitrate: number | null;
+}
+
+/** DAB listening: the multiplex and the service playing (sent on change). */
+export interface DabMsg {
+  type: 'dab';
+  locked: boolean;
+  ensemble: string | null;
+  eid: string | null;
+  services: DabService[];
+  /** Service id playing (hex) and its label. */
+  service: string | null;
+  label: string | null;
+  codec: string | null;
+  error: string | null;
+}
+
 export interface RdsMsg {
   type: 'rds';
   pi: string | null;
@@ -94,7 +118,7 @@ export interface DigitalMsg {
   error?: string;
 }
 
-export type DecodedMsg = CwMsg | RdsMsg | AfcMsg | DigitalMsg;
+export type DecodedMsg = CwMsg | RdsMsg | AfcMsg | DigitalMsg | DabMsg;
 
 /** Live SSTV rows (layout documented in decoders/sstv.rs). */
 export interface SstvRows {
@@ -190,7 +214,7 @@ export class Stream {
           if (m.type === 'radio') this.h.onRadio(m.state as RadioState);
           else if (m.type === 'event') this.h.onEvent(m.device as Device, m.event as EventRow);
           else if (typeof m.type === 'string' && m.type.startsWith('audio_')) this.h.onAudioStatus(m.type, m.message ?? null);
-          else if (m.type === 'cw' || m.type === 'rds' || m.type === 'afc' || m.type === 'digital')
+          else if (m.type === 'cw' || m.type === 'rds' || m.type === 'afc' || m.type === 'digital' || m.type === 'dab')
             this.h.onDecoded(m as DecodedMsg);
         } catch {
           /* ignore malformed */

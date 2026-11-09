@@ -133,6 +133,9 @@ pub async fn open(path: &Path) -> Result<SqlitePool> {
     .await?;
     // Receiver sample rate to switch to when tuning the bookmark; NULL = leave it.
     add_columns(&pool, "bookmarks", &[("sample_rate", "INTEGER")]).await?;
+    // DAB service id (bookmarks and F-keys in DAB mode).
+    add_columns(&pool, "bookmarks", &[("service_id", "INTEGER")]).await?;
+    add_columns(&pool, "fkeys", &[("service_id", "INTEGER")]).await?;
     Ok(pool)
 }
 

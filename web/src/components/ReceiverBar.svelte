@@ -7,7 +7,7 @@
   import SelectorKnob from './SelectorKnob.svelte';
   import AudioMeter from './AudioMeter.svelte';
   import { api, type Profile, type RadioPatch, type RadioState, type SdrDevice } from '../lib/api';
-  import { CHANNEL_STEP, MODES, channelEdges, tunedHz, type AudioMode } from '../lib/audio';
+  import { CHANNEL_STEP, DAB_CHANNELS, MODES, channelEdges, dabChannel, dabIndex, tunedHz, type AudioMode } from '../lib/audio';
   import { describeRanges, unsupported } from '../lib/coverage';
   import { fkeys, SLOTS } from '../lib/fkeys.svelte';
   import { formatMHz, formatRate, parseFrequency, PRESETS } from '../lib/format';
@@ -33,7 +33,7 @@
     isAdmin: boolean;
     rx: Listener;
     /** Listen at `hz` (in `mode`, if given); the app brings it into the sampled band. */
-    ontune: (hz: number, mode?: AudioMode, sampleRate?: number | null) => void;
+    ontune: (hz: number, mode?: AudioMode, sampleRate?: number | null, service?: number | null) => void;
     /** Open the bookmark manager; with a slot, to pick a bookmark for that F-key. */
     onbookmarks: (slot?: number) => void;
     /** Open the bookmark manager to save what's being heard. */
@@ -297,6 +297,12 @@
   const modeLabel = (m: AudioMode) => MODES.find((x) => x.value === m)?.label ?? m.toUpperCase();
 
   function knobStep(n: number) {
+    if (listen.mode === 'dab') {
+      // Channel by channel through Band III.
+      const i = Math.min(DAB_CHANNELS.length - 1, Math.max(0, dabIndex(listen.hz) + Math.sign(n)));
+      ontune(DAB_CHANNELS[i][1]);
+      return;
+    }
     const hz = Math.round((listen.hz + n * step) / step) * step;
     ontune(hz);
   }
@@ -304,6 +310,8 @@
   function setMode(m: AudioMode) {
     listen.mode = m;
     step = CHANNEL_STEP[m];
+    // DAB: onto the nearest multiplex channel, with the receiver centred on it.
+    if (m === 'dab') ontune(listen.hz, m);
   }
 
   // ---- audio
@@ -320,6 +328,13 @@
   const rdsPs = $derived(rx.rds?.ps?.trim() ?? '');
   const rdsPty = $derived(rx.rds?.pty ? (PTY[rx.rds.pty] ?? `PTY ${rx.rds.pty}`) : '');
   const rdsRt = $derived(rx.rds?.rt?.trim() ?? '');
+  // ---- DAB: the station playing and its multiplex, in the same row
+  const showDab = $derived(listen.mode === 'dab' && listen.on);
+  const dabName = $derived(rx.dab?.label ?? '');
+  const dabMux = $derived(
+    [dabChannel(listen.hz), rx.dab?.ensemble].filter(Boolean).join(' · ') ||
+      (rx.dab?.locked ? 'Reading the station list…' : 'Looking for the multiplex…'),
+  );
   // Radiotext wider than the display scrolls across it, like a car radio.
   // Each copy carries RT_GAP px of trailing space so the loop joins up.
   const RT_GAP = 48;
@@ -336,7 +351,7 @@
 
   function recall(slot: number) {
     const k = fkeys.recall(slot);
-    if (k) ontune(k.freq_hz, k.mode, k.sample_rate);
+    if (k) ontune(k.freq_hz, k.mode, k.sample_rate, k.service_id);
   }
   function fkeyClick(slot: number) {
     if (longPressed) {
@@ -407,6 +422,7 @@
         >
         <span class="muted small-text hide-xs">{modeLabel(listen.mode)}</span>
         {#if showRds && rdsPs}<strong class="rds-mini hide-xs" title={rdsRt || rdsPty || 'RDS'}>{rdsPs}</strong>{/if}
+        {#if showDab && dabName}<strong class="rds-mini hide-xs" title={dabMux}>{dabName}</strong>{/if}
         <span class="bar-meter"><SMeter bar {dbm} {s9} label={formatMHz(listen.hz, 4)} /></span>
         {#if dbm !== null}<span class="s-mini small-text hide-xs">{sReading(dbm, s9)}</span>{/if}
       </span>
@@ -446,6 +462,7 @@
             <span class:lit={rx.cwActive}>CW-DEC</span>
             <span class:lit={rx.digitalActive} class:ok={rx.syncFresh}>DIG{rx.syncFresh && rx.sync ? ` ${rx.sync.mode}` : ''}</span>
             <span class:lit={showRds} class:ok={showRds && !!rdsPs}>RDS</span>
+            <span class:lit={showDab} class:ok={showDab && rx.open}>DAB</span>
             <span class:lit={rx.muted} class="warn">MUTE</span>
             <span class:lit={outside} class="bad">OUT</span>
             <span class="spacer"></span>
@@ -496,6 +513,14 @@
               <span class="afc-read" title="AFC correction">AFC {listen.afc >= 0 ? '+' : '−'}{(Math.abs(listen.afc) / 1000).toFixed(2)}k</span>
             {/if}
           </div>
+
+          {#if showDab}
+            <div class="rds-row" aria-label="DAB station">
+              <span class="rds-ps" class:waiting={!dabName}>{dabName || '········'}</span>
+              {#if rx.dab?.codec}<span class="rds-pty">{rx.dab.codec}</span>{/if}
+              <div class="rds-rt" title={dabMux}><span class="rt-wait">{dabMux}</span></div>
+            </div>
+          {/if}
 
           {#if showRds}
             <div class="rds-row" aria-label="RDS">

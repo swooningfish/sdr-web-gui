@@ -67,6 +67,8 @@ pub struct Config {
     pub direwolf_path: String,
     /// Path to the dsd-neo binary (digital voice decoding for listeners).
     pub dsd_path: String,
+    /// Path to ffmpeg (DAB and DAB+ audio for listeners).
+    pub ffmpeg_path: String,
     /// Leaflet tile URL template for the APRS map.
     pub map_tile_url: String,
     /// Days to keep decoded events (and untracked devices).
@@ -196,6 +198,7 @@ impl Config {
             rtl433_path: var("SDRD_RTL433_PATH").unwrap_or_else(|| "rtl_433".into()),
             direwolf_path: var("SDRD_DIREWOLF_PATH").unwrap_or_else(|| "direwolf".into()),
             dsd_path: var("SDRD_DSD_PATH").unwrap_or_else(|| "dsd-neo".into()),
+            ffmpeg_path: var("SDRD_FFMPEG_PATH").unwrap_or_else(|| "ffmpeg".into()),
             map_tile_url: var("SDRD_MAP_TILE_URL")
                 .unwrap_or_else(|| "https://tile.openstreetmap.org/{z}/{x}/{y}.png".into()),
             event_retention_days: parse("SDRD_EVENT_RETENTION_DAYS", 30)?,

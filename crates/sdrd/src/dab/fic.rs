@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use super::msc::{AudioKind, Protection, SubChannel, UEP};
 use super::FIC_BLOCK;
 
 /// Information bits per FIC block (three FIBs).
@@ -179,6 +180,10 @@ pub struct Ensemble {
     pub label: Option<String>,
     /// Programme services by service id: label.
     pub services: BTreeMap<u16, String>,
+    /// Sub-channels by id (FIG 0/1).
+    pub subchannels: BTreeMap<u8, SubChannel>,
+    /// Programme service id → its audio's sub-channel and coding (FIG 0/2).
+    pub audio: BTreeMap<u16, (u8, AudioKind)>,
     /// FIBs that passed / failed their CRC.
     pub fibs_ok: u32,
     pub fibs_bad: u32,
@@ -236,11 +241,78 @@ impl Ensemble {
         }
     }
 
-    /// FIG 0: only extension 0 (the ensemble id) is needed.
+    /// FIG 0: extension 0 (ensemble id), 1 (where each sub-channel is and
+    /// how it's protected) and 2 (which sub-channel carries each programme
+    /// service's audio).
     fn fig0(&mut self, d: &[u8]) {
-        if d.len() >= 3 && d[0] & 0x1F == 0 {
-            self.eid = Some(u16::from_be_bytes([d[1], d[2]]));
+        if d.is_empty() {
+            return;
         }
+        let (other, pd, ext) = (d[0] & 0x40 != 0, d[0] & 0x20 != 0, d[0] & 0x1F);
+        match ext {
+            0 if d.len() >= 3 => self.eid = Some(u16::from_be_bytes([d[1], d[2]])),
+            1 if !other => {
+                let mut i = 1;
+                while i + 3 <= d.len() {
+                    let id = d[i] >> 2;
+                    let start = ((d[i] as u16 & 0x03) << 8) | d[i + 1] as u16;
+                    let (protection, size, len) = if d[i + 2] & 0x80 == 0 {
+                        // Short form: an index into the UEP table.
+                        let idx = d[i + 2] & 0x3F;
+                        (Protection::Uep(idx), UEP.get(idx as usize).map_or(0, |u| u.1), 3)
+                    } else {
+                        if i + 4 > d.len() {
+                            break;
+                        }
+                        let option = (d[i + 2] >> 4) & 0x07;
+                        let level = ((d[i + 2] >> 2) & 0x03) + 1;
+                        let size = ((d[i + 2] as u16 & 0x03) << 8) | d[i + 3] as u16;
+                        let p = match option {
+                            0 => Protection::EepA(level),
+                            1 => Protection::EepB(level),
+                            _ => Protection::Unknown,
+                        };
+                        (p, size, 4)
+                    };
+                    self.subchannels.insert(id, SubChannel { id, start, size, protection });
+                    i += len;
+                }
+            }
+            2 if !other && !pd => {
+                let mut i = 1;
+                while i + 3 <= d.len() {
+                    let sid = u16::from_be_bytes([d[i], d[i + 1]]);
+                    let n = (d[i + 2] & 0x0F) as usize;
+                    i += 3;
+                    for c in 0..n {
+                        if i + 2 > d.len() {
+                            return;
+                        }
+                        let (a, b) = (d[i], d[i + 1]);
+                        i += 2;
+                        let tmid = a >> 6;
+                        let primary = b & 0x02 != 0;
+                        // Audio in a stream (TMId 0); the primary one, else the first.
+                        if tmid == 0 && (primary || (c == 0 && !self.audio.contains_key(&sid))) {
+                            let kind = match a & 0x3F {
+                                0 => AudioKind::Mp2,
+                                63 => AudioKind::DabPlus,
+                                _ => AudioKind::Other,
+                            };
+                            self.audio.insert(sid, (b >> 2, kind));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The sub-channel and coding of a programme service's audio, once the
+    /// FIC has said.
+    pub fn audio_of(&self, sid: u16) -> Option<(SubChannel, AudioKind)> {
+        let &(sub, kind) = self.audio.get(&sid)?;
+        Some((self.subchannels.get(&sub)?.clone(), kind))
     }
 
     /// FIG 1: labels. Extension 0 names the ensemble, 1 a programme service.

@@ -71,6 +71,8 @@
         colour: useColour ? colour : null,
         notes: notes.trim() || null,
         sample_rate: rate || null,
+        // A DAB bookmark keeps its station while it stays on its multiplex.
+        service_id: mode === 'dab' && hz === seed.freq_hz ? (seed.service_id ?? null) : null,
         shared,
       });
     } catch (e) {

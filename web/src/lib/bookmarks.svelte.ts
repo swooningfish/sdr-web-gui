@@ -15,6 +15,8 @@ export interface Bookmark {
   notes: string | null;
   /** Receiver sample rate to switch to when tuning it (null = leave as is). */
   sample_rate: number | null;
+  /** DAB: the service (station) in the multiplex. */
+  service_id: number | null;
   /** In the station's shared list (else the user's own). */
   shared: boolean;
   can_edit: boolean;
@@ -29,13 +31,15 @@ export interface BookmarkInput {
   colour: string | null;
   notes: string | null;
   sample_rate: number | null;
+  /** DAB: the service (station) in the multiplex. */
+  service_id?: number | null;
   shared: boolean;
 }
 
 /** The fields a bookmark is saved from. */
 export function inputOf(b: Bookmark): BookmarkInput {
-  const { name, freq_hz, mode, group, colour, notes, sample_rate, shared } = b;
-  return { name, freq_hz, mode, group, colour, notes, sample_rate, shared };
+  const { name, freq_hz, mode, group, colour, notes, sample_rate, service_id, shared } = b;
+  return { name, freq_hz, mode, group, colour, notes, sample_rate, service_id, shared };
 }
 
 export type Scope = 'all' | 'shared' | 'mine';

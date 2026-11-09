@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dabChannel } from '../lib/audio';
   import { formatMHz } from '../lib/format';
   import { PTY, type Listener } from '../lib/listener.svelte';
 
@@ -8,7 +9,9 @@
 
   const l = $derived(rx.listen);
   const showRds = $derived(l.mode === 'wfm' && l.on);
-  const any = $derived(rx.cwActive || rx.digitalActive || showRds);
+  const showDab = $derived(l.mode === 'dab' && l.on);
+  const any = $derived(rx.cwActive || rx.digitalActive || showRds || showDab);
+  const dabKind = (k: string | null) => (k === 'dab+' ? 'DAB+' : k === 'mp2' ? 'DAB' : k === 'other' ? 'other' : '');
 
   let cwBox = $state<HTMLElement | undefined>();
   let logBox = $state<HTMLElement | undefined>();
@@ -120,6 +123,44 @@
       </div>
     {/if}
 
+    {#if showDab}
+      <div class="decoder dab" aria-label="DAB">
+        <div class="dec-head small-text">
+          <h3>
+            DAB{dabChannel(l.hz) ? ` ${dabChannel(l.hz)}` : ''}{rx.dab?.ensemble ? ` · ${rx.dab.ensemble}` : ''}
+          </h3>
+          {#if rx.dab?.codec}<span class="badge">{rx.dab.codec}</span>{/if}
+        </div>
+        {#if rx.dab?.error}<p class="small-text error-text">{rx.dab.error}</p>{/if}
+        {#if !rx.inBand}
+          <p class="small-text muted pi">
+            The receiver needs to be centred on this multiplex at 2.048 MS/s{l.on ? ' (an admin can tune it)' : ''}.
+          </p>
+        {:else if rx.dab?.services.length}
+          <ul class="stations" aria-label="Stations in this multiplex">
+            {#each rx.dab.services as s (s.sid)}
+              <li>
+                <button
+                  type="button"
+                  class="station"
+                  class:playing={rx.dab.service === s.sid}
+                  aria-pressed={rx.dab.service === s.sid}
+                  disabled={s.kind !== null && s.kind !== 'mp2' && s.kind !== 'dab+'}
+                  title="SId {s.sid}{s.bitrate ? ` · ${s.bitrate} kbit/s` : ''}"
+                  onclick={() => rx.pickService(s.sid)}
+                >
+                  <span class="st-name">{s.label}</span>
+                  <span class="st-meta muted">{[dabKind(s.kind), s.bitrate ? `${s.bitrate}k` : ''].filter(Boolean).join(' · ')}</span>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="small-text muted pi">{rx.dab?.locked ? 'Reading the station list…' : 'Looking for the multiplex…'}</p>
+        {/if}
+      </div>
+    {/if}
+
     {#if showRds}
       <div class="decoder rds" aria-label="RDS">
         <div class="dec-head small-text"><h3>RDS</h3></div>
@@ -201,6 +242,42 @@
   .pi {
     margin: 4px 0 0;
     overflow-wrap: anywhere;
+  }
+  .error-text {
+    margin: 4px 0;
+    color: var(--bad);
+    overflow-wrap: anywhere;
+  }
+  .stations {
+    list-style: none;
+    margin: 4px 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 6px;
+  }
+  .station {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    padding: 6px 10px;
+    text-align: left;
+  }
+  .station.playing {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+  }
+  .st-name {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .st-meta {
+    font-size: 11px;
   }
   .warn {
     color: var(--warn);

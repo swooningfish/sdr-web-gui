@@ -107,9 +107,11 @@ impl Rx {
     /// FFT of `T_U` samples from `start`, with `hz` mixed out.
     fn spectrum(&mut self, z: &[Complex32], start: usize, hz: f64) -> Vec<Complex32> {
         let w = -TAU * hz / RATE as f64;
+        let step = num_complex::Complex64::from_polar(1.0, w);
+        let mut ph = num_complex::Complex64::from_polar(1.0, (w * start as f64) % TAU);
         for (n, out) in self.buf.iter_mut().enumerate() {
-            let ph = w * (start + n) as f64;
-            *out = z[start + n] * Complex32::new(ph.cos() as f32, ph.sin() as f32);
+            *out = z[start + n] * Complex32::new(ph.re as f32, ph.im as f32);
+            ph *= step;
         }
         let mut out = self.buf.clone();
         self.fft.process(&mut out);
@@ -172,9 +174,11 @@ impl Rx {
         }
     }
 
-    /// The FIC soft bits of the frame whose reference symbol starts at
-    /// `prs_start`, and the frequency error found (Hz).
-    fn frame(&mut self, z: &[Complex32], prs_start: usize) -> Option<(Vec<f32>, f64)> {
+    /// Soft bits of symbols 1..=`symbols` (3072 each: real parts, then
+    /// imaginary) of the frame whose reference symbol starts at `prs_start`,
+    /// and the frequency error found (Hz). Symbols 1–3 are the FIC, 4–75
+    /// the four CIFs of the MSC.
+    fn frame(&mut self, z: &[Complex32], prs_start: usize, symbols: usize) -> Option<(Vec<f32>, f64)> {
         let frac = Self::fine_freq(z, prs_start);
         let w0 = prs_start + T_G - BACKOFF;
         if w0 + T_U > z.len() {
@@ -187,12 +191,12 @@ impl Rx {
         // Line the window up with the strongest path, then back off again.
         let err = self.timing(&f0, 0);
         let start = (w0 as i64 + err as i64 - BACKOFF as i64).max(0) as usize;
-        if start + FIC_SYMBOLS * T_S + T_U > z.len() {
+        if start + symbols * T_S + T_U > z.len() {
             return None;
         }
         let mut prev = self.spectrum(z, start, hz);
-        let mut soft = Vec::with_capacity(FIC_SYMBOLS * 2 * K);
-        for l in 1..=FIC_SYMBOLS {
+        let mut soft = Vec::with_capacity(symbols * 2 * K);
+        for l in 1..=symbols {
             let cur = self.spectrum(z, start + l * T_S, hz);
             let r: Vec<Complex32> = self.map.iter().map(|&k| cur[bin(k)] * prev[bin(k)].conj()).collect();
             let scale = r.iter().map(|v| v.norm()).sum::<f32>() / K as f32;
@@ -233,7 +237,7 @@ pub fn decode(cu8: &[u8]) -> Decoded {
             break;
         }
         if is_null(at) {
-            if let Some((soft, hz)) = rx.frame(&z, at + T_NULL) {
+            if let Some((soft, hz)) = rx.frame(&z, at + T_NULL, FIC_SYMBOLS) {
                 out.frames += 1;
                 out.freq_error_hz = Some(hz);
                 for block in soft.chunks_exact(FIC_BLOCK) {
@@ -252,6 +256,102 @@ pub fn decode(cu8: &[u8]) -> Decoded {
     out
 }
 
+/// Where the FIC ends and the CIFs start in a frame's soft bits.
+pub const FIC_SOFT: usize = FIC_SYMBOLS * 2 * K;
+
+/// A receiver that follows a multiplex as samples arrive: finds each frame,
+/// decodes the FIC into `ensemble` and hands over every frame's soft bits
+/// (for the MSC).
+pub struct Stream {
+    rx: Rx,
+    buf: Vec<Complex32>,
+    /// Start of the next null symbol in `buf`, once locked on.
+    next: Option<usize>,
+    misses: u32,
+    pub ensemble: Ensemble,
+    /// Frequency error of the multiplex against the tuning (Hz), last frame.
+    pub freq_error_hz: Option<f64>,
+    /// Frames demodulated since the start.
+    pub frames: u64,
+}
+
+impl Default for Stream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Stream {
+    pub fn new() -> Stream {
+        Stream {
+            rx: Rx::new(),
+            buf: Vec::new(),
+            next: None,
+            misses: 0,
+            ensemble: Ensemble::default(),
+            freq_error_hz: None,
+            frames: 0,
+        }
+    }
+
+    /// Whether frames are being found.
+    pub fn locked(&self) -> bool {
+        self.next.is_some() && self.misses == 0 && self.frames > 0
+    }
+
+    /// Feed cu8 samples (2.048 MS/s, tuned to the multiplex); `frame` gets
+    /// each frame's soft bits: the FIC ([`FIC_SOFT`]), then four CIFs.
+    pub fn push(&mut self, cu8: &[u8], mut frame: impl FnMut(&[f32])) {
+        self.buf.extend(to_complex(cu8));
+        loop {
+            let Some(at) = self.next else {
+                // Look for a null in the first frame's worth.
+                if self.buf.len() < 2 * T_F + T_NULL {
+                    return;
+                }
+                let cum = power_sums(&self.buf[..2 * T_F]);
+                let mean = cum[2 * T_F] / (2 * T_F) as f64;
+                let at = quietest(&cum, 0, T_F);
+                if (cum[at + T_NULL] - cum[at]) / (T_NULL as f64) < NULL_RATIO * mean {
+                    self.next = Some(at);
+                    self.misses = 0;
+                } else {
+                    self.buf.drain(..T_F);
+                }
+                continue;
+            };
+            if self.buf.len() < at + T_F + T_NULL + 256 {
+                return;
+            }
+            let cum = power_sums(&self.buf[at..at + T_F + T_NULL + 256]);
+            let mean = cum[T_F] / T_F as f64;
+            if cum[T_NULL] / (T_NULL as f64) < NULL_RATIO * mean {
+                if let Some((soft, hz)) = self.rx.frame(&self.buf, at + T_NULL, L - 1) {
+                    for block in soft[..FIC_SOFT].chunks_exact(FIC_BLOCK) {
+                        self.ensemble.add_block(block, &self.rx.sent, &self.rx.prbs);
+                    }
+                    self.freq_error_hz = Some(hz);
+                    self.frames += 1;
+                    self.misses = 0;
+                    frame(&soft);
+                }
+            } else {
+                self.misses += 1;
+                if self.misses > 3 {
+                    // Lost it: look afresh.
+                    self.next = None;
+                    self.buf.drain(..at + T_F);
+                    continue;
+                }
+            }
+            // The next null is a frame on; the sample clock may drift a little.
+            let next = quietest(&cum, T_F - 128, T_F + 128);
+            self.buf.drain(..at + next);
+            self.next = Some(0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::encode::{frame, Spec};
@@ -263,7 +363,7 @@ mod tests {
     /// `frames` frames of a multiplex, starting `skip` samples in, shifted
     /// by `hz`, with noise at `snr_db` and quantised to cu8 like a dongle.
     fn capture(frames: usize, skip: usize, hz: f64, snr_db: f64) -> Vec<u8> {
-        let spec = Spec { eid: 0xC181, label: "SIM DAB", services: SERVICES };
+        let spec = Spec { eid: 0xC181, label: "SIM DAB", services: SERVICES, audio: &[] };
         let one = frame(&spec, 1);
         let amp = 0.2;
         let noise = amp * 10f64.powf(-snr_db / 20.0) / std::f64::consts::SQRT_2;
@@ -312,6 +412,47 @@ mod tests {
     }
 
     #[test]
+    fn streams_a_subchannel() {
+        use super::super::encode::{frames, Audio};
+        use super::super::msc::{AudioKind, Protection, SubChannel, SubDecoder, CIF_BITS};
+        let sub = SubChannel { id: 5, start: 200, size: 96, protection: Protection::EepA(3) };
+        let logical: Vec<Vec<u8>> = (0..8u32).map(|t| (0..384u32).map(|i| (i ^ (t * 37)) as u8).collect()).collect();
+        let audio = [Audio { sid: 0xC221, sub: sub.clone(), kind: AudioKind::Mp2, frames: logical.clone() }];
+        let spec = Spec { eid: 0xC181, label: "SIM DAB", services: &SERVICES[..1], audio: &audio };
+        let tx = frames(&spec, 2, 9);
+        // 12 frames, 3.1 kHz off, 15 dB SNR, fed in 50 ms blocks.
+        let mut cu8 = Vec::new();
+        let mut rng = 77u64;
+        for i in 1_000..12 * T_F {
+            let s = tx[(i / T_F) % 2][i % T_F] * 0.2;
+            let ph = TAU * 3_100.0 * i as f64 / RATE as f64;
+            let r = Complex32::new(ph.cos() as f32, ph.sin() as f32) * s;
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let n = ((rng >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.06;
+            cu8.push(to_cu8(r.re + n));
+            cu8.push(to_cu8(r.im - n));
+        }
+        let mut stream = Stream::new();
+        let mut dec = SubDecoder::new(&sub).unwrap();
+        let mut out = Vec::new();
+        for block in cu8.chunks(204_800) {
+            stream.push(block, |soft| {
+                for cif in soft[FIC_SOFT..].chunks_exact(CIF_BITS) {
+                    out.extend(dec.push(cif));
+                }
+            });
+        }
+        assert!(stream.locked());
+        assert_eq!(stream.ensemble.audio_of(0xC221).map(|a| a.0), Some(sub));
+        assert!(out.len() >= 20, "{} logical frames", out.len());
+        // Consecutive frames from the 8-frame loop, in order.
+        let first = logical.iter().position(|f| *f == out[0]).expect("a sent frame");
+        for (k, f) in out.iter().enumerate() {
+            assert_eq!(*f, logical[(first + k) % 8], "logical frame {k}");
+        }
+    }
+
+    #[test]
     fn timing_follows_the_reference_symbol() {
         let z = to_complex(&capture(2, 0, 1_500.0, 25.0));
         let mut rx = Rx::new();
@@ -319,7 +460,7 @@ mod tests {
         let p = prbs(BLOCK_BITS);
         // The null guess off either way by more than the back-off.
         for off in [-150i64, -60, 90, 200] {
-            let (soft, _) = rx.frame(&z, (T_F as i64 + T_NULL as i64 + off) as usize).unwrap();
+            let (soft, _) = rx.frame(&z, (T_F as i64 + T_NULL as i64 + off) as usize, FIC_SYMBOLS).unwrap();
             let mut e = Ensemble::default();
             for block in soft.chunks_exact(FIC_BLOCK) {
                 e.add_block(block, &sent, &p);

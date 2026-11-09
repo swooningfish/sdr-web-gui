@@ -160,8 +160,10 @@ They are real, decodable transmissions:
   Listen in **WFM**.
 - **FM band:** three more stations for the band scan: 88.6 ("SIM TWO") and 101.3
   ("SIMROCK") with RDS, 104.9 without.
-- **DAB 11D (222.064 MHz) and 12B (225.648 MHz):** two multiplexes, "SIM DAB" with five
-  stations and "SIM LOCAL" with three, named in their FIC for the DAB band scan. No audio.
+- **DAB 11D (222.064 MHz):** "SIM DAB", five stations, each playing a short tune in MP2 on
+  its own 128 kbit/s sub-channel. Listen in **DAB** and pick one under the spectrum.
+- **DAB 12B (225.648 MHz):** "SIM LOCAL", three stations named in the FIC (for the band
+  scan), no audio.
 - **1090 MHz:** ten aircraft around London sending ADS-B. Choose a simulated dongle as the
   ADS-B receiver in **Settings → Receiver** (or start with `SDRD_ADSB_DEVICE=sim-v4`), or tune
   the main receiver to 1090 MHz at 2.4 MS/s, and open the **Aircraft** tab. Set the station
@@ -385,6 +387,14 @@ The channel is shaded on the spectrum.
   discriminator. Decoded voice is not played (the AMBE/IMBE vocoders are patent-encumbered);
   you hear the FM audio as usual.
 - **RDS:** in WFM the strip under the spectrum shows the station name, programme type and radio text.
+- **DAB and DAB+ radio:** in **DAB** mode the receiver is centred on a Band III multiplex
+  (5A–13F) at 2.048 MS/s (admins' tuning does this; the knob steps channel by channel, and
+  clicking in Band III picks DAB). The strip under the spectrum lists the multiplex's
+  stations: click one to play it; the display shows its name, the multiplex and the codec
+  (MP2, AAC-LC, HE-AAC or HE-AAC v2). sdrd decodes the multiplex itself (OFDM, FIC, the
+  station's sub-channel, DAB+ superframes with Reed-Solomon) and hands the audio frames to
+  [ffmpeg](https://ffmpeg.org) (`SDRD_FFMPEG_PATH`, a cut-down build in the image) for the
+  last step to sound. DAB bookmarks and F-keys remember the station.
 - **Squelch**, **noise reduction** (spectral; removes steady hiss), **volume** and **mute**.
   Settings are remembered per browser; clicks snap to the mode's channel raster.
 - Audio is demodulated per listener in sdrd and streamed over the existing WebSocket as
@@ -473,8 +483,7 @@ one line (**Compact**), and you drag and pinch-zoom the spectrum with your finge
   receiver retunes for about a minute, rotation waits, a satellite pass stops the scan, and
   then it goes back to where it was. Anyone can tick stations in the results and add them to
   their bookmarks (admins also to the station list); ones already there are marked. DAB
-  stations are saved on their multiplex's frequency at 2.048 MS/s: sdrd shows the
-  multiplex but can't play DAB audio.
+  stations are saved in DAB mode with their service id, so picking one plays that station.
 
   ![The bookmark manager open on the Calling list](docs/screenshots/bookmarks.png)
 - **Harmonics check (admins):** click a short-range device's signal (a key fob, sensor or

@@ -1,7 +1,7 @@
 /** Live audio: frame parsing (layout in crates/sdrd/src/audio/mod.rs),
  * IMA ADPCM decoding, resampling and playback through an AudioWorklet. */
 
-export type AudioMode = 'nfm' | 'wfm' | 'am' | 'usb' | 'lsb' | 'cw';
+export type AudioMode = 'nfm' | 'wfm' | 'am' | 'usb' | 'lsb' | 'cw' | 'dab';
 
 /** What the user is listening to (shared by the Listen panel and the waterfall). */
 export interface Listen {
@@ -10,6 +10,8 @@ export interface Listen {
   mode: AudioMode;
   /** AFC correction from the dial frequency (Hz) while AFC is following a signal. */
   afc?: number | null;
+  /** DAB: the service (station) to play, by service id; null = the first. */
+  service?: number | null;
 }
 
 /** Modes AFC works in (mirrors Mode::afc_range_hz on the server). */
@@ -27,16 +29,58 @@ export const MODES: { value: AudioMode; label: string; bw: number }[] = [
   { value: 'usb', label: 'USB', bw: 3_000 },
   { value: 'lsb', label: 'LSB', bw: 3_000 },
   { value: 'cw', label: 'CW', bw: 500 },
+  { value: 'dab', label: 'DAB', bw: 1_536_000 },
 ];
 
 /** Beat note for CW: a carrier on the dial frequency is heard at this pitch. */
 export const CW_PITCH_HZ = 700;
 
 /** Usual channel raster per mode (Hz). */
-export const CHANNEL_STEP: Record<AudioMode, number> = { nfm: 6_250, am: 1_000, wfm: 100_000, usb: 100, lsb: 100, cw: 50 };
+export const CHANNEL_STEP: Record<AudioMode, number> = {
+  nfm: 6_250,
+  am: 1_000,
+  wfm: 100_000,
+  usb: 100,
+  lsb: 100,
+  cw: 50,
+  dab: 1_712_000,
+};
+
+/** DAB Band III channels (centre frequencies, Hz). */
+export const DAB_CHANNELS: [string, number][] = [
+  ['5A', 174_928_000], ['5B', 176_640_000], ['5C', 178_352_000], ['5D', 180_064_000],
+  ['6A', 181_936_000], ['6B', 183_648_000], ['6C', 185_360_000], ['6D', 187_072_000],
+  ['7A', 188_928_000], ['7B', 190_640_000], ['7C', 192_352_000], ['7D', 194_064_000],
+  ['8A', 195_936_000], ['8B', 197_648_000], ['8C', 199_360_000], ['8D', 201_072_000],
+  ['9A', 202_928_000], ['9B', 204_640_000], ['9C', 206_352_000], ['9D', 208_064_000],
+  ['10A', 209_936_000], ['10B', 211_648_000], ['10C', 213_360_000], ['10D', 215_072_000],
+  ['11A', 216_928_000], ['11B', 218_640_000], ['11C', 220_352_000], ['11D', 222_064_000],
+  ['12A', 223_936_000], ['12B', 225_648_000], ['12C', 227_360_000], ['12D', 229_072_000],
+  ['13A', 230_784_000], ['13B', 232_496_000], ['13C', 234_208_000], ['13D', 235_776_000],
+  ['13E', 237_488_000], ['13F', 239_200_000],
+];
+
+/** Index of the DAB channel nearest a frequency (Hz). */
+export function dabIndex(hz: number): number {
+  let best = 0;
+  DAB_CHANNELS.forEach(([, f], i) => {
+    if (Math.abs(f - hz) < Math.abs(DAB_CHANNELS[best][1] - hz)) best = i;
+  });
+  return best;
+}
+
+/** DAB channel name ("11D") at a frequency, if it is one. */
+export function dabChannel(hz: number): string | null {
+  const c = DAB_CHANNELS[dabIndex(hz)];
+  return Math.abs(c[1] - hz) <= 20_000 ? c[0] : null;
+}
+
+/** DAB needs the receiver centred on the multiplex at this rate. */
+export const DAB_RATE = 2_048_000;
 
 /** Snap a clicked frequency to the usual channel raster for the mode. */
 export function snap(hz: number, mode: AudioMode): number {
+  if (mode === 'dab') return DAB_CHANNELS[dabIndex(hz)][1];
   const step = CHANNEL_STEP[mode];
   return Math.round(hz / step) * step;
 }

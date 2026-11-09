@@ -184,7 +184,7 @@ export const BANDS: Band[] = [
     ] as [string, number, number][]
   ).map(([n, lo, hi]) => other('broadcast', `${n} SW broadcast`, lo, hi, 'am')),
   other('broadcast', 'FM broadcast', 87.5, 108.0, 'wfm'),
-  other('broadcast', 'DAB (band III)', 174.0, 240.0),
+  other('broadcast', 'DAB (band III)', 174.0, 240.0, 'dab'),
 
   // ---- Aviation
   other('aviation', 'VOR / ILS navaids', 108.0, 117.975, 'am'),

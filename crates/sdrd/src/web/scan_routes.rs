@@ -97,6 +97,7 @@ pub async fn save(
             colour: None,
             notes: Some(f.notes.clone()),
             sample_rate: f.sample_rate,
+            service_id: f.service_id,
             shared: r.shared,
         }
         .validate()

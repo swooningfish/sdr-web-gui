@@ -106,15 +106,43 @@ const DAB_MUXES: &[Mux] = &[
     ),
 ];
 
-/// One transmission frame per multiplex, made once (repeated on air).
+/// Tunes for 11D's services (MP2, one 128 kbit/s sub-channel each): notes
+/// in Hz, each 12 audio frames (0.288 s) long. Every note fits a whole
+/// number of cycles in that, so the 48-frame loop repeats seamlessly.
+const DAB_TUNES: [&[f64]; 5] =
+    [&[500.0, 375.0], &[437.5, 312.5, 375.0, 250.0], &[625.0, 500.0], &[250.0, 312.5, 375.0, 437.5], &[500.0, 625.0]];
+/// Transmission frames in the loop (4 audio frames each).
+const DAB_LOOP_FRAMES: usize = 12;
+
+/// The samples each multiplex sends, made once and repeated on air: 11D
+/// with audio (a 1.152 s loop), 12B station names only (one frame).
 fn dab_frames() -> &'static [Vec<num_complex::Complex32>] {
+    use crate::dab::encode::{frames, Audio, Spec};
+    use crate::dab::msc::{AudioKind, Protection, SubChannel};
     static FRAMES: std::sync::OnceLock<Vec<Vec<num_complex::Complex32>>> = std::sync::OnceLock::new();
     FRAMES.get_or_init(|| {
         DAB_MUXES
             .iter()
             .enumerate()
             .map(|(i, &(_, eid, label, services))| {
-                crate::dab::encode::frame(&crate::dab::encode::Spec { eid, label, services }, i as u64 + 1)
+                let audio: Vec<Audio> = if i == 0 {
+                    services
+                        .iter()
+                        .zip(DAB_TUNES)
+                        .enumerate()
+                        .map(|(k, (&(sid, _), notes))| Audio {
+                            sid,
+                            // EEP 3-A at 128 kbit/s: 96 CUs each.
+                            sub: SubChannel { id: k as u8 + 1, start: 96 * k as u16, size: 96, protection: Protection::EepA(3) },
+                            kind: AudioKind::Mp2,
+                            frames: crate::dab::mp2::tune(notes, 12, DAB_LOOP_FRAMES * 4, 0.6),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let count = if audio.is_empty() { 1 } else { DAB_LOOP_FRAMES };
+                frames(&Spec { eid, label, services, audio: &audio }, count, i as u64 + 1).concat()
             })
             .collect()
     })

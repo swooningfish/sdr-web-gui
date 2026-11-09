@@ -9,7 +9,7 @@
 //! | 0   | u8   | frame type = 3                                     |
 //! | 1   | u8   | version = 0                                        |
 //! | 2   | u8   | flags: bit 0 in band, bit 1 squelch open           |
-//! | 3   | u8   | mode (0 NFM, 1 WFM, 2 AM, 3 USB, 4 LSB, 5 CW)      |
+//! | 3   | u8   | mode (0 NFM, 1 WFM, 2 AM, 3 USB, 4 LSB, 5 CW, 6 DAB)|
 //! | 4   | u32  | sample rate (Hz)                                   |
 //! | 8   | f32  | channel level (dBFS)                               |
 //! | 12  | u32  | sequence number                                    |
@@ -29,10 +29,12 @@
 //! `{"type":"afc","offset_hz":-1250,"locked":true}` (the correction from the
 //! dial frequency, when it moves by 25 Hz or more, the lock changes, or once
 //! a second). With digital decoding on (NFM), `{"type":"digital",…}`
-//! messages carry what dsd-neo decodes (see `digital`).
+//! messages carry what dsd-neo decodes (see `digital`). In DAB mode, `{"type":"dab",…}`
+//! messages describe the multiplex and the service playing (see `dab`).
 
 pub mod adpcm;
 pub mod cw;
+pub mod dab;
 pub mod demod;
 pub mod digital;
 pub mod nr;
@@ -47,6 +49,7 @@ use serde_json::json;
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::radio::IqBlock;
+use dab::DabPlayer;
 use demod::{Demod, Mode, Params};
 use digital::Digital;
 
@@ -86,6 +89,7 @@ pub fn start(
     iq_rx: broadcast::Receiver<Arc<IqBlock>>,
     params: Params,
     dsd_path: String,
+    ffmpeg_path: String,
 ) -> Result<Listener, String> {
     let n = count.fetch_add(1, Ordering::Relaxed);
     if n >= max {
@@ -102,7 +106,7 @@ pub fn start(
     let (frames_tx, frames) = mpsc::channel(40);
     std::thread::Builder::new()
         .name("audio".into())
-        .spawn(move || run(iq_rx, params_rx, frames_tx, stop, dsd_path))
+        .spawn(move || run(iq_rx, params_rx, frames_tx, stop, dsd_path, ffmpeg_path))
         .map_err(|e| e.to_string())?;
     Ok(Listener { params: params_tx, frames, _guard: guard })
 }
@@ -132,7 +136,9 @@ fn run(
     out: mpsc::Sender<Out>,
     stop: Arc<AtomicBool>,
     dsd_path: String,
+    ffmpeg_path: String,
 ) {
+    let mut dab: Option<DabPlayer> = None;
     let mut demod: Option<(Params, (u64, u32), Demod)> = None;
     let mut st = adpcm::State::default();
     let mut seq = 0u32;
@@ -158,6 +164,29 @@ fn run(
             let _ = out.try_send(Out::Frame(frame(0, p.mode.id(), 0, f32::NAN, seq, st, 0, &[])));
             continue;
         }
+        if p.mode == Mode::Dab {
+            demod = None;
+            digital = None;
+            let player = dab.get_or_insert_with(|| DabPlayer::new(ffmpeg_path.clone()));
+            audio.clear();
+            let (flowing, msg) = player.process(&block.data, block.center_hz, p.service, &mut audio);
+            pcm.clear();
+            pcm.extend(audio.iter().map(|v| (v.clamp(-1.0, 1.0) * 30_000.0) as i16));
+            enc.clear();
+            let start = adpcm::encode(&mut st, &pcm, &mut enc);
+            let power = block.data.iter().map(|&b| (b as f32 - 127.5).powi(2)).sum::<f32>()
+                / block.data.len().max(1) as f32
+                / (127.5 * 127.5);
+            let level = 10.0 * (power + 1e-12).log10();
+            let flags = 1 | if flowing { 2 } else { 0 };
+            let f = frame(flags, p.mode.id(), dab::OUT_RATE, level, seq, start, pcm.len(), &enc);
+            let _ = out.try_send(Out::Frame(f));
+            if let Some(m) = msg {
+                let _ = out.try_send(Out::Text(m));
+            }
+            continue;
+        }
+        dab = None;
         let key = (block.center_hz, block.sample_rate);
         if demod.as_ref().is_none_or(|(dp, k, _)| *dp != p || *k != key) {
             // Same station with AFC still on: keep following from where it was.

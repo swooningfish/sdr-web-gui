@@ -124,9 +124,24 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
      mode I FIC decoder: null sync, cyclic-prefix and phase-reference frequency and timing,
      differential QPSK, frequency de-interleaving, de-puncturing, Viterbi, energy dispersal,
      FIB CRC, FIG 0/0, 1/0 and 1/1 labels). Results are ticked and added as bookmarks
-     (FM/DAB groups); DAB ones tune the multiplex, as there's no DAB audio decoder. Rotation
-     waits during a scan; a pass stops it. Simulator: FM stations on 88.6, 101.3 (RDS) and
-     104.9 (none), DAB multiplexes on 11D and 12B.
+     (FM/DAB groups; DAB ones in DAB mode with their service id). Rotation waits during a
+     scan; a pass stops it. Simulator: FM stations on 88.6, 101.3 (RDS) and 104.9 (none),
+     DAB multiplexes on 11D and 12B.
+   - DAB/DAB+ listening (mode "dab", per listener): a streaming mode I receiver (null sync
+     per frame, frequency and timing per frame, all 75 symbols), FIG 0/1 (sub-channels, EEP
+     A/B and the 64-entry UEP table) and 0/2 (service → sub-channel, MP2 or DAB+), time
+     de-interleaving over 16 CIFs, de-puncturing, Viterbi and energy dispersal per logical
+     frame. DAB+: superframe sync on the firecode, RS(120,110) correction, AU CRCs, AUs
+     wrapped as LOAS/LATM (960-sample AAC, SBR/PS signalled implicitly). MP2 frames pass
+     through. ffmpeg (separate process, minimal LGPL build in the image: AAC/MP2 decoders,
+     LOAS/MPEG-audio demuxers, s16le out) decodes to 32 kHz mono for the usual ADPCM
+     stream; `{"type":"dab"}` messages carry the ensemble, its stations (coding, bit rate),
+     the one playing and its codec. Station picker under the spectrum; name, multiplex and
+     codec on the display; bookmarks and F-keys keep the service id (new `service_id`
+     columns, CSV column). Simulator: 11D's five services each play a tune in MP2 (sound
+     written straight into sub-band 0, so no filterbank) on 128 kbit/s EEP 3-A
+     sub-channels. Not yet heard on air: DAB+ through ffmpeg (960-sample HE-AAC) is
+     untested, as there's no DAB+ encoder for the simulator.
    - Added after: spectrum zoom (×64 in to about 100 MHz out, buttons, Ctrl + wheel,
      pinch, keys). Zoomed in, panning past the sampled band retunes; zoomed out, the
      sampled band is outlined and dragged to retune, with a *Widen* to the top sample rate.

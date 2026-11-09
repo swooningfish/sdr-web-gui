@@ -13,6 +13,9 @@ ARG RTL433_REF=25.12
 # library it requires. Its CLI still changes between releases: keep these pinned.
 ARG MBELIB_NEO_REF=v2.6.7
 ARG DSD_NEO_REF=v2.12.1
+# ffmpeg, cut down to decoding DAB audio (DAB+ AAC as LOAS/LATM, MP2) to PCM.
+# The distro package would add ~480 MB; this is a few MB, without libraries.
+ARG FFMPEG_REF=n7.1
 
 # ---------------------------------------------------------------- web UI
 FROM node:22-bookworm-slim AS web
@@ -72,6 +75,24 @@ RUN git clone --depth 1 --branch "$DSD_NEO_REF" https://github.com/arancormonk/d
  && cmake --build /src/dsd-neo/build -j"$(nproc)" \
  && cmake --install /src/dsd-neo/build
 
+# ---------------------------------------------------------------- ffmpeg
+# Just what DAB listening needs; LGPL, run as a separate process by sdrd.
+FROM debian:bookworm-slim AS ffmpeg
+ARG FFMPEG_REF
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates build-essential pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch "$FFMPEG_REF" https://github.com/FFmpeg/FFmpeg /src/ffmpeg \
+ && cd /src/ffmpeg \
+ && ./configure --disable-everything --disable-autodetect --disable-asm --disable-doc \
+      --disable-debug --disable-network --disable-ffplay --disable-ffprobe --disable-avdevice \
+      --disable-swscale --enable-small \
+      --enable-decoder=aac,aac_latm,mp2,mp2float --enable-demuxer=loas,mp3 \
+      --enable-parser=aac_latm,mpegaudio --enable-muxer=pcm_s16le --enable-encoder=pcm_s16le \
+      --enable-protocol=pipe --enable-filter=aresample,aformat,anull \
+ && make -j"$(nproc)" ffmpeg \
+ && strip ffmpeg && install -m 0755 ffmpeg /usr/local/bin/ffmpeg
+
 # ---------------------------------------------------------------- sdrd
 FROM rtlsdr AS build
 WORKDIR /src
@@ -99,6 +120,7 @@ RUN ldconfig \
  && chown sdrd:sdrd /data
 COPY --from=rtl433 /usr/local/bin/rtl_433 /usr/local/bin/rtl_433
 COPY --from=dsd /opt/dsd/bin/dsd-neo /usr/local/bin/dsd-neo
+COPY --from=ffmpeg /usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
 COPY --from=build /sdrd /usr/local/bin/sdrd
 COPY --from=web /web/dist /app/web
 

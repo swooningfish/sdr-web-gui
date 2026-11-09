@@ -1,7 +1,8 @@
 //! Frequency bookmarks: a shared station list (admins edit) plus each user's
 //! own. Stored in SQLite; CSV import/export.
 //!
-//! CSV export columns: `name,frequency_mhz,mode,group,colour,notes,sample_rate`.
+//! CSV export columns: `name,frequency_mhz,mode,group,colour,notes,sample_rate,service_id`
+//! (the DAB service id in hex).
 //! Import reads that, and also CHIRP exports (Name, Frequency, Mode, Comment)
 //! and gqrx `bookmarks.csv` (semicolon separated, frequency in Hz).
 
@@ -32,6 +33,9 @@ pub struct BookmarkIn {
     /// Receiver sample rate to switch to when tuning it (None = leave as is).
     #[serde(default)]
     pub sample_rate: Option<u32>,
+    /// DAB service id (DAB mode).
+    #[serde(default)]
+    pub service_id: Option<u16>,
     /// In the shared station list (admins only) rather than the user's own.
     #[serde(default)]
     pub shared: bool,
@@ -47,6 +51,7 @@ pub struct Bookmark {
     pub colour: Option<String>,
     pub notes: Option<String>,
     pub sample_rate: Option<u32>,
+    pub service_id: Option<u16>,
     pub shared: bool,
     pub updated_at: i64,
 }
@@ -75,6 +80,9 @@ impl BookmarkIn {
                 return Err("colour must look like #3b82f6".into());
             }
         }
+        if self.mode != Mode::Dab {
+            self.service_id = None;
+        }
         if let Some(r) = self.sample_rate {
             if !SAMPLE_RATES.contains(&r) {
                 return Err(format!("{r} S/s isn't a sample rate the receiver supports"));
@@ -84,7 +92,7 @@ impl BookmarkIn {
     }
 }
 
-type Row = (i64, Option<i64>, String, i64, String, Option<String>, Option<String>, Option<String>, Option<i64>, i64);
+type Row = (i64, Option<i64>, String, i64, String, Option<String>, Option<String>, Option<String>, Option<i64>, i64, Option<i64>);
 
 fn from_row(r: Row) -> Bookmark {
     Bookmark {
@@ -98,10 +106,11 @@ fn from_row(r: Row) -> Bookmark {
         notes: r.7,
         sample_rate: r.8.and_then(|v| u32::try_from(v).ok()),
         updated_at: r.9,
+        service_id: r.10.and_then(|v| u16::try_from(v).ok()),
     }
 }
 
-const COLS: &str = "id, owner_id, name, freq_hz, mode, grp, colour, notes, sample_rate, updated_at";
+const COLS: &str = "id, owner_id, name, freq_hz, mode, grp, colour, notes, sample_rate, updated_at, service_id";
 
 pub(crate) fn mode_str(m: Mode) -> String {
     serde_json::to_value(m).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_else(|| "nfm".into())
@@ -141,8 +150,8 @@ pub async fn count(db: &SqlitePool, owner: Option<i64>) -> Result<i64> {
 pub async fn insert(db: &SqlitePool, owner: Option<i64>, b: &BookmarkIn) -> Result<i64> {
     let now = crate::db::now();
     let r = sqlx::query(
-        "INSERT INTO bookmarks (owner_id, name, freq_hz, mode, grp, colour, notes, sample_rate, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO bookmarks (owner_id, name, freq_hz, mode, grp, colour, notes, sample_rate, service_id, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(owner)
     .bind(&b.name)
@@ -152,6 +161,7 @@ pub async fn insert(db: &SqlitePool, owner: Option<i64>, b: &BookmarkIn) -> Resu
     .bind(&b.colour)
     .bind(&b.notes)
     .bind(b.sample_rate)
+    .bind(b.service_id)
     .bind(now)
     .bind(now)
     .execute(db)
@@ -162,7 +172,7 @@ pub async fn insert(db: &SqlitePool, owner: Option<i64>, b: &BookmarkIn) -> Resu
 pub async fn update(db: &SqlitePool, id: i64, owner: Option<i64>, b: &BookmarkIn) -> Result<()> {
     sqlx::query(
         "UPDATE bookmarks SET owner_id = ?, name = ?, freq_hz = ?, mode = ?, grp = ?, colour = ?, notes = ?, \
-         sample_rate = ?, updated_at = ? WHERE id = ?",
+         sample_rate = ?, service_id = ?, updated_at = ? WHERE id = ?",
     )
     .bind(owner)
     .bind(&b.name)
@@ -172,6 +182,7 @@ pub async fn update(db: &SqlitePool, id: i64, owner: Option<i64>, b: &BookmarkIn
     .bind(&b.colour)
     .bind(&b.notes)
     .bind(b.sample_rate)
+    .bind(b.service_id)
     .bind(crate::db::now())
     .bind(id)
     .execute(db)
@@ -217,7 +228,7 @@ fn csv_field(s: &str) -> String {
 }
 
 pub fn to_csv(list: &[Bookmark]) -> String {
-    let mut out = String::from("name,frequency_mhz,mode,group,colour,notes,sample_rate\r\n");
+    let mut out = String::from("name,frequency_mhz,mode,group,colour,notes,sample_rate,service_id\r\n");
     for b in list {
         let fields = [
             csv_field(&b.name),
@@ -227,6 +238,7 @@ pub fn to_csv(list: &[Bookmark]) -> String {
             csv_field(b.colour.as_deref().unwrap_or("")),
             csv_field(b.notes.as_deref().unwrap_or("")),
             b.sample_rate.map(|r| r.to_string()).unwrap_or_default(),
+            b.service_id.map(|s| format!("{s:04X}")).unwrap_or_default(),
         ];
         out.push_str(&fields.join(","));
         out.push_str("\r\n");
@@ -282,7 +294,9 @@ fn records(text: &str, sep: char) -> Vec<Vec<String>> {
 /// Mode names as other programs write them.
 fn parse_mode(s: &str) -> Mode {
     let m = s.trim().to_ascii_lowercase();
-    if m.contains("wfm") || m.contains("wide") || m.contains("stereo") || m == "bfm" {
+    if m == "dab" || m == "dab+" {
+        Mode::Dab
+    } else if m.contains("wfm") || m.contains("wide") || m.contains("stereo") || m == "bfm" {
         Mode::Wfm
     } else if m.starts_with("cw") {
         Mode::Cw
@@ -328,6 +342,7 @@ pub fn from_csv(text: &str) -> Result<Parsed, String> {
     let colour = col(&["colour", "color"]);
     let notes = col(&["notes", "note", "comment", "comments"]);
     let rate = col(&["sample_rate", "samplerate", "sample rate"]);
+    let service = col(&["service_id", "sid", "service"]);
     if freq_mhz.is_none() && freq_hz.is_none() {
         return Err("no Frequency column".into());
     }
@@ -365,6 +380,7 @@ pub fn from_csv(text: &str) -> Result<Parsed, String> {
             colour: get(colour).filter(|c| !c.is_empty()),
             notes: get(notes),
             sample_rate: get(rate).and_then(|v| v.parse().ok()),
+            service_id: get(service).and_then(|v| u16::from_str_radix(v.trim_start_matches("0x"), 16).ok()),
             shared: false,
         };
         match b.validate() {
@@ -389,6 +405,7 @@ mod tests {
             colour: Some("#22c55e".into()),
             notes: Some("CTCSS 77.0, \"busy\"".into()),
             sample_rate: Some(2_048_000),
+            service_id: None,
             shared: true,
             updated_at: 0,
         }
@@ -396,12 +413,14 @@ mod tests {
 
     #[test]
     fn export_then_import_round_trips() {
-        let list = vec![bm("GB3XX", 145_725_000, Mode::Nfm), bm("=SUM(A1)", 7_030_000, Mode::Cw)];
+        let mut dab = bm("Sim Jazz", 222_064_000, Mode::Dab);
+        dab.service_id = Some(0xC222);
+        let list = vec![bm("GB3XX", 145_725_000, Mode::Nfm), bm("=SUM(A1)", 7_030_000, Mode::Cw), dab];
         let csv = to_csv(&list);
         assert!(csv.contains("'=SUM(A1)"), "formula guard: {csv}");
         let p = from_csv(&csv).unwrap();
         assert!(p.errors.is_empty(), "{:?}", p.errors);
-        assert_eq!(p.rows.len(), 2);
+        assert_eq!(p.rows.len(), 3);
         assert_eq!(p.rows[0].name, "GB3XX");
         assert_eq!(p.rows[0].freq_hz, 145_725_000);
         assert_eq!(p.rows[0].notes.as_deref(), Some("CTCSS 77.0, \"busy\""));
@@ -410,6 +429,8 @@ mod tests {
         assert_eq!(p.rows[1].colour.as_deref(), Some("#22c55e"));
         assert_eq!(p.rows[1].sample_rate, Some(2_048_000));
         assert_eq!(p.rows[0].sample_rate, Some(2_048_000));
+        assert_eq!(p.rows[2].mode, Mode::Dab);
+        assert_eq!(p.rows[2].service_id, Some(0xC222));
     }
 
     #[test]
@@ -438,6 +459,51 @@ mod tests {
         assert_eq!(p.rows[1].mode, Mode::Cw);
     }
 
+    #[tokio::test]
+    async fn stores_and_updates() {
+        let dir = std::env::temp_dir().join(format!("bookmarks-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let _ = std::fs::remove_file(&path);
+        let db = crate::db::open(&path).await.unwrap();
+        sqlx::query("INSERT INTO users (id, username, password_hash, role, created_at) VALUES (1, 'a', 'x', 'viewer', 0)")
+            .execute(&db)
+            .await
+            .unwrap();
+        let plain = BookmarkIn {
+            name: "S20".into(),
+            freq_hz: 145_500_000,
+            mode: Mode::Nfm,
+            group: None,
+            colour: None,
+            notes: None,
+            sample_rate: None,
+            service_id: None,
+            shared: false,
+        };
+        let dab = BookmarkIn {
+            name: "Sim Jazz".into(),
+            freq_hz: 222_064_000,
+            mode: Mode::Dab,
+            group: Some("DAB".into()),
+            sample_rate: Some(2_048_000),
+            service_id: Some(0xC222),
+            ..plain.clone()
+        };
+        insert(&db, Some(1), &plain).await.unwrap();
+        let id = insert(&db, Some(1), &dab).await.unwrap();
+        let got = list(&db, 1).await.unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!((got[0].name.as_str(), got[0].service_id, got[0].sample_rate), ("S20", None, None));
+        assert_eq!((got[1].mode, got[1].service_id, got[1].sample_rate), (Mode::Dab, Some(0xC222), Some(2_048_000)));
+        assert!(got[1].updated_at > 0);
+        update(&db, id, Some(1), &BookmarkIn { service_id: Some(0xC223), ..dab }).await.unwrap();
+        assert_eq!(get(&db, id).await.unwrap().unwrap().0.service_id, Some(0xC223));
+        assert!(exists(&db, Some(1), "S20", 145_500_000).await.unwrap());
+        db.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn validation() {
         let ok = BookmarkIn {
@@ -448,9 +514,13 @@ mod tests {
             colour: Some("#ABCDEF".into()),
             notes: None,
             sample_rate: Some(2_400_000),
+            service_id: Some(0xC221),
             shared: false,
         };
         let v = ok.clone().validate().unwrap();
+        assert_eq!(v.service_id, None, "only DAB bookmarks keep a service");
+        let dab = BookmarkIn { mode: Mode::Dab, ..ok.clone() }.validate().unwrap();
+        assert_eq!(dab.service_id, Some(0xC221));
         assert_eq!(v.name, "Air");
         assert_eq!(v.group, None);
         assert_eq!(v.colour.as_deref(), Some("#abcdef"));

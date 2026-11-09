@@ -192,8 +192,8 @@
     {/each}
     {#if muxes.length}
       <p class="muted small-text">
-        DAB stations are saved on their multiplex's frequency at 2.048 MS/s, so picking one shows the multiplex; DAB audio
-        can't be played yet.
+        DAB stations are saved in DAB mode on their multiplex's frequency at 2.048 MS/s; picking one centres the receiver on
+        the multiplex and plays that station.
       </p>
     {/if}
 

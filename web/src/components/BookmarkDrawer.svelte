@@ -122,7 +122,20 @@
     notes: string | null,
     colour: string,
   ): Bookmark {
-    return { id, name, freq_hz, mode, group, colour, notes, sample_rate: null, shared: true, can_edit: false, updated_at: 0 };
+    return {
+      id,
+      name,
+      freq_hz,
+      mode,
+      group,
+      colour,
+      notes,
+      sample_rate: null,
+      service_id: null,
+      shared: true,
+      can_edit: false,
+      updated_at: 0,
+    };
   }
   const calling = CALLING.map((c, i) => pseudo(-1 - i, c.name, c.freq_hz, c.mode, c.group, null, '#a3e635'));
   const repeaters = $derived(
@@ -208,6 +221,7 @@
         colour: null,
         notes: null,
         sample_rate: rateNow,
+        service_id: listen.mode === 'dab' ? (listen.service ?? null) : null,
         shared: isAdmin,
       },
     };
@@ -224,6 +238,8 @@
       (b) =>
         b.can_edit &&
         b.freq_hz === listen.hz &&
+        // Several DAB stations share a multiplex: only this station's.
+        !(b.mode === 'dab' && listen.mode === 'dab' && b.service_id !== (listen.service ?? null)) &&
         (b.mode !== listen.mode || (rateNow !== null && b.sample_rate !== rateNow)),
     ) ?? null,
   );
@@ -490,7 +506,10 @@
           <ul class="tiles" aria-label={s.name ? `Bookmarks: ${s.name}` : 'Bookmarks'}>
             {#each s.items as b (b.id)}
               {@const keys = keysOf(b)}
-              {@const current = listen.hz === b.freq_hz && listen.mode === b.mode}
+              {@const current =
+                listen.hz === b.freq_hz &&
+                listen.mode === b.mode &&
+                (b.mode !== 'dab' || b.service_id == null || b.service_id === listen.service)}
               <li class="tile-cell">
                 <button
                   type="button"

@@ -5,8 +5,9 @@
 //!   starts listening, or retunes the listener (`squelch_db` may be null;
 //!   add `"nr":true` for noise reduction, `"cw":true` to decode Morse,
 //!   `"afc":true` to follow a drifting signal (NFM and AM), `"digital":true`
-//!   to decode digital voice with dsd-neo (NFM);
-//!   modes nfm, wfm, am, usb, lsb, cw)
+//!   to decode digital voice with dsd-neo (NFM), `"service":49697` to pick a
+//!   DAB service by id;
+//!   modes nfm, wfm, am, usb, lsb, cw, dab)
 //! - `{"type":"audio_stop"}`
 
 use std::time::Duration;
@@ -60,6 +61,9 @@ enum ClientMsg {
         afc: bool,
         #[serde(default)]
         digital: bool,
+        /// DAB: service id to play (else the first).
+        #[serde(default)]
+        service: Option<u16>,
     },
     AudioStop,
 }
@@ -75,7 +79,7 @@ fn handle_audio(state: &AppState, listener: &mut Option<Listener>, can_listen: b
             *listener = None;
             Some(audio_msg("audio_stopped", None))
         }
-        Ok(ClientMsg::Audio { freq_hz, mode, squelch_db, nr, cw, afc, digital }) => {
+        Ok(ClientMsg::Audio { freq_hz, mode, squelch_db, nr, cw, afc, digital, service }) => {
             if !can_listen {
                 return Some(audio_msg("audio_error", Some("live audio is limited to admins on this server")));
             }
@@ -84,7 +88,7 @@ fn handle_audio(state: &AppState, listener: &mut Option<Listener>, can_listen: b
             {
                 return Some(audio_msg("audio_error", Some("bad frequency or squelch")));
             }
-            let params = Params { freq_hz, mode, squelch_db, nr, cw, afc, digital };
+            let params = Params { freq_hz, mode, squelch_db, nr, cw, afc, digital, service };
             if let Some(l) = listener.as_ref() {
                 l.params.send_replace(params);
                 return None;
@@ -95,6 +99,7 @@ fn handle_audio(state: &AppState, listener: &mut Option<Listener>, can_listen: b
                 state.iq_tx.subscribe(),
                 params,
                 state.cfg.dsd_path.clone(),
+                state.cfg.ffmpeg_path.clone(),
             ) {
                 Ok(l) => {
                     *listener = Some(l);

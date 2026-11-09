@@ -21,6 +21,9 @@ pub struct FKeyIn {
     pub mode: Mode,
     #[serde(default)]
     pub bookmark_id: Option<i64>,
+    /// DAB service id (DAB mode).
+    #[serde(default)]
+    pub service_id: Option<u16>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -30,6 +33,7 @@ pub struct FKey {
     pub freq_hz: u64,
     pub mode: Mode,
     pub bookmark_id: Option<i64>,
+    pub service_id: Option<u16>,
 }
 
 impl FKeyIn {
@@ -55,6 +59,9 @@ impl FKeyIn {
         if self.bookmark_id.is_some_and(|id| id <= 0) {
             self.bookmark_id = None;
         }
+        if self.mode != Mode::Dab {
+            self.service_id = None;
+        }
         Ok(self)
     }
 }
@@ -67,11 +74,11 @@ pub fn check_slot(slot: u8) -> Result<(), String> {
     }
 }
 
-type Row = (i64, String, i64, String, Option<i64>);
+type Row = (i64, String, i64, String, Option<i64>, Option<i64>);
 
 pub async fn list(db: &SqlitePool, user_id: i64) -> Result<Vec<FKey>> {
     let rows: Vec<Row> =
-        sqlx::query_as("SELECT slot, name, freq_hz, mode, bookmark_id FROM fkeys WHERE user_id = ? ORDER BY slot")
+        sqlx::query_as("SELECT slot, name, freq_hz, mode, bookmark_id, service_id FROM fkeys WHERE user_id = ? ORDER BY slot")
             .bind(user_id)
             .fetch_all(db)
             .await?;
@@ -83,15 +90,16 @@ pub async fn list(db: &SqlitePool, user_id: i64) -> Result<Vec<FKey>> {
             freq_hz: r.2 as u64,
             mode: serde_json::from_value(serde_json::Value::String(r.3)).unwrap_or(Mode::Nfm),
             bookmark_id: r.4,
+            service_id: r.5.and_then(|v| u16::try_from(v).ok()),
         })
         .collect())
 }
 
 pub async fn set(db: &SqlitePool, user_id: i64, slot: u8, k: &FKeyIn) -> Result<()> {
     sqlx::query(
-        "INSERT INTO fkeys (user_id, slot, name, freq_hz, mode, bookmark_id) VALUES (?, ?, ?, ?, ?, ?) \
+        "INSERT INTO fkeys (user_id, slot, name, freq_hz, mode, bookmark_id, service_id) VALUES (?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(user_id, slot) DO UPDATE SET name = excluded.name, freq_hz = excluded.freq_hz, \
-         mode = excluded.mode, bookmark_id = excluded.bookmark_id",
+         mode = excluded.mode, bookmark_id = excluded.bookmark_id, service_id = excluded.service_id",
     )
     .bind(user_id)
     .bind(slot as i64)
@@ -99,6 +107,7 @@ pub async fn set(db: &SqlitePool, user_id: i64, slot: u8, k: &FKeyIn) -> Result<
     .bind(k.freq_hz as i64)
     .bind(mode_str(k.mode))
     .bind(k.bookmark_id)
+    .bind(k.service_id)
     .execute(db)
     .await?;
     Ok(())
@@ -118,7 +127,7 @@ mod tests {
     use super::*;
 
     fn key(name: &str, freq_hz: u64) -> FKeyIn {
-        FKeyIn { name: name.into(), freq_hz, mode: Mode::Nfm, bookmark_id: Some(-3) }
+        FKeyIn { name: name.into(), freq_hz, mode: Mode::Nfm, bookmark_id: Some(-3), service_id: None }
     }
 
     #[test]
@@ -156,7 +165,15 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].slot, 3);
         assert_eq!(got[0].name, "S20");
+        assert_eq!(got[0].service_id, None);
         assert!(list(&db, 2).await.unwrap().is_empty());
+        // A DAB key keeps its station; setting it again replaces it.
+        let dab = FKeyIn { name: "Jazz".into(), freq_hz: 222_064_000, mode: Mode::Dab, bookmark_id: None, service_id: Some(0xC222) };
+        set(&db, 1, 3, &dab).await.unwrap();
+        let got = list(&db, 1).await.unwrap();
+        assert_eq!((got[0].mode, got[0].service_id), (Mode::Dab, Some(0xC222)));
+        set(&db, 1, 3, &FKeyIn { service_id: Some(0xC223), ..dab }).await.unwrap();
+        assert_eq!(list(&db, 1).await.unwrap()[0].service_id, Some(0xC223));
         clear(&db, 1, 3).await.unwrap();
         assert!(list(&db, 1).await.unwrap().is_empty());
         db.close().await;

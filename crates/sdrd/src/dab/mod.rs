@@ -18,7 +18,10 @@ use num_complex::Complex32;
 
 pub mod encode;
 mod fic;
-mod ofdm;
+pub mod msc;
+pub mod dabplus;
+pub mod mp2;
+pub mod ofdm;
 
 pub use ofdm::{decode, null_depth};
 

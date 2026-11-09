@@ -1,16 +1,26 @@
-//! A DAB mode I transmitter for the FIC, for the tests and the simulated
-//! receiver: one frame that names the ensemble and its services (the main
-//! service channel is filled with random data).
+//! A DAB mode I transmitter for the tests and the simulated receiver: the
+//! FIC names the ensemble and its services and, for services with audio,
+//! says which sub-channel carries it; the MSC carries those sub-channels
+//! (the rest is random data).
 
 use num_complex::Complex32;
 use rustfft::FftPlanner;
 
 use super::fic::{conv_encode, crc16, ebu_byte, prbs, sent, BLOCK_BITS};
-use super::{bin, interleaver, prs, FIC_SYMBOLS, K, L, T_F, T_G, T_NULL, T_U};
+use super::msc::{interleave_loop, protect, AudioKind, Protection, SubChannel, CIF_BITS, CU_BITS};
+use super::{bin, interleaver, prs, K, L, T_F, T_G, T_NULL, T_U};
 
-/// Most services one frame can name (one label per FIB, 12 FIBs, one
-/// for the ensemble).
-pub const MAX_SERVICES: usize = 11;
+/// FIBs per frame.
+const FIBS: usize = 12;
+
+/// A service's audio: its sub-channel and the logical frames it sends
+/// (repeated).
+pub struct Audio {
+    pub sid: u16,
+    pub sub: SubChannel,
+    pub kind: AudioKind,
+    pub frames: Vec<Vec<u8>>,
+}
 
 /// An ensemble to transmit.
 pub struct Spec<'a> {
@@ -18,6 +28,7 @@ pub struct Spec<'a> {
     pub label: &'a str,
     /// Programme services: (service id, label).
     pub services: &'a [(u16, &'a str)],
+    pub audio: &'a [Audio],
 }
 
 /// FIG 1 with a 16-bit id: ensemble (ext 0) or programme service (ext 1)
@@ -34,28 +45,74 @@ fn fig1(ext: u8, id: u16, label: &str) -> Vec<u8> {
     f
 }
 
-/// FIG 0/0: ensemble id, no change, CIF counter 0.
-fn fig0_0(eid: u16) -> Vec<u8> {
-    let mut f = vec![0x05, 0x00];
-    f.extend_from_slice(&eid.to_be_bytes());
-    f.extend_from_slice(&[0x00, 0x00]);
+/// A FIG 0 with this extension and body.
+fn fig0(ext: u8, body: &[u8]) -> Vec<u8> {
+    let mut f = vec![(body.len() + 1) as u8, ext];
+    f.extend_from_slice(body);
     f
 }
 
-/// The 12 FIBs of a frame (CRC added).
+/// FIG 0/0: ensemble id, no change, CIF counter 0.
+fn fig0_0(eid: u16) -> Vec<u8> {
+    let [a, b] = eid.to_be_bytes();
+    fig0(0, &[a, b, 0, 0])
+}
+
+/// FIG 0/1 (long form) for these sub-channels.
+fn fig0_1(subs: &[&SubChannel]) -> Vec<u8> {
+    let mut body = Vec::new();
+    for s in subs {
+        let (option, level) = match s.protection {
+            Protection::EepA(l) => (0, l),
+            Protection::EepB(l) => (1, l),
+            _ => panic!("the simulator sends EEP only"),
+        };
+        body.push(s.id << 2 | (s.start >> 8) as u8);
+        body.push(s.start as u8);
+        body.push(0x80 | option << 4 | (level - 1) << 2 | (s.size >> 8) as u8);
+        body.push(s.size as u8);
+    }
+    fig0(1, &body)
+}
+
+/// FIG 0/2: each service's one audio component.
+fn fig0_2(audio: &[&Audio]) -> Vec<u8> {
+    let mut body = Vec::new();
+    for a in audio {
+        body.extend_from_slice(&a.sid.to_be_bytes());
+        body.push(1); // one component
+        let ascty = match a.kind {
+            AudioKind::DabPlus => 63,
+            _ => 0,
+        };
+        body.push(ascty); // TMId 0
+        body.push(a.sub.id << 2 | 0x02); // primary
+    }
+    fig0(2, &body)
+}
+
+/// The 12 FIBs of a frame (CRC added): the FIGs packed in order.
 fn fibs(spec: &Spec) -> Vec<[u8; 32]> {
-    assert!(spec.services.len() <= MAX_SERVICES, "at most {MAX_SERVICES} services");
-    let mut figs: Vec<Vec<Vec<u8>>> = vec![vec![fig0_0(spec.eid), fig1(0, spec.eid, spec.label)]];
-    for &(sid, name) in spec.services {
-        figs.push(vec![fig1(1, sid, name)]);
+    let mut figs = vec![fig0_0(spec.eid), fig1(0, spec.eid, spec.label)];
+    figs.extend(spec.services.iter().map(|&(sid, name)| fig1(1, sid, name)));
+    let audio: Vec<&Audio> = spec.audio.iter().collect();
+    for chunk in audio.chunks(5) {
+        figs.push(fig0_1(&chunk.iter().map(|a| &a.sub).collect::<Vec<_>>()));
+        figs.push(fig0_2(chunk));
     }
-    while figs.len() < 12 {
-        figs.push(vec![fig0_0(spec.eid)]);
+    let mut out: Vec<Vec<u8>> = vec![Vec::new()];
+    for f in figs {
+        if out.last().unwrap().len() + f.len() > 30 {
+            out.push(Vec::new());
+        }
+        out.last_mut().unwrap().extend_from_slice(&f);
     }
-    figs.iter()
-        .map(|list| {
-            let mut data: Vec<u8> = list.concat();
-            assert!(data.len() <= 30);
+    assert!(out.len() <= FIBS, "too much for one frame's FIC");
+    while out.len() < FIBS {
+        out.push(fig0_0(spec.eid));
+    }
+    out.into_iter()
+        .map(|mut data| {
             if data.len() < 30 {
                 data.push(0xFF); // end marker, then padding
             }
@@ -86,10 +143,11 @@ fn fic_bits(spec: &Spec) -> Vec<u8> {
     out
 }
 
-/// One transmission frame at 2.048 MS/s (null symbol first), scaled to an
-/// average power of 1 outside the null. `seed` varies the MSC data.
-pub fn frame(spec: &Spec, seed: u64) -> Vec<Complex32> {
-    let bits = fic_bits(spec);
+/// `count` transmission frames at 2.048 MS/s (null symbol first), which
+/// repeat seamlessly, scaled to an average power of 1 outside the nulls.
+/// `seed` varies the unused MSC data.
+pub fn frames(spec: &Spec, count: usize, seed: u64) -> Vec<Vec<Complex32>> {
+    let fic = fic_bits(spec);
     let map = interleaver();
     let ifft = FftPlanner::<f32>::new().plan_fft_inverse(T_U);
     let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
@@ -99,42 +157,65 @@ pub fn frame(spec: &Spec, seed: u64) -> Vec<Complex32> {
         rng ^= rng << 17;
         (rng & 1) as u8
     };
+    let cifs = count * 4;
+    // Each sub-channel's CIF bits over the loop, time-interleaved.
+    let subs: Vec<(usize, Vec<Vec<u8>>)> = spec
+        .audio
+        .iter()
+        .map(|a| {
+            let coded: Vec<Vec<u8>> = (0..cifs).map(|t| protect(&a.sub, &a.frames[t % a.frames.len()])).collect();
+            (a.sub.start as usize * CU_BITS, interleave_loop(&coded))
+        })
+        .collect();
     let qpsk = |a: u8, b: u8| Complex32::new(1.0 - 2.0 * a as f32, 1.0 - 2.0 * b as f32) * std::f32::consts::FRAC_1_SQRT_2;
-
-    let mut out = vec![Complex32::default(); T_NULL];
-    let mut carriers = prs();
-    for l in 0..L {
-        if l > 0 {
-            let sym: Vec<(u8, u8)> = if l <= FIC_SYMBOLS {
-                let b = &bits[(l - 1) * 2 * K..l * 2 * K];
-                (0..K).map(|n| (b[n], b[K + n])).collect()
-            } else {
-                (0..K).map(|_| (random_bit(), random_bit())).collect()
-            };
-            for (n, &(a, b)) in sym.iter().enumerate() {
-                carriers[bin(map[n])] *= qpsk(a, b);
+    let mut out = Vec::with_capacity(count);
+    for f in 0..count {
+        let mut bits: Vec<u8> = fic.clone();
+        for c in 0..4 {
+            let mut cif: Vec<u8> = (0..CIF_BITS).map(|_| random_bit()).collect();
+            for (start, loop_bits) in &subs {
+                let b = &loop_bits[f * 4 + c];
+                cif[*start..*start + b.len()].copy_from_slice(b);
             }
+            bits.extend_from_slice(&cif);
         }
-        let mut t = carriers.clone();
-        ifft.process(&mut t);
-        out.extend_from_slice(&t[T_U - T_G..]);
-        out.extend_from_slice(&t);
+        let mut samples = vec![Complex32::default(); T_NULL];
+        let mut carriers = prs();
+        for l in 0..L {
+            if l > 0 {
+                let b = &bits[(l - 1) * 2 * K..l * 2 * K];
+                for n in 0..K {
+                    carriers[bin(map[n])] *= qpsk(b[n], b[K + n]);
+                }
+            }
+            let mut t = carriers.clone();
+            ifft.process(&mut t);
+            samples.extend_from_slice(&t[T_U - T_G..]);
+            samples.extend_from_slice(&t);
+        }
+        debug_assert_eq!(samples.len(), T_F);
+        let power = samples[T_NULL..].iter().map(|z| z.norm_sqr()).sum::<f32>() / (T_F - T_NULL) as f32;
+        let scale = 1.0 / power.sqrt();
+        samples.iter_mut().for_each(|z| *z *= scale);
+        out.push(samples);
     }
-    debug_assert_eq!(out.len(), T_F);
-    let power = out[T_NULL..].iter().map(|z| z.norm_sqr()).sum::<f32>() / (T_F - T_NULL) as f32;
-    let scale = 1.0 / power.sqrt();
-    out.iter_mut().for_each(|z| *z *= scale);
     out
+}
+
+/// One frame (for a multiplex with no audio, where every frame is alike).
+#[cfg(test)]
+pub fn frame(spec: &Spec, seed: u64) -> Vec<Complex32> {
+    frames(spec, 1, seed).remove(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dab::FIC_BLOCK;
+    use crate::dab::{FIC_BLOCK, FIC_SYMBOLS};
 
     #[test]
     fn fibs_check_and_fic_fills_three_symbols() {
-        let spec = Spec { eid: 0xC181, label: "SIM DAB", services: &[(0xC221, "One"), (0xC222, "Two")] };
+        let spec = Spec { eid: 0xC181, label: "SIM DAB", services: &[(0xC221, "One"), (0xC222, "Two")], audio: &[] };
         let f = fibs(&spec);
         assert_eq!(f.len(), 12);
         assert!(f.iter().all(|fib| crc16(&fib[..30]) == u16::from_be_bytes([fib[30], fib[31]])));

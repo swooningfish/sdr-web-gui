@@ -3,7 +3,7 @@
  * session; the front panel drives it and the decoder strip shows its output. */
 
 import { AFC_MODES, AudioPlayer, type AudioFrame, type AudioMode, type Listen, type PlayerStats } from './audio';
-import type { DecodedMsg, DigitalCall, DigitalEvent, RdsMsg } from './stream';
+import type { DabMsg, DecodedMsg, DigitalCall, DigitalEvent, RdsMsg } from './stream';
 
 export type VfoName = 'A' | 'B';
 export interface Vfo {
@@ -57,6 +57,8 @@ export class Listener {
   cwText = $state('');
   cwWpm = $state<number | null>(null);
   rds = $state<RdsMsg | null>(null);
+  /** DAB: the multiplex being heard and the service playing. */
+  dab = $state<DabMsg | null>(null);
   onAir = $state<DigitalCall[]>([]);
   heard = $state<(DigitalEvent & { hz: number })[]>([]);
   dsdLog = $state<string[]>([]);
@@ -94,6 +96,7 @@ export class Listener {
     this.autoMode = bool('autoMode', true);
     if (typeof saved.hz === 'number') listen.hz = saved.hz;
     if (typeof saved.mode === 'string') listen.mode = saved.mode as AudioMode;
+    if (typeof saved.service === 'number') listen.service = saved.service;
     if (saved.active === 'B') this.active = 'B';
     const o = saved.other as Vfo | undefined;
     if (o && typeof o.hz === 'number' && typeof o.mode === 'string') this.other = { hz: o.hz, mode: o.mode };
@@ -106,7 +109,7 @@ export class Listener {
     return this.afcOn && this.afcWorks;
   }
   get cwActive() {
-    return this.cwOn && this.listen.mode !== 'wfm';
+    return this.cwOn && this.listen.mode !== 'wfm' && this.listen.mode !== 'dab';
   }
   get digitalActive() {
     return this.digitalOn && this.listen.mode === 'nfm';
@@ -150,6 +153,7 @@ export class Listener {
         autoMode: this.autoMode,
         hz: this.listen.hz,
         mode: this.listen.mode,
+        service: this.listen.service ?? null,
         active: this.active,
         other: { hz: this.other.hz, mode: this.other.mode },
       };
@@ -182,6 +186,7 @@ export class Listener {
       void this.listen.hz;
       void this.listen.mode;
       this.rds = null;
+      this.dab = null;
       this.onAir = [];
       this.sync = null;
     });
@@ -215,7 +220,13 @@ export class Listener {
       cw: this.cwActive,
       afc: this.afcActive,
       digital: this.digitalActive,
+      ...(this.listen.mode === 'dab' ? { service: this.listen.service ?? null } : {}),
     };
+  }
+
+  /** DAB: play another service in the multiplex (id as hex, from the list). */
+  pickService(sid: string) {
+    this.listen.service = parseInt(sid, 16);
   }
 
   async start() {
@@ -303,6 +314,8 @@ export class Listener {
           if (s) this.sawSync(s[1]);
         }
       }
+    } else if (m.type === 'dab') {
+      if (this.listen.mode === 'dab') this.dab = m;
     } else if (m.type === 'cw') {
       this.cwText = (this.cwText + m.text).slice(-800);
       this.cwWpm = m.wpm;

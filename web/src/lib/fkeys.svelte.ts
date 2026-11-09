@@ -15,6 +15,8 @@ export interface FKey {
   mode: AudioMode;
   /** The saved bookmark it was set from (none for calling channels, repeaters). */
   bookmark_id: number | null;
+  /** DAB: the service (station) in the multiplex. */
+  service_id?: number | null;
 }
 
 export type FKeyInput = Omit<FKey, 'slot'>;
@@ -41,11 +43,26 @@ class FKeyStore {
     const k = this.keys[slot - 1];
     if (!k) return null;
     const b = k.bookmark_id ? bookmarks.list.find((x) => x.id === k.bookmark_id) : undefined;
-    return b ? { name: b.name, freq_hz: b.freq_hz, mode: b.mode, bookmark_id: b.id, sample_rate: b.sample_rate } : k;
+    return b
+      ? {
+          name: b.name,
+          freq_hz: b.freq_hz,
+          mode: b.mode,
+          bookmark_id: b.id,
+          sample_rate: b.sample_rate,
+          service_id: b.service_id,
+        }
+      : k;
   }
 
-  async assign(slot: number, b: Pick<Bookmark, 'id' | 'name' | 'freq_hz' | 'mode'>) {
-    const input: FKeyInput = { name: b.name, freq_hz: b.freq_hz, mode: b.mode, bookmark_id: b.id > 0 ? b.id : null };
+  async assign(slot: number, b: Pick<Bookmark, 'id' | 'name' | 'freq_hz' | 'mode'> & { service_id?: number | null }) {
+    const input: FKeyInput = {
+      name: b.name,
+      freq_hz: b.freq_hz,
+      mode: b.mode,
+      bookmark_id: b.id > 0 ? b.id : null,
+      service_id: b.mode === 'dab' ? (b.service_id ?? null) : null,
+    };
     await api.setFkey(slot, input);
     this.keys[slot - 1] = { slot, ...input };
   }

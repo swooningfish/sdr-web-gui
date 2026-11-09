@@ -13,7 +13,7 @@
   import HarmonicsPanel from './components/HarmonicsPanel.svelte';
   import DecoderPanel from './components/DecoderPanel.svelte';
   import BookmarkDrawer from './components/BookmarkDrawer.svelte';
-  import { MODES, snap, type AudioMode, type Listen } from './lib/audio';
+  import { DAB_RATE, MODES, snap, type AudioMode, type Listen } from './lib/audio';
   import { Listener } from './lib/listener.svelte';
   import { fkeys } from './lib/fkeys.svelte';
   import { ALL_GROUPS, modeAt } from './lib/bandplan';
@@ -183,7 +183,10 @@
       const m = modeAt(hz, ALL_BANDS);
       if (m) listen.mode = m;
     }
-    listen.hz = snap(hz, listen.mode);
+    const snapped = snap(hz, listen.mode);
+    // Another DAB multiplex: start with its first station.
+    if (listen.mode === 'dab' && snapped !== listen.hz) listen.service = null;
+    listen.hz = snapped;
     // Picked outside the sampled band (zoomed out): admins bring it in.
     bringIntoBand(listen.hz, listen.mode, 0.5);
   }
@@ -191,13 +194,19 @@
   /** Listen to a bookmark; admins also switch to its sample rate and retune
    * when it's outside the band. */
   function selectBookmark(b: Bookmark) {
-    tuneListen(b.freq_hz, b.mode, b.sample_rate);
+    tuneListen(b.freq_hz, b.mode, b.sample_rate, b.service_id);
   }
 
   /** Front panel (knob, typed frequency, F-keys): listen at `hz`, at
-   * `sampleRate` if one is given (a bookmark's). */
-  function tuneListen(hz: number, mode?: AudioMode, sampleRate?: number | null) {
+   * `sampleRate` if one is given (a bookmark's), and for DAB the service. */
+  function tuneListen(hz: number, mode?: AudioMode, sampleRate?: number | null, service?: number | null) {
     if (mode) listen.mode = mode;
+    if (listen.mode === 'dab') {
+      // DAB stations live on Band III channels; keep the service when it's given.
+      hz = snap(hz, 'dab');
+      if (service !== undefined) listen.service = service;
+      else if (hz !== listen.hz) listen.service = null;
+    }
     listen.hz = hz;
     bringIntoBand(hz, listen.mode, 0.45, sampleRate);
   }
@@ -210,6 +219,11 @@
   function bringIntoBand(hz: number, mode: AudioMode, margin: number, rate?: number | null) {
     if (!radio || !isAdmin || !radio.can_tune) return;
     const { center_hz } = radio.settings;
+    if (mode === 'dab') {
+      // The whole multiplex, centred, at the rate it's sent at.
+      if (center_hz !== hz || radio.settings.sample_rate !== DAB_RATE) configure({ center_hz: hz, sample_rate: DAB_RATE });
+      return;
+    }
     const newRate = rate && rate !== radio.settings.sample_rate && radio.sample_rates.includes(rate) ? rate : null;
     const sample_rate = newRate ?? radio.settings.sample_rate;
     const bw = MODES.find((m) => m.value === mode)?.bw ?? 12_500;

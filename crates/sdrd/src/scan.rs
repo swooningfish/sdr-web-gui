@@ -10,7 +10,8 @@
 //! DAB: each Band III channel is checked for the null symbol a multiplex
 //! has every 96 ms; where there is one, a few seconds are captured and the
 //! FIC decoded for the ensemble and service names (see [`crate::dab`]).
-//! sdrd can't play DAB audio, so a DAB bookmark tunes the multiplex.
+//! DAB stations are saved in DAB mode with their service id, so picking
+//! one tunes the multiplex and plays that service.
 //!
 //! While a scan runs the scheduler's rotation waits; a satellite pass stops
 //! the scan. Afterwards the receiver goes back to where it was.
@@ -77,6 +78,8 @@ pub struct Found {
     pub freq_hz: u64,
     pub mode: Mode,
     pub sample_rate: Option<u32>,
+    /// DAB: the service id, for playing it.
+    pub service_id: Option<u16>,
     pub group: String,
     pub notes: String,
     /// Signal above the noise floor (FM) or signal-to-noise (DAB), dB.
@@ -409,8 +412,9 @@ impl Ctx {
                     band: Band::Dab,
                     name: label.clone(),
                     freq_hz: hz,
-                    mode: Mode::Wfm,
+                    mode: Mode::Dab,
                     sample_rate: Some(RATE),
+                    service_id: Some(*sid),
                     group: "DAB".into(),
                     notes: format!("DAB {name} · {ens} · SId {sid:04X}"),
                     level_db: snr,
@@ -457,6 +461,7 @@ fn fm_found(hz: u64, level: f32, info: Option<RdsInfo>) -> Found {
         freq_hz: hz,
         mode: Mode::Wfm,
         sample_rate: None,
+        service_id: None,
         group: "FM".into(),
         notes,
         level_db: level,
@@ -551,7 +556,7 @@ fn read_rds(data: &[u8], center_hz: u64, freqs: &[u64]) -> Vec<Option<RdsInfo>> 
 }
 
 fn rds_of(data: &[u8], center_hz: u64, hz: u64) -> Option<RdsInfo> {
-    let p = Params { freq_hz: hz, mode: Mode::Wfm, squelch_db: None, nr: false, cw: false, afc: false, digital: false };
+    let p = Params { freq_hz: hz, mode: Mode::Wfm, squelch_db: None, nr: false, cw: false, afc: false, digital: false, service: None };
     let mut d = Demod::new(&p, center_hz, RATE);
     let mut audio = Vec::new();
     let mut last: Option<RdsInfo> = None;
