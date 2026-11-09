@@ -118,7 +118,9 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
      pinch, keys). Zoomed in, panning past the sampled band retunes; zoomed out, the
      sampled band is outlined and dragged to retune, with a *Widen* to the top sample rate.
      A log-scale mini map of the receiver's whole range above the spectrum shows the band
-     plan, bookmarks, the sampled band and the view, and moves the radio on click or drag.
+     plan, bookmarks, the sampled band and the view, and moves the radio on click or drag;
+     it zooms (buttons, Ctrl + wheel, pinch) down to a few MHz across, pans by dragging,
+     and fits the whole range again from its level button.
 8. **ADS-B aircraft map** (next)
    - Receiver: a second dongle with a 1090 MHz antenna running ADS-B all the time (readsb),
      alongside the main dongle; fallback: ADS-B as a rotation profile on a single dongle

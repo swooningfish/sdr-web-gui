@@ -330,7 +330,11 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
   scale, e.g. 24–1766 MHz) with the band plan in colour, bookmarks, the listening
   frequency, the sampled band (labelled with its frequency) and the zoomed-out view.
   Hover to name a frequency; click, drag or use the arrow keys to move the radio there
-  (admins). Hide it under **Band plan**.
+  (admins). **−** / **+** at its right end zoom the map (Ctrl + wheel or pinch zoom about
+  the cursor), down to a few MHz across; zoomed in, drag the map to pan (drag the cyan
+  marker to move the radio) and click the level (e.g. **×8**) to fit the whole range
+  again. An arrow at the edge points to the radio when it's off the part shown. Hide it
+  under **Band plan**.
 - **Bookmarks:** flags above the spectrum and a list under *Listen*; click one to listen
   (admins also retune if it's outside the band). **★ Save** keeps the current frequency.
   The **station list** is shared with everyone (admins edit it); **mine** are yours

@@ -317,8 +317,8 @@ test('the sampled window and the mini map move the radio', async ({ page }, info
 
   // Click the mini map back near where it was (log scale).
   const map = page.getByRole('slider', { name: /Whole receiver range/ });
-  const lo = Number(await map.getAttribute('aria-valuemin'));
-  const hi = Number(await map.getAttribute('aria-valuemax'));
+  const lo = Number(await map.getAttribute('data-lo'));
+  const hi = Number(await map.getAttribute('data-hi'));
   const m = (await map.boundingBox())!;
   const mx = m.x + ((Math.log(before) - Math.log(lo)) / (Math.log(hi) - Math.log(lo))) * m.width;
   await map.click({ position: { x: mx - m.x, y: 8 } });
@@ -329,4 +329,57 @@ test('the sampled window and the mini map move the radio', async ({ page }, info
   await page.getByRole('button', { name: 'Tune', exact: true }).click();
   await expect.poll(centre, { timeout: 5000 }).toBe(before);
   await zoom.getByRole('button', { name: /^Zoom ÷/ }).click();
+});
+
+test('the mini map zooms, pans and fits the whole range', async ({ page }, info) => {
+  const radio = await (await page.request.get('/api/radio')).json();
+  test.skip(!radio.connected, `receiver not connected (${radio.error ?? radio.source})`);
+  await openTab(page, 'Spectrum');
+  const map = page.getByRole('slider', { name: /Whole receiver range/ });
+  const range = page.getByRole('group', { name: 'Mini map range' });
+  const shown = async () => ({
+    lo: Number(await map.getAttribute('data-lo')),
+    hi: Number(await map.getAttribute('data-hi')),
+  });
+  const full = { lo: Number(await map.getAttribute('aria-valuemin')), hi: Number(await map.getAttribute('aria-valuemax')) };
+  const c: number = radio.settings.center_hz;
+  expect(await shown()).toEqual(full);
+  await expect(range.getByRole('button', { name: 'Zoom the mini map out' })).toBeDisabled();
+
+  // Zooming in keeps the radio on the map.
+  for (let i = 0; i < 3; i++) await range.getByRole('button', { name: 'Zoom the mini map in' }).click();
+  const z = await shown();
+  expect(Math.log(z.hi / z.lo)).toBeCloseTo(Math.log(full.hi / full.lo) / 8, 1);
+  expect(z.lo).toBeLessThan(c);
+  expect(z.hi).toBeGreaterThan(c);
+  await expect(range.getByRole('button', { name: /^Mini map ×8/ })).toBeVisible();
+
+  // Dragging away from the radio's marker pans the map, not the radio.
+  const m = (await map.boundingBox())!;
+  const cx = m.x + ((Math.log(c) - Math.log(z.lo)) / Math.log(z.hi / z.lo)) * m.width;
+  const from = cx > m.x + m.width / 2 ? m.x + m.width * 0.1 : m.x + m.width * 0.9;
+  const dir = cx > m.x + m.width / 2 ? 1 : -1;
+  await page.mouse.move(from, m.y + 8);
+  await page.mouse.down();
+  await page.mouse.move(from + dir * m.width * 0.2, m.y + 8, { steps: 5 });
+  await page.mouse.up();
+  const p = await shown();
+  expect(dir > 0 ? p.lo < z.lo : p.lo > z.lo, 'map panned').toBe(true);
+  expect((await (await page.request.get('/api/radio')).json()).settings.center_hz).toBe(c);
+
+  // Ctrl + wheel zooms out about the cursor (phones have no wheel: the
+  // button); the level button fits it all.
+  if (info.project.use.isMobile) {
+    await range.getByRole('button', { name: 'Zoom the mini map out' }).click();
+  } else {
+    await page.mouse.move(m.x + m.width / 2, m.y + 8);
+    await page.keyboard.down('Control');
+    await page.mouse.wheel(0, 200);
+    await page.keyboard.up('Control');
+  }
+  const w = await shown();
+  expect(w.hi / w.lo).toBeGreaterThan(p.hi / p.lo);
+  await range.getByRole('button', { name: /fit the whole range/ }).click();
+  expect(await shown()).toEqual(full);
+  expect(await overflow(page), 'mini map controls are wider than the window').toBeLessThanOrEqual(0);
 });
