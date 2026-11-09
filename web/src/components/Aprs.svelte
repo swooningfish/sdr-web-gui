@@ -9,7 +9,7 @@
     type RadioState,
     type Track,
   } from '../lib/api';
-  import { motion, stationName, stationText, symbolName } from '../lib/aprs';
+  import { motion, stationName, stationText, symbolIcon, symbolName } from '../lib/aprs';
   import { unsupported } from '../lib/coverage';
   import { formatMHz, relTime } from '../lib/format';
   import { CHART_FIELDS, series } from '../lib/sensors';
@@ -248,7 +248,7 @@
         <dl class="small-text">
           {#if selected.name}<dt>Callsign</dt><dd>{selected.dev_id}</dd>{/if}
           {#if selected.model !== 'APRS'}<dt>Type</dt><dd>{selected.model} from {selected.last_data.from}</dd>{/if}
-          <dt>Symbol</dt><dd>{symbolName(selected.symbol)}</dd>
+          <dt>Symbol</dt><dd class="sym"><span class="sym-icon">{@html symbolIcon(selected.symbol)}</span>{symbolName(selected.symbol)}</dd>
           <dt>Position</dt><dd>{fmtPos(selected)}{selected.pos_ts ? ` (${relTime(selected.pos_ts, now)})` : ''}</dd>
           {#if motion(selected.last_data)}<dt>Moving</dt><dd>{motion(selected.last_data)}</dd>{/if}
           {#if stationText(selected.last_data)}<dt>Comment</dt><dd>{stationText(selected.last_data)}</dd>{/if}
@@ -324,7 +324,9 @@
               {/if}
               <button type="button" class="station" onclick={() => select(d.id)}>
                 <span class="row">
-                  <strong>{stationName(d)}</strong>
+                  <strong class="sym"
+                    ><span class="sym-icon" title={symbolName(d.symbol)}>{@html symbolIcon(d.symbol)}</span>{stationName(d)}</strong
+                  >
                   <span class="muted small-text">{relTime(d.last_seen, now)}</span>
                 </span>
                 <span class="muted small-text"
@@ -477,6 +479,16 @@
   }
   .text {
     overflow-wrap: anywhere;
+  }
+  .sym {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .sym-icon {
+    display: inline-grid;
+    flex: none;
+    color: var(--accent);
   }
   dl {
     display: grid;

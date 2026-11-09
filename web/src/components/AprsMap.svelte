@@ -3,7 +3,7 @@
   import L from 'leaflet';
   import 'leaflet/dist/leaflet.css';
   import type { Device, Observer, Track } from '../lib/api';
-  import { isSatellite, stationName, symbolName } from '../lib/aprs';
+  import { isSatellite, stationName, symbolIcon, symbolName } from '../lib/aprs';
 
   let {
     stations,
@@ -134,8 +134,9 @@
     fitOnce(map);
   });
 
-  // Station markers: a dot plus the callsign as a label. Updated in place so
-  // a hover or click isn't interrupted every time a packet arrives.
+  // Station markers: a badge with the symbol's icon plus the callsign as a
+  // label. Updated in place so a hover or click isn't interrupted every time
+  // a packet arrives.
   $effect(() => {
     if (!map) return;
     const seen = new Set<number>();
@@ -145,13 +146,13 @@
       const sel = d.id === selectedId;
       const obj = d.model !== 'APRS';
       const name = stationName(d);
-      const look = `${sel}|${obj}|${name}`;
+      const look = `${sel}|${obj}|${name}|${d.symbol}`;
       const icon = () =>
         L.divIcon({
           className: 'aprs-marker',
-          html: `<span class="dot${sel ? ' sel' : ''}${obj ? ' obj' : ''}"></span><span class="label">${esc(name)}</span>`,
-          iconSize: [12, 12],
-          iconAnchor: [6, 6],
+          html: `<span class="badge${sel ? ' sel' : ''}${obj ? ' obj' : ''}">${symbolIcon(d.symbol, 14)}</span><span class="label">${esc(name)}</span>`,
+          iconSize: [22, 22],
+          iconAnchor: [11, 11],
         });
       const cur = markers.get(d.id);
       if (!cur) {
@@ -229,27 +230,31 @@
   .map :global(.aprs-marker) {
     overflow: visible;
   }
-  .map :global(.aprs-marker .dot) {
-    display: block;
-    width: 12px;
-    height: 12px;
+  .map :global(.aprs-marker .badge) {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
     border-radius: 50%;
     background: var(--accent);
+    color: var(--accent-text);
     border: 2px solid var(--surface);
     box-sizing: border-box;
   }
-  .map :global(.aprs-marker .dot.obj) {
+  /* Objects and items (placed by another station) are drawn hollow. */
+  .map :global(.aprs-marker .badge.obj) {
     background: var(--surface);
+    color: var(--accent);
     border-color: var(--accent);
   }
-  .map :global(.aprs-marker .dot.sel) {
-    transform: scale(1.5);
+  .map :global(.aprs-marker .badge.sel) {
+    transform: scale(1.3);
     box-shadow: 0 0 0 3px var(--accent);
   }
   .map :global(.aprs-marker .label) {
     position: absolute;
-    left: 15px;
-    top: -4px;
+    left: 25px;
+    top: 2px;
     white-space: nowrap;
     font-size: 12px;
     font-weight: 600;
