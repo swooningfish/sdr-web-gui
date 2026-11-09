@@ -139,8 +139,9 @@ takes seconds.
 
 ### Test signals
 
-The simulated receiver puts test signals on 96.1, 144.470, 144.800, 145.375, 145.7125,
-145.800, 145.825, 433.920 and 437.550 MHz (Doppler-drifting carrier). Use the presets to see them.
+The simulated receiver puts test signals on 88.6, 96.1, 101.3, 104.9, 144.470, 144.800,
+145.375, 145.7125, 145.800, 145.825, 433.920 and 437.550 MHz (Doppler-drifting carrier), and
+DAB on 11D and 12B. Use the presets to see them.
 They are real, decodable transmissions:
 
 - **144.800 / 145.825 (VHF block, the default):** APRS packets that Direwolf decodes: a car
@@ -157,6 +158,10 @@ They are real, decodable transmissions:
   tone. Listen in **NFM** with **Decode CW** on.
 - **96.1 MHz (tune to ~96.25):** an FM broadcast station with RDS ("SIM FM", radio text).
   Listen in **WFM**.
+- **FM band:** three more stations for the band scan: 88.6 ("SIM TWO") and 101.3
+  ("SIMROCK") with RDS, 104.9 without.
+- **DAB 11D (222.064 MHz) and 12B (225.648 MHz):** two multiplexes, "SIM DAB" with five
+  stations and "SIM LOCAL" with three, named in their FIC for the DAB band scan. No audio.
 - **1090 MHz:** ten aircraft around London sending ADS-B. Choose a simulated dongle as the
   ADS-B receiver in **Settings → Receiver** (or start with `SDRD_ADSB_DEVICE=sim-v4`), or tune
   the main receiver to 1090 MHz at 2.4 MS/s, and open the **Aircraft** tab. Set the station
@@ -461,6 +466,15 @@ one line (**Compact**), and you drag and pinch-zoom the spectrum with your finge
   what's tuned now (frequency, mode and sample rate), **F** to put one
   on a function key, and export CSV or import a CSV (our own export, CHIRP or gqrx
   `bookmarks.csv`).
+
+  **Scan for stations** (in Manage) finds broadcast stations to add: an admin runs
+  **Scan FM** (87.5–108 MHz: carriers clear of the noise floor, named from their RDS) or
+  **Scan DAB** (Band III 5A–13F: each multiplex's station list, read from its FIC). The
+  receiver retunes for about a minute, rotation waits, a satellite pass stops the scan, and
+  then it goes back to where it was. Anyone can tick stations in the results and add them to
+  their bookmarks (admins also to the station list); ones already there are marked. DAB
+  stations are saved on their multiplex's frequency at 2.048 MS/s: sdrd shows the
+  multiplex but can't play DAB audio.
 
   ![The bookmark manager open on the Calling list](docs/screenshots/bookmarks.png)
 - **Harmonics check (admins):** click a short-range device's signal (a key fob, sensor or

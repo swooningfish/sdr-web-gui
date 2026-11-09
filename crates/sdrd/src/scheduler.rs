@@ -344,6 +344,7 @@ pub async fn spawn(
     recorder: RecorderHandle,
     doppler_tx: watch::Sender<Option<DopplerNow>>,
     events: mpsc::Sender<DecodedEvent>,
+    scanning: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<SchedulerHandle> {
     let cfg = match db::get_setting::<ScheduleConfig>(&db, CFG_KEY).await {
         Ok(Some(c)) if c.validate().is_ok() => c,
@@ -379,6 +380,7 @@ pub async fn spawn(
         pending: HashMap::new(),
         skipped: Vec::new(),
         tune_error: false,
+        scanning,
     };
     tokio::spawn(run.main(cmd_rx, recorder.done));
     Ok(SchedulerHandle {
@@ -423,6 +425,8 @@ struct Run {
     /// AOS times of real passes stopped or skipped by hand (so they aren't
     /// started or restarted).
     skipped: Vec<i64>,
+    /// A band scan has the receiver: rotation waits.
+    scanning: Arc<std::sync::atomic::AtomicBool>,
 }
 
 fn slug(s: &str) -> String {
@@ -768,7 +772,8 @@ impl Run {
 
         // Rotation.
         let mut holding = false;
-        if self.active.is_none() && cfg.rotation && !cfg.profiles.is_empty() {
+        let scanning = self.scanning.load(std::sync::atomic::Ordering::SeqCst);
+        if self.active.is_none() && cfg.rotation && !cfg.profiles.is_empty() && !scanning {
             let receiving = self.sstv.status().channels.iter().any(|c| c.receiving.is_some());
             if now >= self.rot_until && receiving && self.rot_idx.is_some() {
                 let since = *self.hold_since.get_or_insert(now);

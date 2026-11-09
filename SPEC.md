@@ -118,6 +118,15 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
      that scrolls when it's wider than the display); the compact bar shows the name.
    - Simulator additions: CW beacon on 144.470, repeater with a Morse ident on 145.7125,
      FM station with RDS on 96.1 MHz.
+   - Band scan (Bookmarks → Manage, admins start it): FM 87.5–108 MHz in 1.5 MHz windows
+     at 2.048 MS/s (power on the 50 kHz raster, peaks 10 dB over the floor, then RDS PS/PI
+     per station, in parallel) or DAB Band III (null-symbol check per channel, then a native
+     mode I FIC decoder: null sync, cyclic-prefix and phase-reference frequency and timing,
+     differential QPSK, frequency de-interleaving, de-puncturing, Viterbi, energy dispersal,
+     FIB CRC, FIG 0/0, 1/0 and 1/1 labels). Results are ticked and added as bookmarks
+     (FM/DAB groups); DAB ones tune the multiplex, as there's no DAB audio decoder. Rotation
+     waits during a scan; a pass stops it. Simulator: FM stations on 88.6, 101.3 (RDS) and
+     104.9 (none), DAB multiplexes on 11D and 12B.
    - Added after: spectrum zoom (×64 in to about 100 MHz out, buttons, Ctrl + wheel,
      pinch, keys). Zoomed in, panning past the sampled band retunes; zoomed out, the
      sampled band is outlined and dragged to retune, with a *Widen* to the top sample rate.

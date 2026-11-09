@@ -23,6 +23,7 @@ mod sstv;
 mod auth;
 mod bookmarks;
 mod config;
+mod dab;
 mod db;
 mod decoders;
 mod dsp;
@@ -31,6 +32,7 @@ mod fkeys;
 mod mqtt;
 mod orbit;
 mod recorder;
+mod scan;
 mod scheduler;
 mod radio;
 mod web;
@@ -126,6 +128,7 @@ async fn serve() -> Result<()> {
     )
     .await?;
     let recorder = recorder::spawn(iq_tx.subscribe(), doppler_rx)?;
+    let scan = scan::ScanHandle::new();
     let schedule = scheduler::spawn(
         db.clone(),
         cfg.data_dir.clone(),
@@ -134,6 +137,7 @@ async fn serve() -> Result<()> {
         recorder,
         doppler_tx,
         events_tx,
+        scan.active_flag(),
     )
     .await?;
     let mqtt = cfg.mqtt.clone().map(|m| mqtt::spawn(m, db.clone()));
@@ -195,6 +199,7 @@ async fn serve() -> Result<()> {
         event_feed,
         mqtt,
         adsb,
+        scan,
     };
     let app = web::router(state);
     let listener = TcpListener::bind(cfg.bind)

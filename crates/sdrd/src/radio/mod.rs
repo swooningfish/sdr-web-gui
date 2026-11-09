@@ -787,6 +787,14 @@ pub(crate) fn block_len(sample_rate: u32) -> usize {
     bytes.div_ceil(16384).max(1) * 16384
 }
 
+/// The simulator's signals at `center_hz` (cu8, `secs` long), for other
+/// modules' tests.
+#[cfg(test)]
+pub(crate) fn synth_for_tests() -> impl FnMut(u64, u32, f64) -> Vec<u8> {
+    let mut gen = synthetic::SynthGen::new();
+    move |center_hz, rate, secs| gen.generate(center_hz, rate, Some(30.0), (rate as f64 * secs) as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

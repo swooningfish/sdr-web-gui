@@ -35,6 +35,7 @@ mod bookmark_routes;
 mod fkey_routes;
 mod radio_routes;
 mod repeater_routes;
+mod scan_routes;
 mod schedule_routes;
 mod sensors;
 mod sstv_routes;
@@ -63,6 +64,7 @@ pub struct AppState {
     pub event_feed: EventFeed,
     pub mqtt: Option<MqttHandle>,
     pub adsb: AdsbHandle,
+    pub scan: crate::scan::ScanHandle,
 }
 
 /// Content-Security-Policy; map tiles may come from the configured tile server.
@@ -143,6 +145,9 @@ pub fn router(state: AppState) -> Router {
         .route("/bookmarks/delete", post(bookmark_routes::remove_many))
         .route("/bookmarks/export.csv", get(bookmark_routes::export))
         .route("/bookmarks/import", post(bookmark_routes::import))
+        .route("/scan", get(scan_routes::status).post(scan_routes::start))
+        .route("/scan/stop", post(scan_routes::stop))
+        .route("/scan/save", post(scan_routes::save))
         .route("/fkeys", get(fkey_routes::list))
         .route(
             "/fkeys/{slot}",

@@ -242,6 +242,9 @@ test('the bookmark manager slides out with tiles and fits the screen', async ({ 
   await drawer.getByRole('button', { name: 'Cancel' }).click();
   await drawer.getByRole('button', { name: 'Manage' }).click();
   await expect(drawer.getByRole('heading', { name: 'Import and export' })).toBeVisible();
+  const scan = drawer.getByRole('region', { name: 'Scan for stations' });
+  await expect(scan.getByRole('button', { name: 'Scan FM' }).or(scan.getByRole('button', { name: 'Stop scan' }))).toBeVisible();
+  await expect(scan.getByRole('button', { name: 'Scan DAB' }).or(scan.getByRole('button', { name: 'Stop scan' }))).toBeVisible();
   expect(await overflow(page)).toBeLessThanOrEqual(0);
   await page.keyboard.press('Escape');
   await expect(drawer).toBeHidden();

@@ -17,6 +17,7 @@
   import { fkeys, SLOTS } from '../lib/fkeys.svelte';
   import { Selection } from '../lib/selection.svelte';
   import BookmarkEditor from './BookmarkEditor.svelte';
+  import BookmarkScan from './BookmarkScan.svelte';
 
   /** The bookmark manager: slides out over the page. Bookmarks are tiles:
    * click one to listen. Manage mode edits, deletes, imports and exports,
@@ -580,6 +581,7 @@
     {#if bookmarks.error}<p class="error">{bookmarks.error}</p>{/if}
 
     {#if manage}
+      <BookmarkScan {isAdmin} />
       <section class="io">
         <h3 class="sec-head">Import and export</h3>
         <div class="links">

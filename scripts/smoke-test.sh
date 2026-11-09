@@ -109,9 +109,36 @@ check "viewer can't start test pass" 403 "$(code -b "$VJAR" -H 'Content-Type: ap
   -d '{"seconds":30}' "$BASE/api/schedule/test")"
 check "viewer can't change APRS"  403 "$(code -X PUT -b "$VJAR" -H 'Content-Type: application/json' \
   -d '{"enabled":true,"channels":[]}' "$BASE/api/aprs")"
+# --- band scan: admins run it, everyone sees the results
+check "viewer sees scan results"  200 "$(code -b "$VJAR" "$BASE/api/scan")"
+check "viewer can't start a scan" 403 "$(code -b "$VJAR" -H 'Content-Type: application/json' \
+  -d '{"band":"fm"}' "$BASE/api/scan")"
 rm -f "$VJAR"
 VID=$(curl -s -b "$JAR" "$BASE/api/users" | grep -o "{\"id\":[0-9]*,\"username\":\"$VIEWER\"" | grep -o '[0-9]\+' | head -1)
 [[ -n "$VID" ]] && code -X DELETE -b "$JAR" -H "X-CSRF-Token: $CSRF" "$BASE/api/users/$VID" >/dev/null
+
+# --- band scan: the simulator's DAB multiplexes on 11D and 12B
+check "scan rejects unknown band" 422 "$(code -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"band":"lw"}' "$BASE/api/scan")"
+check "start DAB scan"         200 "$(code -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"band":"dab"}' "$BASE/api/scan")"
+check "one scan at a time"     400 "$(code -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"band":"fm"}' "$BASE/api/scan")"
+for _ in $(seq 1 90); do
+  SCAN=$(curl -s -b "$JAR" "$BASE/api/scan")
+  grep -q '"running":false' <<<"$SCAN" && break
+  sleep 1
+done
+grep -q '"running":false' <<<"$SCAN"; check "DAB scan finishes" 0 $?
+grep -q '"id":"dab-11D-C223"' <<<"$SCAN" && grep -q '"name":"Sim News 24"' <<<"$SCAN"; check "DAB scan names services" 0 $?
+grep -q '"notes":\[\]' <<<"$SCAN"; check "no notes about neighbouring channels" 0 $?
+grep -q '"name":"Sim Gold"' <<<"$SCAN"; check "DAB scan finds the second multiplex" 0 $?
+SAVED=$(curl -s -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"ids":["dab-11D-C223"],"shared":false}' "$BASE/api/scan/save")
+grep -Eq '"(added|duplicates)":1' <<<"$SAVED"; check "save a scanned station" 0 $?
+BID=$(curl -s -b "$JAR" "$BASE/api/bookmarks" | grep -o '{[^{}]*"name":"Sim News 24"[^{}]*"shared":false' | grep -o '"id":[0-9]*' | grep -o '[0-9]\+' | head -1)
+[[ -n "$BID" ]]; check "scanned station is a bookmark" 0 $?
+[[ -n "$BID" ]] && code -X DELETE -b "$JAR" -H "X-CSRF-Token: $CSRF" "$BASE/api/bookmarks/$BID" >/dev/null
 
 # restore default tuning
 code -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
