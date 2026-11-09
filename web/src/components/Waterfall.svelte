@@ -4,7 +4,7 @@
   import type { FreqRange } from '../lib/api';
   import { PALETTES } from '../lib/colormap';
   import { formatMHz, formatSpan, MARKERS } from '../lib/format';
-  import { channelEdges, CHANNEL_STEP, type Listen } from '../lib/audio';
+  import { channelEdges, CHANNEL_STEP, tunedHz, type Listen } from '../lib/audio';
   import { ALL_GROUPS, GROUPS, STRIP_H, drawStrip, type BandGroup } from '../lib/bandplan';
   import { colourOf, type Bookmark } from '../lib/bookmarks.svelte';
   import { fullRange, zoomLabel, zoomLimits } from '../lib/zoom';
@@ -464,14 +464,27 @@
         ctx.fill();
       }
     };
-    // Listening channel: shaded band plus a line at the dial frequency.
+    // Listening channel: shaded band plus a line where it is tuned. With AFC
+    // following a signal the channel moves and a dashed line keeps the dial.
     if (listen) {
-      const [lo, hi] = channelEdges(listen.hz, listen.mode);
+      const tuned = tunedHz(listen);
+      const [lo, hi] = channelEdges(tuned, listen.mode);
       const x0 = xOf(lo);
       const x1 = Math.max(x0 + 2 * dpr, xOf(hi));
       ctx.fillStyle = listen.on ? 'rgba(34,197,94,0.18)' : 'rgba(148,163,184,0.12)';
       ctx.fillRect(x0, 0, x1 - x0, plotH);
-      const xx = Math.round(xOf(listen.hz)) + 0.5;
+      if (tuned !== listen.hz) {
+        const xd = Math.round(xOf(listen.hz)) + 0.5;
+        ctx.strokeStyle = 'rgba(148,163,184,0.7)';
+        ctx.lineWidth = dpr;
+        ctx.setLineDash([4 * dpr, 4 * dpr]);
+        ctx.beginPath();
+        ctx.moveTo(xd, 0);
+        ctx.lineTo(xd, plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      const xx = Math.round(xOf(tuned)) + 0.5;
       ctx.strokeStyle = listen.on ? 'rgba(34,197,94,0.95)' : 'rgba(148,163,184,0.6)';
       ctx.lineWidth = 1.5 * dpr;
       ctx.beginPath();

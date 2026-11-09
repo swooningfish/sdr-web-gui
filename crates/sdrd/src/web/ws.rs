@@ -3,7 +3,8 @@
 //!
 //! - `{"type":"audio","freq_hz":145800000,"mode":"nfm","squelch_db":-60}`
 //!   starts listening, or retunes the listener (`squelch_db` may be null;
-//!   add `"nr":true` for noise reduction, `"cw":true` to decode Morse;
+//!   add `"nr":true` for noise reduction, `"cw":true` to decode Morse,
+//!   `"afc":true` to follow a drifting signal (NFM and AM);
 //!   modes nfm, wfm, am, usb, lsb, cw)
 //! - `{"type":"audio_stop"}`
 
@@ -54,6 +55,8 @@ enum ClientMsg {
         nr: bool,
         #[serde(default)]
         cw: bool,
+        #[serde(default)]
+        afc: bool,
     },
     AudioStop,
 }
@@ -69,7 +72,7 @@ fn handle_audio(state: &AppState, listener: &mut Option<Listener>, can_listen: b
             *listener = None;
             Some(audio_msg("audio_stopped", None))
         }
-        Ok(ClientMsg::Audio { freq_hz, mode, squelch_db, nr, cw }) => {
+        Ok(ClientMsg::Audio { freq_hz, mode, squelch_db, nr, cw, afc }) => {
             if !can_listen {
                 return Some(audio_msg("audio_error", Some("live audio is limited to admins on this server")));
             }
@@ -78,7 +81,7 @@ fn handle_audio(state: &AppState, listener: &mut Option<Listener>, can_listen: b
             {
                 return Some(audio_msg("audio_error", Some("bad frequency or squelch")));
             }
-            let params = Params { freq_hz, mode, squelch_db, nr, cw };
+            let params = Params { freq_hz, mode, squelch_db, nr, cw, afc };
             if let Some(l) = listener.as_ref() {
                 l.params.send_replace(params);
                 return None;

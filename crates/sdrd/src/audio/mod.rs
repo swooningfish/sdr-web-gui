@@ -25,7 +25,10 @@
 //! Decoded text goes out as JSON messages on the same socket:
 //! `{"type":"cw","text":"CQ DE ","wpm":18.5}` (new characters only) and
 //! `{"type":"rds","pi":"C204","ps":"BBC R2  ","pty":10,"rt":"…","groups":42}`
-//! (whenever something changes).
+//! (whenever something changes), and with AFC on
+//! `{"type":"afc","offset_hz":-1250,"locked":true}` (the correction from the
+//! dial frequency, when it moves by 25 Hz or more, the lock changes, or once
+//! a second).
 
 pub mod adpcm;
 pub mod cw;
@@ -128,6 +131,9 @@ fn run(
     let mut st = adpcm::State::default();
     let mut seq = 0u32;
     let (mut audio, mut pcm, mut enc) = (Vec::new(), Vec::new(), Vec::new());
+    // Last AFC report sent, and blocks since.
+    let mut afc_sent: Option<(f64, bool)> = None;
+    let mut afc_age = 0u32;
     while !stop.load(Ordering::Relaxed) && !out.is_closed() {
         let block = match iq_rx.blocking_recv() {
             Ok(b) => b,
@@ -143,7 +149,19 @@ fn run(
         }
         let key = (block.center_hz, block.sample_rate);
         if demod.as_ref().is_none_or(|(dp, k, _)| *dp != p || *k != key) {
-            demod = Some((p.clone(), key, Demod::new(&p, block.center_hz, block.sample_rate)));
+            // Same station with AFC still on: keep following from where it was.
+            let carry = demod
+                .as_ref()
+                .filter(|(dp, _, _)| p.afc && dp.afc && dp.freq_hz == p.freq_hz && dp.mode == p.mode)
+                .and_then(|(_, _, d)| d.afc())
+                .map(|(off, _)| off);
+            let mut d = Demod::new(&p, block.center_hz, block.sample_rate);
+            if let Some(off) = carry {
+                d.set_afc(off);
+            } else {
+                afc_sent = None;
+            }
+            demod = Some((p.clone(), key, d));
             st = adpcm::State::default();
         }
         let (_, _, d) = demod.as_mut().unwrap();
@@ -160,6 +178,16 @@ fn run(
         if let Some(t) = d.take_cw() {
             let msg = json!({ "type": "cw", "text": t.text, "wpm": (t.wpm * 10.0).round() / 10.0 });
             let _ = out.try_send(Out::Text(msg.to_string()));
+        }
+        if let Some((off, locked)) = d.afc() {
+            afc_age += 1;
+            let due = afc_sent.is_none_or(|(o, l)| (off - o).abs() >= 25.0 || l != locked) || afc_age >= 20;
+            if due {
+                afc_sent = Some((off, locked));
+                afc_age = 0;
+                let msg = json!({ "type": "afc", "offset_hz": off.round(), "locked": locked });
+                let _ = out.try_send(Out::Text(msg.to_string()));
+            }
         }
         if let Some(r) = d.take_rds() {
             let mut msg = json!(r);

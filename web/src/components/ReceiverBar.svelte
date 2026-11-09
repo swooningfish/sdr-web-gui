@@ -4,7 +4,7 @@
   import BookmarksPanel from './BookmarksPanel.svelte';
   import SMeter from './SMeter.svelte';
   import { api, type Profile, type RadioPatch, type RadioState, type SdrDevice } from '../lib/api';
-  import { channelEdges, type Listen } from '../lib/audio';
+  import { channelEdges, tunedHz, type Listen } from '../lib/audio';
   import type { Bookmark } from '../lib/bookmarks.svelte';
   import { describeRanges, unsupported } from '../lib/coverage';
   import { formatMHz, formatRate, parseFrequency, PRESETS } from '../lib/format';
@@ -68,7 +68,7 @@
     const now = performance.now();
     if (now - lastFrame < 60) return;
     lastFrame = now;
-    const [lo, hi] = channelEdges(listen.hz, listen.mode);
+    const [lo, hi] = channelEdges(tunedHz(listen), listen.mode);
     dbfs = channelDbfs(f, lo, hi);
   }
   const dbm = $derived(dbfs === null || !radio ? null : toDbm(dbfs, radio.settings.gain_db, trim));

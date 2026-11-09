@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import type { RadioState } from '../lib/api';
-  import { AudioPlayer, MODES, type AudioFrame, type Listen, type PlayerStats } from '../lib/audio';
+  import { AFC_MODES, AudioPlayer, MODES, type AudioFrame, type Listen, type PlayerStats } from '../lib/audio';
   import { formatMHz, parseFrequency } from '../lib/format';
   import type { DecodedMsg, RdsMsg } from '../lib/stream';
 
@@ -41,6 +41,7 @@
   let muted = $state(false);
   let nr = $state<boolean>(saved.nr ?? false);
   let cwOn = $state<boolean>(saved.cw ?? false);
+  let afcOn = $state<boolean>(saved.afc ?? false);
   if (typeof saved.hz === 'number') listen.hz = saved.hz;
   if (typeof saved.mode === 'string') listen.mode = saved.mode;
   if (typeof saved.autoMode === 'boolean') autoMode = saved.autoMode;
@@ -49,9 +50,12 @@
   let cwWpm = $state<number | null>(null);
   let cwBox = $state<HTMLElement | undefined>();
   let rds = $state<RdsMsg | null>(null);
+  let afcLocked = $state(false);
+  const afcWorks = $derived(AFC_MODES.includes(listen.mode));
+  const afcActive = $derived(afcOn && afcWorks);
 
   $effect(() => {
-    const prefs = { squelchOn, squelch, volume, nr, cw: cwOn, autoMode, hz: listen.hz, mode: listen.mode };
+    const prefs = { squelchOn, squelch, volume, nr, cw: cwOn, afc: afcOn, autoMode, hz: listen.hz, mode: listen.mode };
     try {
       localStorage.setItem(PREFS, JSON.stringify(prefs));
     } catch {
@@ -113,12 +117,27 @@
       squelch_db: squelchOn ? squelch : null,
       nr,
       cw: cwOn && listen.mode !== 'wfm',
+      afc: afcActive,
     };
   }
 
+  // The server starts AFC afresh on a new station, or when it is turned on
+  // again; drop the old correction until it reports.
+  $effect(() => {
+    void listen.hz;
+    void listen.mode;
+    void afcActive;
+    listen.afc = null;
+    afcLocked = false;
+  });
+
   /** Morse and RDS decoded by the server for this listener. */
   export function decoded(m: DecodedMsg) {
-    if (m.type === 'cw') {
+    if (m.type === 'afc') {
+      if (!afcActive || !listen.on) return;
+      listen.afc = m.offset_hz;
+      afcLocked = m.locked;
+    } else if (m.type === 'cw') {
       cwText = (cwText + m.text).slice(-800);
       cwWpm = m.wpm;
     } else {
@@ -184,6 +203,7 @@
   function stop() {
     if (listen.on) send({ type: 'audio_stop' });
     listen.on = false;
+    listen.afc = null;
     level = null;
     stats = null;
     player.stop();
@@ -296,7 +316,28 @@
       title="Decode Morse: CW signals, beacons and FM repeater idents"
       onclick={() => (cwOn = !cwOn)}>Decode CW</button
     >
+    <button
+      type="button"
+      class="small"
+      class:active={afcActive}
+      aria-pressed={afcActive}
+      disabled={!afcWorks}
+      title={afcWorks
+        ? 'Automatic frequency control: follow a signal that drifts or wanders (up to ±50 kHz in NFM, ±10 kHz in AM)'
+        : 'AFC works in NFM and AM'}
+      onclick={() => (afcOn = !afcOn)}>AFC</button
+    >
   </div>
+  {#if afcActive && listen.on}
+    <p class="afc small-text" class:muted={!afcLocked}>
+      {#if listen.afc == null}
+        AFC: waiting for a signal…
+      {:else}
+        AFC {listen.afc >= 0 ? '+' : '−'}{(Math.abs(listen.afc) / 1000).toFixed(2)} kHz · {formatMHz(listen.hz + listen.afc, 4)}
+        · {afcLocked ? 'following' : 'holding'}
+      {/if}
+    </p>
+  {/if}
 
   {#if cwOn && listen.mode !== 'wfm'}
     <div class="decoder">
@@ -420,6 +461,14 @@
   }
   .warn {
     color: var(--warn);
+  }
+  .afc {
+    margin: 6px 0 0;
+    font-variant-numeric: tabular-nums;
+    color: var(--ok);
+  }
+  .afc.muted {
+    color: var(--muted);
   }
   .auto {
     display: flex;

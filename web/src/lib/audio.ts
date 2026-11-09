@@ -8,6 +8,16 @@ export interface Listen {
   on: boolean;
   hz: number;
   mode: AudioMode;
+  /** AFC correction from the dial frequency (Hz) while AFC is following a signal. */
+  afc?: number | null;
+}
+
+/** Modes AFC works in (mirrors Mode::afc_range_hz on the server). */
+export const AFC_MODES: AudioMode[] = ['nfm', 'am'];
+
+/** Where the receiver is actually listening: the dial plus any AFC correction. */
+export function tunedHz(l: Listen): number {
+  return l.hz + (l.afc ?? 0);
 }
 
 export const MODES: { value: AudioMode; label: string; bw: number }[] = [

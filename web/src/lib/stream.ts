@@ -40,7 +40,16 @@ export interface RdsMsg {
   groups: number;
 }
 
-export type DecodedMsg = CwMsg | RdsMsg;
+/** AFC correction for this listener (only while AFC is on). */
+export interface AfcMsg {
+  type: 'afc';
+  /** Hz from the dial frequency. */
+  offset_hz: number;
+  /** A signal is in the window and being followed (otherwise holding). */
+  locked: boolean;
+}
+
+export type DecodedMsg = CwMsg | RdsMsg | AfcMsg;
 
 /** Live SSTV rows (layout documented in decoders/sstv.rs). */
 export interface SstvRows {
@@ -136,7 +145,7 @@ export class Stream {
           if (m.type === 'radio') this.h.onRadio(m.state as RadioState);
           else if (m.type === 'event') this.h.onEvent(m.device as Device, m.event as EventRow);
           else if (typeof m.type === 'string' && m.type.startsWith('audio_')) this.h.onAudioStatus(m.type, m.message ?? null);
-          else if (m.type === 'cw' || m.type === 'rds') this.h.onDecoded(m as DecodedMsg);
+          else if (m.type === 'cw' || m.type === 'rds' || m.type === 'afc') this.h.onDecoded(m as DecodedMsg);
         } catch {
           /* ignore malformed */
         }
