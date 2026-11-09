@@ -18,6 +18,7 @@
   import Sensors from './components/Sensors.svelte';
   import Dashboard from './components/Dashboard.svelte';
   import Aprs from './components/Aprs.svelte';
+  import Aircraft from './components/Aircraft.svelte';
   import Sstv from './components/Sstv.svelte';
   import Passes from './components/Passes.svelte';
 
@@ -26,7 +27,7 @@
   let radio = $state<RadioState | null>(null);
   let wsUp = $state(false);
   let view = $state<
-    'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'sstv' | 'passes' | 'settings' | 'profile' | 'bookmarks'
+    'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'aircraft' | 'sstv' | 'passes' | 'settings' | 'profile' | 'bookmarks'
   >('spectrum');
   let settingsTab = $state<SettingsTab>('receiver');
   let waterfall = $state<ReturnType<typeof Waterfall> | undefined>();
@@ -179,6 +180,7 @@
       <button type="button" class="tab" class:active={view === 'dashboard'} onclick={() => (view = 'dashboard')}>Dashboard</button>
       <button type="button" class="tab" class:active={view === 'sensors'} onclick={() => (view = 'sensors')}>Sensors</button>
       <button type="button" class="tab" class:active={view === 'aprs'} onclick={() => (view = 'aprs')}>APRS</button>
+      <button type="button" class="tab" class:active={view === 'aircraft'} onclick={() => (view = 'aircraft')}>Aircraft</button>
       <button type="button" class="tab" class:active={view === 'sstv'} onclick={() => (view = 'sstv')}>SSTV</button>
       <button type="button" class="tab" class:active={view === 'passes'} onclick={() => (view = 'passes')}>Passes</button>
       {#if isAdmin}
@@ -240,6 +242,17 @@
     </div>
     <div hidden={view !== 'aprs'}>
       <Aprs bind:this={aprs} {isAdmin} {radio} />
+    </div>
+    <div hidden={view !== 'aircraft'}>
+      <Aircraft
+        {isAdmin}
+        {radio}
+        active={view === 'aircraft'}
+        onsettings={(t) => {
+          settingsTab = t;
+          view = 'settings';
+        }}
+      />
     </div>
     <div hidden={view !== 'sstv'}>
       <Sstv bind:this={sstv} {isAdmin} {radio} />

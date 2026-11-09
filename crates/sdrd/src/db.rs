@@ -67,7 +67,30 @@ CREATE TABLE IF NOT EXISTS bookmarks (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS bookmarks_owner ON bookmarks(owner_id, freq_hz)
+CREATE INDEX IF NOT EXISTS bookmarks_owner ON bookmarks(owner_id, freq_hz);
+CREATE TABLE IF NOT EXISTS aircraft_db (
+    icao  INTEGER PRIMARY KEY,
+    reg   TEXT,
+    type  TEXT,
+    descr TEXT,
+    flags TEXT,
+    year  INTEGER
+);
+CREATE TABLE IF NOT EXISTS adsb_sightings (
+    id       INTEGER PRIMARY KEY,
+    icao     INTEGER NOT NULL,
+    callsign TEXT,
+    reg      TEXT,
+    type     TEXT,
+    category TEXT,
+    first_ms INTEGER NOT NULL,
+    last_ms  INTEGER NOT NULL,
+    msgs     INTEGER NOT NULL,
+    max_km   REAL,
+    min_alt  INTEGER,
+    max_alt  INTEGER
+);
+CREATE INDEX IF NOT EXISTS adsb_sightings_last ON adsb_sightings(last_ms)
 "#;
 
 pub async fn open(path: &Path) -> Result<SqlitePool> {

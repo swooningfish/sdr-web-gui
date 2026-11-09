@@ -55,8 +55,102 @@ export interface SdrDevice {
   ranges: FreqRange[];
   active: boolean;
   note: string | null;
+  /** The other receiver using it ("ADS-B", "the main receiver"). */
+  used_by?: string;
   /** Per entry of `SdrDevices.features`: whether this device can receive it. */
   supported: boolean[];
+}
+
+export interface AdsbTrailPoint {
+  ts: number;
+  lat: number;
+  lon: number;
+  alt: number | null;
+  ground: boolean;
+}
+
+export interface Aircraft {
+  /** 24-bit address, 6 hex digits. */
+  icao: string;
+  callsign: string | null;
+  /** Emitter category, e.g. "A3". */
+  category: string | null;
+  squawk: string | null;
+  emergency: string | null;
+  alt_baro_ft: number | null;
+  alt_gnss_ft: number | null;
+  on_ground: boolean;
+  gs_kt: number | null;
+  track_deg: number | null;
+  heading_deg: number | null;
+  airspeed_kt: number | null;
+  tas: boolean;
+  vrate_fpm: number | null;
+  lat: number | null;
+  lon: number | null;
+  pos_ms: number | null;
+  distance_km: number | null;
+  bearing_deg: number | null;
+  first_ms: number;
+  seen_ms: number;
+  msgs: number;
+  rssi: number;
+  reg: string | null;
+  type_code: string | null;
+  desc: string | null;
+  military: boolean;
+  trail: AdsbTrailPoint[];
+}
+
+export interface AdsbDbStatus {
+  rows: number;
+  updated_ms: number | null;
+  downloading: boolean;
+  error: string | null;
+  source: string;
+}
+
+export interface AdsbStatus {
+  enabled: boolean;
+  /** Where 1090 MHz IQ comes from right now. */
+  source: 'receiver' | 'main' | 'none';
+  receiver: RadioState;
+  msg_rate: number;
+  messages: number;
+  aircraft: number;
+  with_position: number;
+  home: [number, number] | null;
+  max_range_km: number | null;
+  db: AdsbDbStatus;
+}
+
+export interface AdsbReceiverSettings {
+  gain_db: number | null;
+  ppm: number;
+  bias_tee: boolean;
+}
+
+export interface AdsbInfo {
+  config: { enabled: boolean };
+  status: AdsbStatus;
+  receiver_settings: AdsbReceiverSettings;
+  seen_24h: number;
+  /** The main receiver is tuned to 1090 MHz. */
+  main_tuned: boolean;
+  tile_url: string;
+  database_url: string;
+}
+
+export interface AdsbRange {
+  sectors: number;
+  since_ms: number;
+  all_time: number[];
+  last_24h: number[];
+  home: [number, number] | null;
+}
+
+export interface AdsbDevice extends Omit<SdrDevice, 'supported'> {
+  covers_1090: boolean;
 }
 
 /** Something the station listens to on a fixed frequency. */
@@ -420,5 +514,16 @@ export const api = {
   aprsTracks: (since: number) => req<Track[]>('GET', `/aprs/tracks?since=${Math.floor(since)}`),
   rtl433: () => req<Rtl433Info>('GET', '/decoders/rtl_433'),
   setRtl433: (config: Rtl433Config) => req<{ config: Rtl433Config }>('PUT', '/decoders/rtl_433', config),
+  adsb: () => req<AdsbInfo>('GET', '/adsb'),
+  setAdsb: (config: { enabled: boolean }) => req('PUT', '/adsb', config),
+  adsbAircraft: (since: number) =>
+    req<{ now: number; aircraft: Aircraft[] }>('GET', `/adsb/aircraft?since=${Math.floor(since)}`),
+  adsbRange: () => req<AdsbRange>('GET', '/adsb/range'),
+  resetAdsbRange: () => req('POST', '/adsb/range/reset'),
+  adsbDevices: () =>
+    req<{ usb_supported: boolean; selected: string | null; devices: AdsbDevice[] }>('GET', '/adsb/devices'),
+  selectAdsbDevice: (id: string) => req('POST', '/adsb/device', { id }),
+  setAdsbReceiver: (s: AdsbReceiverSettings) => req('PUT', '/adsb/receiver', s),
+  downloadAircraftDb: () => req('POST', '/adsb/database'),
   checkSpec: (spec: string) => req<{ ok: boolean; message?: string }>('POST', '/decoders/rtl_433/check', { spec }),
 };

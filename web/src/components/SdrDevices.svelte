@@ -163,6 +163,7 @@
               <span class="dot" class:ok={d.active && !!radio?.connected} class:bad={d.active && !radio?.connected}></span>
               <strong>{d.name}</strong>
               {#if d.active}<span class="badge">In use</span>{/if}
+              {#if d.used_by}<span class="badge other">Used for {d.used_by}</span>{/if}
             </div>
             <div class="muted small-text">
               {d.tuner ?? 'Tuner unknown'} · {describeRanges(d.ranges)}
@@ -171,7 +172,7 @@
           </div>
           {#if isAdmin}
             <div class="actions">
-              {#if info.can_select && !d.active}
+              {#if info.can_select && !d.active && !d.used_by}
                 <button type="button" class="small" disabled={busy !== null} onclick={() => selectId(d.id)}
                   >{busy === d.id ? 'Switching…' : 'Use this device'}</button
                 >
@@ -319,6 +320,11 @@
     background: var(--accent);
     color: var(--accent-text);
     font-weight: 600;
+  }
+  .badge.other {
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
   }
   .count {
     margin: 8px 0 4px;

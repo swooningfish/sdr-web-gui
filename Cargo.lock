@@ -1207,6 +1207,7 @@ dependencies = [
  "argon2",
  "axum",
  "bytes",
+ "flate2",
  "hex",
  "num-complex",
  "png",

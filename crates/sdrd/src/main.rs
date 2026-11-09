@@ -16,6 +16,7 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tracing_subscriber::EnvFilter;
 
+mod adsb;
 mod aprs;
 mod audio;
 mod sstv;
@@ -72,7 +73,31 @@ async fn serve() -> Result<()> {
     let (iq_tx, _) = broadcast::channel(16);
     let saved_device = db::get_setting::<String>(&db, web::DEVICE_KEY).await.ok().flatten();
     let saved_tcp = db::get_setting::<Vec<String>>(&db, web::TCP_SERVERS_KEY).await.ok().flatten();
-    let radio = radio::spawn(&cfg, iq_tx.clone(), saved_device, saved_tcp.unwrap_or_default())?;
+    let registry = radio::Registry::new(&cfg, saved_tcp.unwrap_or_default());
+    let radio = radio::spawn(
+        &cfg,
+        radio::Role::Main,
+        registry.clone(),
+        iq_tx.clone(),
+        saved_device,
+        radio::main_settings(&cfg),
+    )?;
+    // The second receiver, for ADS-B ("off" unless one was chosen).
+    let (adsb_iq_tx, _) = broadcast::channel(16);
+    let adsb_device = db::get_setting::<String>(&db, adsb::DEVICE_KEY).await.ok().flatten();
+    let adsb_settings = db::get_setting::<adsb::ReceiverSettings>(&db, adsb::RADIO_KEY)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let adsb_radio = radio::spawn(
+        &cfg,
+        radio::Role::Adsb,
+        registry,
+        adsb_iq_tx.clone(),
+        adsb_device,
+        adsb_settings.radio(),
+    )?;
     let (waterfall_tx, _) = broadcast::channel(8);
     dsp::waterfall::spawn(iq_tx.subscribe(), waterfall_tx.clone(), cfg.fft_size, cfg.fps);
 
@@ -111,6 +136,16 @@ async fn serve() -> Result<()> {
     )
     .await?;
     let mqtt = cfg.mqtt.clone().map(|m| mqtt::spawn(m, db.clone()));
+    let adsb = adsb::spawn(
+        &db,
+        adsb_radio,
+        radio.clone(),
+        adsb_iq_tx.subscribe(),
+        iq_tx.subscribe(),
+        schedule.clone(),
+        mqtt.clone(),
+    )
+    .await?;
     let (event_feed, _) = broadcast::channel(256);
     tokio::spawn(events::run(db.clone(), events_rx, event_feed.clone(), mqtt.clone()));
 
@@ -131,6 +166,9 @@ async fn serve() -> Result<()> {
                     Ok((e, d)) if e + d > 0 => tracing::info!("purged {e} old events and {d} devices"),
                     Ok(_) => {}
                     Err(e) => tracing::warn!("event purge failed: {e}"),
+                }
+                if let Err(e) = adsb::purge(&db, days).await {
+                    tracing::warn!("aircraft log purge failed: {e}");
                 }
             }
         });
@@ -155,6 +193,7 @@ async fn serve() -> Result<()> {
         schedule,
         event_feed,
         mqtt,
+        adsb,
     };
     let app = web::router(state);
     let listener = TcpListener::bind(cfg.bind)

@@ -17,6 +17,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::adsb::AdsbHandle;
 use crate::auth::{self, RateLimiter, Role, Session};
 use crate::config::Config;
 use crate::decoders::aprs::AprsHandle;
@@ -27,6 +28,7 @@ use crate::mqtt::MqttHandle;
 use crate::radio::{IqBlock, RadioHandle};
 use crate::scheduler::SchedulerHandle;
 
+mod adsb_routes;
 mod aprs_routes;
 mod auth_routes;
 mod bookmark_routes;
@@ -58,6 +60,7 @@ pub struct AppState {
     pub schedule: SchedulerHandle,
     pub event_feed: EventFeed,
     pub mqtt: Option<MqttHandle>,
+    pub adsb: AdsbHandle,
 }
 
 /// Content-Security-Policy; map tiles may come from the configured tile server.
@@ -105,6 +108,14 @@ pub fn router(state: AppState) -> Router {
         .route("/decoders/rtl_433/check", post(sensors::check_spec))
         .route("/aprs", get(aprs_routes::get_config).put(aprs_routes::set_config))
         .route("/aprs/tracks", get(aprs_routes::tracks))
+        .route("/adsb", get(adsb_routes::get).put(adsb_routes::set_config))
+        .route("/adsb/aircraft", get(adsb_routes::aircraft))
+        .route("/adsb/range", get(adsb_routes::range))
+        .route("/adsb/range/reset", post(adsb_routes::reset_range))
+        .route("/adsb/devices", get(adsb_routes::devices))
+        .route("/adsb/device", post(adsb_routes::select_device))
+        .route("/adsb/receiver", axum::routing::put(adsb_routes::set_receiver))
+        .route("/adsb/database", post(adsb_routes::download_db))
         .route("/sstv", get(sstv_routes::get_config).put(sstv_routes::set_config))
         .route("/schedule", get(schedule_routes::get).put(schedule_routes::set_config))
         .route("/schedule/rotation", axum::routing::put(schedule_routes::set_rotation))

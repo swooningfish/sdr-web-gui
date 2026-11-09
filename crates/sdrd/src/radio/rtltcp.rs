@@ -89,6 +89,7 @@ pub(super) fn device_info(addr: &str, st: &RadioState, tuners: &HashMap<String, 
         ranges,
         active,
         note,
+        used_by: None,
     }
 }
 

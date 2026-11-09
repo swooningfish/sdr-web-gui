@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { RadioState, User } from '../lib/api';
   import SdrDevices from './SdrDevices.svelte';
+  import AdsbSettings from './AdsbSettings.svelte';
   import DecoderSettings from './DecoderSettings.svelte';
   import AprsSettings from './AprsSettings.svelte';
   import SstvSettings from './SstvSettings.svelte';
@@ -46,6 +47,7 @@
   <div class="panels" id="settings-panel" role="tabpanel" aria-labelledby="settings-tab-{tab}">
     {#if tab === 'receiver'}
       <SdrDevices {radio} isAdmin={true} />
+      <AdsbSettings />
     {:else if tab === 'decoders'}
       <DecoderSettings {radio} />
       <AprsSettings {radio} />

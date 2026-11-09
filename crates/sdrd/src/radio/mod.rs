@@ -4,6 +4,10 @@
 //! The kind of source follows from the selected device id, so the UI can move
 //! between a USB dongle, an rtl_tcp server and the simulator without a
 //! restart. `SDRD_SOURCE` only picks what to open when nothing was chosen yet.
+//!
+//! sdrd can run two receivers: the main one (spectrum, audio, decoders) and
+//! an optional second dongle kept on 1090 MHz for ADS-B. They share a
+//! [`Registry`], so the same dongle can't be opened by both.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,6 +21,7 @@ use tokio::sync::{broadcast, watch};
 use crate::config::{Config, SourceKind};
 
 mod replay;
+mod sim_aircraft;
 #[cfg(feature = "rtlsdr")]
 mod rtlsdr;
 mod rtltcp;
@@ -24,6 +29,78 @@ mod synthetic;
 
 /// Most rtl_tcp servers remembered in the device list.
 pub const MAX_TCP_SERVERS: usize = 8;
+/// Device id for "no receiver" (the ADS-B receiver only).
+pub const OFF: &str = "off";
+
+/// Which of sdrd's receivers this is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    Main,
+    Adsb,
+}
+
+impl Role {
+    /// "in use by …"
+    pub fn label(self) -> &'static str {
+        match self {
+            Role::Main => "the main receiver",
+            Role::Adsb => "ADS-B",
+        }
+    }
+    fn thread(self) -> &'static str {
+        match self {
+            Role::Main => "radio",
+            Role::Adsb => "radio-adsb",
+        }
+    }
+}
+
+/// What the receivers share: each other's state (so one can't open a dongle
+/// the other has), the rtl_tcp servers and the tuner types seen.
+pub struct Registry {
+    radios: Mutex<Vec<(Role, watch::Receiver<RadioState>)>>,
+    /// rtl_tcp servers offered in the device list (`host:port`).
+    tcp_servers: Mutex<Vec<String>>,
+    /// Tuner types of devices we've opened (key: id + name, or the tcp id).
+    tuners: Arc<Mutex<HashMap<String, String>>>,
+}
+
+impl Registry {
+    pub fn new(cfg: &Config, saved_tcp: Vec<String>) -> Arc<Registry> {
+        let mut servers: Vec<String> = cfg.rtltcp_addr.iter().cloned().collect();
+        for a in saved_tcp {
+            if parse_tcp_addr(&a).is_some() && !servers.contains(&a) {
+                servers.push(a);
+            }
+        }
+        servers.truncate(MAX_TCP_SERVERS);
+        Arc::new(Registry {
+            radios: Mutex::new(Vec::new()),
+            tcp_servers: Mutex::new(servers),
+            tuners: Arc::new(Mutex::new(HashMap::new())),
+        })
+    }
+
+    /// The other receivers' states.
+    fn others(&self, me: Role) -> Vec<(Role, RadioState)> {
+        self.radios
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(r, _)| *r != me)
+            .map(|(r, rx)| (*r, rx.borrow().clone()))
+            .collect()
+    }
+
+    /// Which other receiver has this (exclusive) device selected.
+    fn holder(&self, me: Role, id: &str) -> Option<Role> {
+        if !matches!(kind_of(id), Some(SourceKind::Rtlsdr | SourceKind::RtlTcp)) {
+            // Simulated receivers and the recording can be shared.
+            return None;
+        }
+        self.others(me).into_iter().find(|(_, st)| st.device_id.as_deref() == Some(id)).map(|(r, _)| r)
+    }
+}
 
 /// Sample rates offered in the UI. All are valid for the RTL2832U; rates above
 /// 2.4 MS/s tend to drop samples on USB so they are not offered.
@@ -133,6 +210,9 @@ pub struct DeviceInfo {
     pub active: bool,
     /// Why details are missing, e.g. the dongle is busy in another program.
     pub note: Option<String>,
+    /// The other receiver using it ("ADS-B", "the main receiver").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_by: Option<&'static str>,
 }
 
 /// A block of interleaved unsigned 8-bit I/Q samples, as produced by librtlsdr.
@@ -323,6 +403,22 @@ impl SourceCtx {
         }
     }
 
+    /// No receiver selected.
+    fn begin_off(&self) {
+        self.state_tx.send_modify(|st| {
+            st.source = OFF;
+            st.can_tune = false;
+            st.connected = false;
+            st.device_id = Some(OFF.into());
+            st.device_index = None;
+            st.device = None;
+            st.tuner = None;
+            st.ranges = Vec::new();
+            st.gains_db = Vec::new();
+            st.error = None;
+        });
+    }
+
     /// Reset the state for a newly started source.
     fn begin(&self, kind: SourceKind) {
         self.state_tx.send_modify(|st| {
@@ -351,15 +447,13 @@ impl SourceCtx {
 
 #[derive(Clone)]
 pub struct RadioHandle {
+    role: Role,
     cmd_tx: mpsc::Sender<Cmd>,
     state_rx: watch::Receiver<RadioState>,
     /// Desired settings (what the user last asked for).
     desired: Arc<Mutex<RadioSettings>>,
     replay_file: Option<PathBuf>,
-    /// rtl_tcp servers offered in the device list (`host:port`).
-    tcp_servers: Arc<Mutex<Vec<String>>>,
-    /// Tuner types of devices we've opened (key: id + name, or the tcp id).
-    tuners: Arc<Mutex<HashMap<String, String>>>,
+    registry: Arc<Registry>,
 }
 
 impl RadioHandle {
@@ -395,9 +489,34 @@ impl RadioHandle {
         Ok(next)
     }
 
+    /// Replace the settings outright (the ADS-B receiver, whose tuning is
+    /// fixed): kept even while no device is open, used when one is.
+    pub fn force_settings(&self, s: RadioSettings) -> Result<(), String> {
+        let mut desired = self.desired.lock().unwrap();
+        // Validate through the same checks as a patch.
+        let s = desired.apply_patch(&RadioPatch {
+            center_hz: Some(s.center_hz),
+            sample_rate: Some(s.sample_rate),
+            gain_db: s.gain_db,
+            auto_gain: Some(s.gain_db.is_none()),
+            ppm: Some(s.ppm),
+            bias_tee: Some(s.bias_tee),
+            direct_sampling: Some(s.direct_sampling),
+        })?;
+        *desired = s.clone();
+        let _ = self.cmd_tx.send(Cmd::Settings(s));
+        Ok(())
+    }
+
     /// Switch to another receiver (an id from [`RadioHandle::devices`]). The
     /// source kind follows from the id.
     pub fn select(&self, id: &str) -> Result<(), String> {
+        if id == OFF && self.role == Role::Adsb {
+            return self.cmd_tx.send(Cmd::Select(id.into())).map_err(|_| "radio thread has stopped".to_string());
+        }
+        if let Some(r) = self.registry.holder(self.role, id) {
+            return Err(format!("that receiver is in use by {}", r.label()));
+        }
         match kind_of(id) {
             Some(SourceKind::Rtlsdr) if !cfg!(feature = "rtlsdr") => {
                 return Err("sdrd was built without USB RTL-SDR support".into())
@@ -416,7 +535,7 @@ impl RadioHandle {
     /// Remember an rtl_tcp server (`host:port`) in the device list. Returns
     /// the new list, to be saved.
     pub fn add_tcp_server(&self, addr: &str) -> Vec<String> {
-        let mut l = self.tcp_servers.lock().unwrap();
+        let mut l = self.registry.tcp_servers.lock().unwrap();
         if !l.iter().any(|a| a == addr) {
             l.push(addr.to_string());
             let excess = l.len().saturating_sub(MAX_TCP_SERVERS);
@@ -426,7 +545,7 @@ impl RadioHandle {
     }
 
     pub fn remove_tcp_server(&self, addr: &str) -> Vec<String> {
-        let mut l = self.tcp_servers.lock().unwrap();
+        let mut l = self.registry.tcp_servers.lock().unwrap();
         l.retain(|a| a != addr);
         l.clone()
     }
@@ -436,26 +555,35 @@ impl RadioHandle {
     /// simulated dongles.
     pub async fn devices(&self) -> Vec<DeviceInfo> {
         let st = self.state();
+        let others = self.registry.others(self.role);
         let mut out: Vec<DeviceInfo> = Vec::new();
 
         #[cfg(feature = "rtlsdr")]
         {
-            let tuners = self.tuners.clone();
+            let tuners = self.registry.tuners.clone();
             let st = st.clone();
+            let others: Vec<RadioState> = others.iter().map(|o| o.1.clone()).collect();
             out.extend(
-                tokio::task::spawn_blocking(move || rtlsdr::enumerate(&st, &tuners))
+                tokio::task::spawn_blocking(move || rtlsdr::enumerate(&st, &tuners, &others))
                     .await
                     .unwrap_or_default(),
             );
         }
 
-        let mut servers = self.tcp_servers.lock().unwrap().clone();
+        let mut servers = self.registry.tcp_servers.lock().unwrap().clone();
         if let Some(addr) = st.device_id.as_deref().and_then(|id| id.strip_prefix("tcp:")) {
             if !servers.iter().any(|a| a == addr) {
                 servers.push(addr.to_string());
             }
         }
-        let tuners = self.tuners.lock().unwrap().clone();
+        for (_, o) in &others {
+            if let Some(addr) = o.device_id.as_deref().and_then(|id| id.strip_prefix("tcp:")) {
+                if !servers.iter().any(|a| a == addr) {
+                    servers.push(addr.to_string());
+                }
+            }
+        }
+        let tuners = self.registry.tuners.lock().unwrap().clone();
         out.extend(servers.iter().map(|addr| rtltcp::device_info(addr, &st, &tuners)));
 
         if let Some(path) = &self.replay_file {
@@ -469,10 +597,18 @@ impl RadioHandle {
                 ranges: Vec::new(),
                 active,
                 note: None,
+                used_by: None,
             });
         }
 
         out.extend(synthetic::devices(st.device_id.as_deref()));
+        // Mark what the other receiver has open.
+        for d in &mut out {
+            if let Some(r) = self.registry.holder(self.role, &d.id) {
+                d.used_by = Some(r.label());
+                d.active = false;
+            }
+        }
         out
     }
 }
@@ -526,7 +662,13 @@ fn usable(cfg: &Config, id: &str) -> bool {
 
 /// The device to open at start-up: the one last chosen in the UI if it can
 /// still be opened, else what the environment says.
-fn initial_device(cfg: &Config, saved: Option<String>) -> String {
+fn initial_device(cfg: &Config, role: Role, saved: Option<String>) -> String {
+    if role == Role::Adsb {
+        return saved
+            .or_else(|| cfg.adsb_device.clone())
+            .filter(|id| id == OFF || usable(cfg, id))
+            .unwrap_or_else(|| OFF.into());
+    }
     if let Some(id) = saved.filter(|id| usable(cfg, id)) {
         return id;
     }
@@ -541,20 +683,31 @@ fn initial_device(cfg: &Config, saved: Option<String>) -> String {
     }
 }
 
-pub fn spawn(
-    cfg: &Config,
-    iq_tx: broadcast::Sender<Arc<IqBlock>>,
-    saved_device: Option<String>,
-    saved_tcp: Vec<String>,
-) -> Result<RadioHandle> {
-    let settings = RadioSettings {
+/// Settings the main receiver starts with.
+pub fn main_settings(cfg: &Config) -> RadioSettings {
+    RadioSettings {
         center_hz: cfg.center_hz,
         sample_rate: cfg.sample_rate,
         gain_db: cfg.gain_db,
         ppm: cfg.ppm,
         bias_tee: cfg.bias_tee,
         direct_sampling: 0,
-    };
+    }
+}
+
+pub fn spawn(
+    cfg: &Config,
+    role: Role,
+    registry: Arc<Registry>,
+    iq_tx: broadcast::Sender<Arc<IqBlock>>,
+    saved_device: Option<String>,
+    settings: RadioSettings,
+) -> Result<RadioHandle> {
+    let mut device = initial_device(cfg, role, saved_device);
+    if let Some(r) = registry.holder(role, &device) {
+        tracing::warn!(device = %device, "receiver is already used by {}; not opening it", r.label());
+        device = if role == Role::Adsb { OFF.into() } else { synthetic::DEVICES[0].id.into() };
+    }
     let (state_tx, state_rx) = watch::channel(RadioState {
         source: cfg.source.name(),
         can_tune: false,
@@ -572,28 +725,27 @@ pub fn spawn(
     });
     let (cmd_tx, cmd_rx) = mpsc::channel();
     let desired = Arc::new(Mutex::new(settings));
-    let tuners = Arc::new(Mutex::new(HashMap::new()));
+    // Registered before the thread starts, so the other receiver sees it.
+    state_tx.send_modify(|st| st.device_id = Some(device.clone()));
+    registry.radios.lock().unwrap().push((role, state_rx.clone()));
     let mut ctx = SourceCtx {
         cmd_rx,
         state_tx,
         iq_tx,
         desired: desired.clone(),
         pending: Pending::default(),
-        device: initial_device(cfg, saved_device),
-        tuners: tuners.clone(),
+        device,
+        tuners: registry.tuners.clone(),
     };
-
-    let mut servers: Vec<String> = cfg.rtltcp_addr.iter().cloned().collect();
-    for a in saved_tcp {
-        if parse_tcp_addr(&a).is_some() && !servers.contains(&a) {
-            servers.push(a);
-        }
-    }
-    servers.truncate(MAX_TCP_SERVERS);
 
     let replay_file = cfg.replay_file.clone();
     let file = replay_file.clone();
-    std::thread::Builder::new().name("radio".into()).spawn(move || loop {
+    std::thread::Builder::new().name(role.thread().into()).spawn(move || loop {
+        if ctx.device == OFF {
+            ctx.begin_off();
+            ctx.device = ctx.park();
+            continue;
+        }
         // Each source runs until a device of another kind is selected, and
         // returns its id.
         let kind = kind_of(&ctx.device).unwrap_or(SourceKind::Synthetic);
@@ -613,12 +765,12 @@ pub fn spawn(
     })?;
 
     Ok(RadioHandle {
+        role,
         cmd_tx,
         state_rx,
         desired,
         replay_file,
-        tcp_servers: Arc::new(Mutex::new(servers)),
-        tuners,
+        registry,
     })
 }
 

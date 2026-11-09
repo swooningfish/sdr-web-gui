@@ -62,6 +62,12 @@ fn features(state: &AppState) -> Vec<Feature> {
     for p in sched.profiles {
         out.push(Feature { group: "Rotation", label: p.name, freq_hz: p.center_hz, enabled: sched.rotation });
     }
+    out.push(Feature {
+        group: "Aircraft",
+        label: "ADS-B".into(),
+        freq_hz: crate::adsb::ADSB_HZ,
+        enabled: state.adsb.config().enabled,
+    });
     out
 }
 

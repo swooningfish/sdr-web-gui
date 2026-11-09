@@ -162,16 +162,24 @@ fn probe_tuner(index: u32) -> Option<String> {
 
 /// The device list for the API. Tuner types of idle dongles are found by
 /// opening them briefly, then cached.
-pub(super) fn enumerate(st: &RadioState, cache: &Mutex<HashMap<String, String>>) -> Vec<DeviceInfo> {
+pub(super) fn enumerate(
+    st: &RadioState,
+    cache: &Mutex<HashMap<String, String>>,
+    others: &[RadioState],
+) -> Vec<DeviceInfo> {
     usb_devices()
         .into_iter()
         .map(|u| {
             let open = st.connected && st.device_index == Some(u.index);
             let active = open || (!st.connected && st.device_id.as_deref() == Some(u.id.as_str()));
+            // Open in our other receiver: don't probe it, it's busy.
+            let other = others.iter().find(|o| o.connected && o.device_index == Some(u.index));
             let key = format!("{}|{}", u.id, u.name);
             let mut note = None;
             let (tuner, ranges) = if open {
                 (st.tuner.clone(), st.ranges.clone())
+            } else if let Some(o) = other {
+                (o.tuner.clone(), o.ranges.clone())
             } else {
                 let cached = cache.lock().unwrap().get(&key).cloned();
                 // Leave the selected one alone while the radio thread retries it.
@@ -194,6 +202,7 @@ pub(super) fn enumerate(st: &RadioState, cache: &Mutex<HashMap<String, String>>)
                 ranges,
                 active,
                 note,
+                used_by: None,
             }
         })
         .collect()

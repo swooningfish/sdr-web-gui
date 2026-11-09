@@ -41,6 +41,8 @@ pub struct Config {
     pub replay_file: Option<PathBuf>,
     /// `host:port` of an rtl_tcp server, offered in the device list.
     pub rtltcp_addr: Option<String>,
+    /// Receiver for ADS-B (a device id, or `off`) until one is chosen in the UI.
+    pub adsb_device: Option<String>,
 
     pub center_hz: u64,
     pub sample_rate: u32,
@@ -176,6 +178,7 @@ impl Config {
             device_serial: var("SDRD_DEVICE_SERIAL"),
             replay_file: var("SDRD_REPLAY_FILE").map(PathBuf::from),
             rtltcp_addr: var("SDRD_RTLTCP"),
+            adsb_device: var("SDRD_ADSB_DEVICE"),
             center_hz: parse("SDRD_CENTER_HZ", 145_300_000)?,
             sample_rate: parse("SDRD_SAMPLE_RATE", 2_048_000)?,
             gain_db,

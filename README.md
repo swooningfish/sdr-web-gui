@@ -33,7 +33,7 @@ docker compose up -d --build
 
 Details in [Deploying on a Raspberry Pi 5](#deploying-on-a-raspberry-pi-5).
 
-## Status: milestone 7 done, milestone 8 next
+## Status: milestone 8 done, milestone 9 next
 
 - [x] Rust core (`sdrd`) owns the dongle via librtlsdr (rtl-sdr-blog fork: V4, V3, generic)
 - [x] Live spectrum and waterfall in the browser over WebSocket
@@ -50,7 +50,8 @@ Details in [Deploying on a Raspberry Pi 5](#deploying-on-a-raspberry-pi-5).
   delete / ZIP download, sortable sensors, APRS home marker, rotation switch
 - [x] M7: spectrum tools: band plans, drag/scroll/keyboard tuning, bookmarks (station list +
   your own, CSV import/export), CW mode and Morse decoder (incl. repeater idents), RDS
-- [ ] M8: ADS-B aircraft map (second dongle), type icons, altitude-coloured trails
+- [x] M8: ADS-B aircraft map (second dongle or rotation), type icons, altitude-coloured
+  trails, range rings and range stats, aircraft database, Home Assistant sensors
 - [ ] M9: signal classifier (voice / data / broadcast labels on the spectrum)
 
 Also still to do: testing on real hardware, CI, a licence. Details in
@@ -140,6 +141,10 @@ They are real, decodable transmissions:
   tone. Listen in **NFM** with **Decode CW** on.
 - **96.1 MHz (tune to ~96.25):** an FM broadcast station with RDS ("SIM FM", radio text).
   Listen in **WFM**.
+- **1090 MHz:** ten aircraft around London sending ADS-B. Choose a simulated dongle as the
+  ADS-B receiver in **Settings → Receiver** (or start with `SDRD_ADSB_DEVICE=sim-v4`), or tune
+  the main receiver to 1090 MHz at 2.4 MS/s, and open the **Aircraft** tab. Set the station
+  location (Settings → Passes) near London for distances, range rings and the taxiing one.
 
 To watch what sdrd publishes to the dev MQTT broker:
 
@@ -266,6 +271,28 @@ alongside ISS SSTV on 145.800.
 - APRS is public amateur traffic, so viewer accounts can see it.
 - The map uses OpenStreetMap's tile server. Set `SDRD_MAP_TILE_URL` to use another one (the
   Content-Security-Policy follows it).
+
+## Aircraft (ADS-B)
+
+sdrd decodes ADS-B and Mode S on 1090 MHz itself (no readsb needed), from either:
+
+- **A second dongle** (best): pick it under **Settings → Receiver → ADS-B receiver**. It stays
+  on 1090 MHz at 2.4 MS/s with its own gain (maximum by default), PPM and bias-T, alongside
+  the main receiver, which keeps doing everything else. A dongle can't be used by both.
+- **The main receiver**, whenever it's tuned to 1090 MHz with 2 MS/s or more: tune there, or
+  add an *ADS-B 1090* rotation profile (the Aircraft tab offers both). Aircraft drop off
+  while it's tuned elsewhere.
+
+The **Aircraft** tab shows a live map with an icon per aircraft type (from the category the
+aircraft broadcasts), rotated to its track and coloured by altitude, with trails in the same
+colours and a legend; range rings every 50 km from the station; and the furthest range per
+direction over 24 hours or all time, which shows where the antenna sees well and what blocks
+it. The list sorts by any column and filters by callsign, registration, type or squawk;
+emergencies come first, in red. Click an aircraft for its details.
+
+For registrations and types, an admin downloads the **aircraft database** (Mictronics, via
+tar1090-db, ~9 MB from GitHub) under Settings → Receiver. Distances and range need the station
+location (Settings → Passes).
 
 ## SSTV
 
@@ -405,6 +432,8 @@ Set `SDRD_MQTT_HOST` (and user/password if needed) in `.env`. sdrd publishes:
 | `sdrd/devices/<device>/state` | latest data of tracked devices (retained) |
 | `homeassistant/sensor/…/config` | HA discovery for tracked devices: temperature, humidity, pressure, battery, signal, … |
 | `homeassistant/device_tracker/…/config` | HA device tracker for tracked APRS stations (shows them on the HA map) |
+| `sdrd/adsb/state` | ADS-B: aircraft count, with position, messages/s, furthest, closest (retained, every 30 s) |
+| `homeassistant/sensor/sdrd_adsb_…/config` | HA discovery for the ADS-B sensors (once there's ADS-B to report) |
 
 Only tracked devices create Home Assistant entities, so passing cars don't flood HA.
 Discovery is re-sent when Home Assistant restarts.
@@ -424,6 +453,7 @@ All settings are `SDRD_*` environment variables. See [.env.example](.env.example
 |---|---|---|
 | `SDRD_SOURCE` | `rtlsdr` | Receiver to start with if none was chosen in the UI: `rtlsdr`, `rtl_tcp`, `synthetic`, or `replay` (with `SDRD_REPLAY_FILE=/data/x.cu8`) |
 | `SDRD_RTLTCP` | – | `host:port` of an rtl_tcp server to list under Source: Network (required for `SDRD_SOURCE=rtl_tcp`) |
+| `SDRD_ADSB_DEVICE` | `off` | ADS-B receiver if none was chosen in the UI: a device id (`sn:…`, `idx:1`, `tcp:host:port`, `sim-v4`) or `off` |
 | `SDRD_CENTER_HZ` | `145300000` | Startup centre frequency |
 | `SDRD_SAMPLE_RATE` | `2048000` | Startup sample rate |
 | `SDRD_GAIN` | `auto` | `auto` or dB |
@@ -448,6 +478,9 @@ RTL-SDR ─USB─► radio thread (librtlsdr) ─► IQ broadcast ─┬► wate
                                                           │      (tone demod, VIS, sync tracking)   + live rows ─► WebSocket
                                                           └► recorder (FM, Doppler) ─► WAV in /data/passes
   scheduler ── TLE (CelesTrak) + SGP4 ─► passes ─► retune radio, Doppler ─► decoders/recorder
+
+2nd RTL-SDR ─► radio thread (1090 MHz) ─► Mode S demod ─┐
+main IQ when on 1090 MHz ─────────────► Mode S demod ─┴► aircraft tracker ─► REST /api/adsb, MQTT, sightings log
 ```
 
 - `crates/sdrd`: Rust daemon (axum, tokio, rustfft, sqlx/SQLite)

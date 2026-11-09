@@ -410,3 +410,46 @@ test('harmonics check rates the simulated SRD against Ofcom and FCC', async ({ p
     .poll(async () => (await (await page.request.get('/api/radio')).json()).settings.center_hz, { timeout: 5000 })
     .toBe(before);
 });
+
+/** ADS-B status, as the Aircraft tab sees it. */
+async function adsbInfo(page: Page) {
+  return (await page.request.get('/api/adsb')).json();
+}
+
+test('aircraft tab shows traffic on the map and in the list', async ({ page }) => {
+  const info = await adsbInfo(page);
+  test.skip(info.status.source === 'none', 'nothing is receiving 1090 MHz');
+  await openTab(page, 'Aircraft');
+  const rows = page.locator('.adsb tbody tr');
+  await expect(rows.first()).toBeVisible({ timeout: 15000 });
+  await expect(page.locator('.adsb .adsb-marker').first()).toBeVisible();
+  expect(await overflow(page), 'aircraft tab is wider than the window').toBeLessThanOrEqual(0);
+
+  // Details of one aircraft, then back.
+  await rows.first().click();
+  await expect(page.locator('.adsb dt', { hasText: 'ICAO address' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back to list' }).click();
+  await expect(rows.first()).toBeVisible();
+
+  // Filtering by something no aircraft has empties the list.
+  await page.getByRole('searchbox', { name: 'Filter aircraft' }).fill('zzzz-none');
+  await expect(rows).toHaveCount(0);
+  await expect(page.getByText('No aircraft match the filter.')).toBeVisible();
+});
+
+test('a simulated ADS-B receiver can be chosen in settings', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop-1920', 'state-changing test runs once');
+  const radio = await (await page.request.get('/api/radio')).json();
+  test.skip(radio.source !== 'synthetic', 'needs the simulated receiver');
+  const before: string = (await adsbInfo(page)).status.receiver.device_id ?? 'off';
+  await openTab(page, 'Settings');
+  const select = page.locator('#adsb-dev');
+  await select.selectOption('sim-v4');
+  await expect.poll(async () => (await adsbInfo(page)).status.source, { timeout: 10000 }).toBe('receiver');
+  await expect.poll(async () => (await adsbInfo(page)).status.aircraft, { timeout: 15000 }).toBeGreaterThan(3);
+  // The main receiver's list doesn't offer simulated dongles as "used for ADS-B" (they're shareable),
+  // and the ADS-B list never offers a dongle that can't reach 1090 MHz.
+  await expect(select.locator('option', { hasText: 'FC2580' })).toBeDisabled();
+  await select.selectOption(before);
+  await expect.poll(async () => (await adsbInfo(page)).status.receiver.device_id ?? 'off', { timeout: 10000 }).toBe(before);
+});

@@ -121,18 +121,32 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
      plan, bookmarks, the sampled band and the view, and moves the radio on click or drag;
      it zooms (buttons, Ctrl + wheel, pinch) down to a few MHz across, pans by dragging,
      and fits the whole range again from its level button.
-8. **ADS-B aircraft map** (next)
-   - Receiver: a second dongle with a 1090 MHz antenna running ADS-B all the time (readsb),
-     alongside the main dongle; fallback: ADS-B as a rotation profile on a single dongle
-     (aircraft drop off between visits). Needs two dongles open at once (device
-     selection currently opens one).
-   - Map (same Leaflet style as APRS): live aircraft with icons by type (airliner, light,
-     helicopter, glider, balloon, drone… from the broadcast emitter category; our own icons),
-     trails coloured by altitude with a legend, details on click (callsign, altitude, speed,
-     heading, climb rate, squawk, registration/model from the open aircraft database),
-     aircraft list, max-range rings / range stats for antenna placement.
-   - Optional MQTT/HA: aircraft count, closest aircraft.
-9. **Signal classifier** — label signals on the spectrum as voice / data / broadcast /
+8. **ADS-B aircraft map** ✅
+   - Receiver: an optional second dongle kept on 1090 MHz at 2.4 MS/s (its own gain, PPM and
+     bias-T), alongside the main one; the two can't open the same dongle. Without one,
+     aircraft are decoded whenever the main receiver is on 1090 MHz (tune there, or add an
+     "ADS-B 1090" rotation profile from the Aircraft tab); they drop off between visits.
+   - Decoder: built into sdrd rather than readsb, so it works on any source (USB, rtl_tcp,
+     simulator, rotation): demodulator for 2–2.4 MS/s (fractional half-bit integration,
+     sub-sample timing search), CRC with one-bit correction, DF0/4/5/11/16/17/18/20/21,
+     identification and category, airborne/surface position (CPR pairs, then local
+     decoding, with jump and range sanity checks), velocity, squawk and emergency status.
+   - Aircraft tab: Leaflet map with icons by emitter category (airliner, heavy, jet, light,
+     fast, helicopter, glider, balloon, drone, vehicle; our own drawings, rotated to the
+     track), labels, trails coloured by altitude with a legend, range rings, the furthest
+     range per 10° sector (24 h and all time); sortable, filterable list; details (callsign,
+     ICAO address, registration and type, category, altitude, climb, speeds, track, squawk,
+     emergency, position, range/bearing, signal, messages); follow the selected aircraft.
+   - Aircraft database: registration, type and description by address from the Mictronics
+     database (tar1090-db CSV, ~9 MB), downloaded on request into SQLite (~600k aircraft).
+   - MQTT/HA: an "ADS-B" device with aircraft count, aircraft with position, messages per
+     second, furthest and closest aircraft (callsign, distance).
+   - Gone aircraft are logged (callsign, first/last seen, furthest range, altitudes) for the
+     "seen in 24 h" count; kept as long as other events.
+   - Simulator: ten aircraft around London (airliners, a heavy on approach, a business jet,
+     a light aircraft, helicopter, glider, balloon, drone, and one taxiing at Heathrow) with
+     real squitters on 1090 MHz, at addresses that aren't in the aircraft database.
+9. **Signal classifier** (next) — label signals on the spectrum as voice / data / broadcast /
    carrier / CW / digital mode etc. using a small on-device model (CPU on the Pi 5); labels
    on the waterfall and a "what's this?" readout on hover. Uses bookmarks and band plans
    (M7) as context and for training/validation data.

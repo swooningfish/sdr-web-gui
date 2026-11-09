@@ -187,6 +187,55 @@ impl MqttHandle {
         self.publish(self.state_topic(d), true, Value::Object(state).to_string().into_bytes());
     }
 
+    fn adsb_topic(&self) -> String {
+        format!("{}/adsb/state", self.cfg.prefix)
+    }
+
+    /// Home Assistant sensors for ADS-B: aircraft counts, the closest
+    /// aircraft and the furthest range.
+    pub fn announce_adsb(&self) {
+        let device = json!({
+            "identifiers": ["sdrd_adsb"],
+            "name": "ADS-B",
+            "model": "1090 MHz receiver",
+            "manufacturer": "sdrd",
+        });
+        type Sensor = (&'static str, &'static str, Option<&'static str>, Option<&'static str>, &'static str);
+        let sensors: [Sensor; 6] = [
+            ("aircraft", "Aircraft", None, Some("aircraft"), "{{ value_json.aircraft }}"),
+            ("with_position", "Aircraft with position", None, Some("aircraft"), "{{ value_json.with_position }}"),
+            ("messages", "Messages", None, Some("msg/s"), "{{ value_json.messages_per_s }}"),
+            ("max_range", "Furthest aircraft", Some("distance"), Some("km"), "{{ value_json.max_range_km }}"),
+            ("closest", "Closest aircraft", None, None, "{{ value_json.closest or 'none' }}"),
+            ("closest_km", "Closest aircraft distance", Some("distance"), Some("km"), "{{ value_json.closest_km }}"),
+        ];
+        for (key, name, class, unit, template) in sensors {
+            let mut c = Map::new();
+            c.insert("name".into(), json!(name));
+            c.insert("unique_id".into(), json!(format!("sdrd_adsb_{key}")));
+            c.insert("state_topic".into(), json!(self.adsb_topic()));
+            c.insert("value_template".into(), json!(template));
+            c.insert("availability_topic".into(), json!(format!("{}/status", self.cfg.prefix)));
+            if let Some(dc) = class {
+                c.insert("device_class".into(), json!(dc));
+            }
+            if let Some(u) = unit {
+                c.insert("unit_of_measurement".into(), json!(u));
+                c.insert("state_class".into(), json!("measurement"));
+            }
+            if key == "closest" {
+                c.insert("json_attributes_topic".into(), json!(self.adsb_topic()));
+                c.insert("icon".into(), json!("mdi:airplane"));
+            }
+            c.insert("device".into(), device.clone());
+            self.publish(self.discovery_topic("adsb", key), true, Value::Object(c).to_string().into_bytes());
+        }
+    }
+
+    pub fn publish_adsb(&self, state: Value) {
+        self.publish(self.adsb_topic(), true, state.to_string().into_bytes());
+    }
+
     fn tracker_topic(&self, slug: &str) -> String {
         format!("{}/device_tracker/sdrd_{slug}/config", self.cfg.discovery_prefix)
     }

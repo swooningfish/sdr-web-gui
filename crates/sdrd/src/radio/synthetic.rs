@@ -6,7 +6,7 @@ use std::f64::consts::TAU;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::{kind_of, to_cu8, tuner_ranges, DeviceInfo, IqBlock, RadioSettings, SourceCtx};
+use super::{kind_of, sim_aircraft, to_cu8, tuner_ranges, DeviceInfo, IqBlock, RadioSettings, SourceCtx};
 use crate::config::SourceKind;
 use crate::aprs::ax25;
 use crate::audio::{cw, rds};
@@ -35,6 +35,8 @@ enum Kind {
     /// harmonic (n > 1) for trying the harmonics check: same keying, n times
     /// the deviation, as a real transmitter's harmonics would be.
     Srd { n: u8 },
+    /// An aircraft's ADS-B squitters on 1090 MHz (index into the flights).
+    Aircraft { idx: usize },
 }
 
 /// Simulated SRD: carrier, FSK deviation, bit rate.
@@ -149,7 +151,15 @@ impl SynthGen {
                     ));
                     em
                 },
-            ],
+            ]
+            .into_iter()
+            .chain((0..sim_aircraft::FLIGHTS.len()).map(|idx| {
+                let mut em = e(1_090_000_000.0, 0.3, Kind::Aircraft { idx });
+                // Stagger the first squitters.
+                em.next = 0.037 * idx as f64;
+                em
+            }))
+            .collect(),
             t: 0.0,
             rng: 0x9E37_79B9_7F4A_7C15,
         }
@@ -191,6 +201,8 @@ impl SynthGen {
             for &idx in &active {
                 let em = &mut self.emitters[idx];
                 let offset = em.freq_hz - center_hz as f64;
+                // Share of this sample a pulse covers (pulsed emitters).
+                let mut weight = 1.0;
                 let (inst_hz, gate) = match em.kind {
                     Kind::Aprs { period, channel } => {
                         if t >= em.next {
@@ -328,10 +340,34 @@ impl SynthGen {
                         em.phase2 += (target - em.phase2) * alpha;
                         (offset + n as f64 * SRD_DEV * em.phase2, t.rem_euclid(1.0) < 0.8)
                     }
+                    Kind::Aircraft { idx } => {
+                        if t >= em.next {
+                            let wall = wall_secs();
+                            let (msg, km) = sim_aircraft::message(idx, em.seq, wall);
+                            em.seq = em.seq.wrapping_add(1);
+                            // Nearer is louder: about −6 dB per doubling of range.
+                            em.amp = (0.45 * 15.0 / km.max(15.0)).max(0.1);
+                            em.pulses = crate::adsb::encode::pulses(&msg)
+                                .into_iter()
+                                .map(|(a, b)| (t + a * 1e-6, t + b * 1e-6))
+                                .collect();
+                            em.pulse_idx = 0;
+                            // Roughly 5 squitters a second, a little different per aircraft.
+                            em.next = t + 0.2 + 0.011 * idx as f64;
+                        }
+                        while em.pulse_idx < em.pulses.len() && em.pulses[em.pulse_idx].1 <= t {
+                            em.pulse_idx += 1;
+                        }
+                        weight = match em.pulses.get(em.pulse_idx) {
+                            Some(&(a, b)) => ((b.min(t + dt) - a.max(t)) / dt).clamp(0.0, 1.0),
+                            None => 0.0,
+                        };
+                        (offset, weight > 0.0)
+                    }
                 };
                 em.phase = (em.phase + TAU * inst_hz * dt) % TAU;
                 if gate {
-                    let a = em.amp * scale;
+                    let a = em.amp * scale * weight;
                     i_acc += a * em.phase.cos();
                     q_acc += a * em.phase.sin();
                 }
@@ -521,6 +557,7 @@ pub(super) fn devices(active: Option<&str>) -> Vec<DeviceInfo> {
             ranges: tuner_ranges(d.tuner, d.name),
             active: active == Some(d.id),
             note: None,
+            used_by: None,
         })
         .collect()
 }
