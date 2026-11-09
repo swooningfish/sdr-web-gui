@@ -378,9 +378,9 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
   frequency. The **station list** is shared with everyone (admins edit it); **mine** are
   yours alone. **Calling** lists standard calling frequencies (IARU Region 1 / UK band
   plans) and **Repeaters** lists repeaters near the station from RepeaterBook (see
-  [Settings](#settings)); ☆ saves one as a bookmark. The cog opens the Bookmarks page:
-  edit, delete several, export CSV, or import a CSV (our own export, CHIRP or gqrx
-  `bookmarks.csv`).
+  [Settings](#settings)); ☆ saves one as a bookmark. **Manage** opens Settings →
+  Bookmarks: edit, delete several, export CSV, or import a CSV (our own export, CHIRP or
+  gqrx `bookmarks.csv`).
 - **Harmonics check (admins):** click a short-range device's signal (a key fob, sensor or
   telemetry link) so you're listening to it, then **Check harmonics** in the side column.
   It measures the carrier, retunes to the 2nd–5th harmonics (as far as the dongle reaches),
@@ -401,8 +401,8 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
 
 Admins get **Settings**, split into tabs: Receiver (SDR devices), Decoders (rtl_433, APRS,
 SSTV), Rotation (profiles), Passes (location, satellites, auto-switch, TLEs, test pass),
-Integrations (MQTT / Home Assistant, RepeaterBook), Users and System (read-only server
-settings).
+Bookmarks, Integrations (MQTT / Home Assistant, RepeaterBook), Users and System (read-only
+server settings). Viewers get Settings with just the Bookmarks tab, to manage their own.
 
 **RepeaterBook** (Integrations) fills *Bookmarks → Repeaters* with repeaters within a radius
 (default 1 mile) of the station location. RepeaterBook only serves approved clients:

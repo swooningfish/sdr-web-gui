@@ -15,7 +15,6 @@
   import { MODES, snap, type AudioMode, type Listen } from './lib/audio';
   import { ALL_GROUPS, modeAt } from './lib/bandplan';
   import { bookmarks, type Bookmark } from './lib/bookmarks.svelte';
-  import BookmarksPage from './components/BookmarksPage.svelte';
   import Sensors from './components/Sensors.svelte';
   import Dashboard from './components/Dashboard.svelte';
   import Aprs from './components/Aprs.svelte';
@@ -28,7 +27,7 @@
   let radio = $state<RadioState | null>(null);
   let wsUp = $state(false);
   let view = $state<
-    'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'aircraft' | 'sstv' | 'passes' | 'settings' | 'profile' | 'bookmarks'
+    'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'aircraft' | 'sstv' | 'passes' | 'settings' | 'profile'
   >('spectrum');
   let settingsTab = $state<SettingsTab>('receiver');
   let waterfall = $state<ReturnType<typeof Waterfall> | undefined>();
@@ -203,9 +202,8 @@
       <button type="button" class="tab" class:active={view === 'aircraft'} onclick={() => (view = 'aircraft')}>Aircraft</button>
       <button type="button" class="tab" class:active={view === 'sstv'} onclick={() => (view = 'sstv')}>SSTV</button>
       <button type="button" class="tab" class:active={view === 'passes'} onclick={() => (view = 'passes')}>Passes</button>
-      {#if isAdmin}
-        <button type="button" class="tab" class:active={view === 'settings'} onclick={() => (view = 'settings')}>Settings</button>
-      {/if}
+      <!-- Viewers get Settings too, with just their bookmarks. -->
+      <button type="button" class="tab" class:active={view === 'settings'} onclick={() => (view = 'settings')}>Settings</button>
     </nav>
     <div class="status-bar">
       <span class="pill" title={wsUp ? 'Live stream connected' : 'Reconnecting…'}>
@@ -237,7 +235,10 @@
         {isAdmin}
         {listen}
         onbookmark={selectBookmark}
-        onmanage={() => (view = 'bookmarks')}
+        onmanage={() => {
+          settingsTab = 'bookmarks';
+          view = 'settings';
+        }}
         onsettings={() => {
           settingsTab = 'rotation';
           view = 'settings';
@@ -296,20 +297,19 @@
           view = 'settings';
         }} />
     </div>
-    {#if view === 'settings' && isAdmin}
-      <Settings {radio} me={user} bind:tab={settingsTab} />
-    {:else if view === 'profile'}
-      <Profile {user} onlogout={logout} />
-    {:else if view === 'bookmarks'}
-      <BookmarksPage
-        {isAdmin}
-        current={{ hz: listen.hz, mode: listen.mode }}
+    {#if view === 'settings'}
+      <Settings
+        {radio}
+        me={user}
+        bind:tab={settingsTab}
+        {listen}
         onlisten={(b) => {
           selectBookmark(b);
           view = 'spectrum';
         }}
-        onback={() => (view = 'spectrum')}
       />
+    {:else if view === 'profile'}
+      <Profile {user} onlogout={logout} />
     {/if}
   </main>
 {/if}

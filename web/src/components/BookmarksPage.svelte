@@ -22,7 +22,8 @@
   }: {
     isAdmin: boolean;
     onlisten: (b: Bookmark) => void;
-    onback: () => void;
+    /** Shows a back button when given. */
+    onback?: () => void;
     /** What the Listen panel is tuned to, for "Add bookmark". */
     current: { hz: number; mode: Bookmark['mode'] };
   } = $props();
@@ -124,7 +125,7 @@
   <section class="panel">
     <div class="head">
       <h2>Bookmarks</h2>
-      <button type="button" class="small" onclick={onback}>← Spectrum</button>
+      {#if onback}<button type="button" class="small" onclick={onback}>← Spectrum</button>{/if}
     </div>
     <p class="muted small-text intro">
       The <strong>station list</strong> is shared with everyone who signs in{isAdmin ? ' (admins edit it)' : ''};
@@ -301,8 +302,6 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     gap: 16px;
-    max-width: 1100px;
-    margin: 0 auto;
   }
   .head {
     display: flex;

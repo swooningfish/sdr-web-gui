@@ -1,5 +1,8 @@
 <script lang="ts">
   import type { RadioState, User } from '../lib/api';
+  import type { Listen } from '../lib/audio';
+  import type { Bookmark } from '../lib/bookmarks.svelte';
+  import BookmarksPage from './BookmarksPage.svelte';
   import SdrDevices from './SdrDevices.svelte';
   import AdsbSettings from './AdsbSettings.svelte';
   import DecoderSettings from './DecoderSettings.svelte';
@@ -13,23 +16,49 @@
   import Users from './Users.svelte';
   import SystemInfo from './SystemInfo.svelte';
 
-  export type SettingsTab = 'receiver' | 'decoders' | 'rotation' | 'passes' | 'integrations' | 'users' | 'system';
+  export type SettingsTab =
+    | 'receiver'
+    | 'decoders'
+    | 'rotation'
+    | 'passes'
+    | 'bookmarks'
+    | 'integrations'
+    | 'users'
+    | 'system';
 
   let {
     radio,
     me,
     tab = $bindable('receiver'),
-  }: { radio: RadioState | null; me: User; tab?: SettingsTab } = $props();
+    listen,
+    onlisten,
+  }: {
+    radio: RadioState | null;
+    me: User;
+    tab?: SettingsTab;
+    /** What the Listen panel is tuned to, for "Add bookmark". */
+    listen: Listen;
+    onlisten: (b: Bookmark) => void;
+  } = $props();
 
-  const TABS: { id: SettingsTab; label: string }[] = [
-    { id: 'receiver', label: 'Receiver' },
-    { id: 'decoders', label: 'Decoders' },
-    { id: 'rotation', label: 'Rotation' },
-    { id: 'passes', label: 'Passes' },
-    { id: 'integrations', label: 'Integrations' },
-    { id: 'users', label: 'Users' },
-    { id: 'system', label: 'System' },
+  const isAdmin = $derived(me.role === 'admin');
+  const ALL_TABS: { id: SettingsTab; label: string; admin: boolean }[] = [
+    { id: 'receiver', label: 'Receiver', admin: true },
+    { id: 'decoders', label: 'Decoders', admin: true },
+    { id: 'rotation', label: 'Rotation', admin: true },
+    { id: 'passes', label: 'Passes', admin: true },
+    // Everyone manages their own bookmarks here.
+    { id: 'bookmarks', label: 'Bookmarks', admin: false },
+    { id: 'integrations', label: 'Integrations', admin: true },
+    { id: 'users', label: 'Users', admin: true },
+    { id: 'system', label: 'System', admin: true },
   ];
+  const TABS = $derived(ALL_TABS.filter((t) => isAdmin || !t.admin));
+
+  // Viewers only have the Bookmarks tab.
+  $effect(() => {
+    if (!TABS.some((t) => t.id === tab)) tab = TABS[0].id;
+  });
 </script>
 
 <div class="settings">
@@ -60,12 +89,16 @@
     {:else if tab === 'passes'}
       <LocationSettings />
       <ScheduleSettings {radio} />
+    {:else if tab === 'bookmarks'}
+      <div class="wide">
+        <BookmarksPage {isAdmin} current={{ hz: listen.hz, mode: listen.mode }} {onlisten} />
+      </div>
     {:else if tab === 'integrations'}
       <Integrations />
       <RepeaterSettings />
     {:else if tab === 'users'}
       <Users {me} />
-    {:else}
+    {:else if tab === 'system'}
       <SystemInfo />
     {/if}
   </div>
@@ -99,6 +132,10 @@
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
     gap: 16px;
     align-items: start;
+    min-width: 0;
+  }
+  .wide {
+    grid-column: 1 / -1;
     min-width: 0;
   }
   @media (max-width: 760px) {

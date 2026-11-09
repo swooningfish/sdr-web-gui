@@ -63,11 +63,11 @@ test('spectrum toolbar does not move when hovering the spectrum', async ({ page 
   expect(after.ctl!.y).toBeGreaterThanOrEqual(r.y + r.height - 1);
 });
 
-test('settings are split into tabs, admin only', async ({ page }) => {
+test('settings are split into tabs', async ({ page }) => {
   await openTab(page, 'Settings');
   const tabs = page.getByRole('tab');
-  await expect(tabs).toHaveCount(7);
-  for (const name of ['Receiver', 'Decoders', 'Rotation', 'Passes', 'Integrations', 'Users', 'System']) {
+  await expect(tabs).toHaveCount(8);
+  for (const name of ['Receiver', 'Decoders', 'Rotation', 'Passes', 'Bookmarks', 'Integrations', 'Users', 'System']) {
     await page.getByRole('tab', { name }).click();
     await expect(page.getByRole('tab', { name })).toHaveAttribute('aria-selected', 'true');
     await expect(page.locator('#settings-panel .panel').first()).toBeVisible();
@@ -205,7 +205,7 @@ test('band plan strip shows and its groups are remembered', async ({ page }) => 
   expect(await overflow(page)).toBeLessThanOrEqual(0);
 });
 
-test('bookmarks under the receiver open the bookmarks page, which fits the screen', async ({ page }) => {
+test('bookmarks under the receiver open Settings → Bookmarks, which fits the screen', async ({ page }) => {
   await openTab(page, 'Spectrum');
   await openDrawer(page, /^Bookmarks$/);
   await expect(page.getByRole('list', { name: 'Bookmarks' }).or(page.getByText('No bookmarks yet.'))).toBeVisible();
@@ -219,9 +219,10 @@ test('bookmarks under the receiver open the bookmarks page, which fits the scree
   expect(await overflow(page), 'add form is wider than the window').toBeLessThanOrEqual(0);
   await page.getByRole('button', { name: 'Cancel' }).click();
   await page.getByRole('button', { name: 'Manage bookmarks' }).click();
+  await expect(page.getByRole('tab', { name: 'Bookmarks' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('heading', { name: 'Import and export' })).toBeVisible();
   expect(await overflow(page), 'bookmarks page is wider than the window').toBeLessThanOrEqual(0);
-  await page.getByRole('button', { name: '← Spectrum' }).click();
+  await openTab(page, 'Spectrum');
   await expect(page.locator('.wf')).toBeVisible();
 });
 
