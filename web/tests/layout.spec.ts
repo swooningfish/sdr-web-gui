@@ -229,6 +229,7 @@ test('a bookmark can be added, listened to and deleted', async ({ page }, info) 
   test.skip(info.project.name !== 'desktop-1920', 'state-changing test runs once');
   const name = `Test ${Date.now()}`;
   await openTab(page, 'Spectrum');
+  await openDrawer(page, /^Bookmarks$/);
   await page.getByRole('button', { name: 'Manage bookmarks' }).click();
   await page.getByRole('button', { name: 'Add bookmark' }).click();
   const form = page.getByRole('form', { name: 'New bookmark' });
