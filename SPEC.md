@@ -212,8 +212,10 @@ Along the way (from requests during the build, and Greg's own commits):
 - **Test on the real hardware:** nothing has run against a physical dongle on the Pi 5
   yet. Check device open/retune, gain, USB passthrough, rtl_433/TPMS, APRS, an ARISS SSTV
   event and a live ISS pass, and CPU headroom (waterfall + decoders + audio listeners).
-- **CI:** no GitHub Actions yet. Add `cargo test` + clippy, `svelte-check`, the arm64
-  image build, and (optionally) the Playwright tests against the synthetic source.
+- **CI:** GitHub Actions (`.github/workflows/ci.yml`) runs `cargo test`, `svelte-check`
+  and the web build, then builds the image and runs the smoke and Playwright tests against
+  the synthetic source. Still to add: clippy (after the clean-ups below) and an arm64
+  image build.
 - **Licence:** the repository is public with no licence (all rights reserved by default).
   Pick one (e.g. MIT, Apache-2.0 or GPL-3.0).
 - **ARISS on 437.550 MHz:** the default ISS profile tunes the VHF block; ARISS events on

@@ -1,10 +1,24 @@
 # sdr-web-gui
 
+[![CI](https://github.com/swooningfish/sdr-web-gui/actions/workflows/ci.yml/badge.svg)](https://github.com/swooningfish/sdr-web-gui/actions/workflows/ci.yml)
+
 A self-hosted, browser-controlled RTL-SDR monitor for a Raspberry Pi, packaged in Docker.
 It's inspired by [OnAir](https://github.com/adswill/OnAir) but focuses on unattended
-monitoring: TPMS/ISM sensors (rtl_433), APRS, and SSTV, including automatic ISS/ARISS pass recording.
+monitoring: TPMS/ISM sensors (rtl_433), APRS, ADS-B and SSTV, including automatic ISS/ARISS
+pass recording, with live audio in the browser.
 
 See [SPEC.md](SPEC.md) for the full design and roadmap.
+
+![The receiver front panel above the live spectrum and waterfall](docs/screenshots/spectrum.png)
+
+| APRS map | Aircraft (ADS-B) | SSTV |
+|---|---|---|
+| [![APRS](docs/screenshots/aprs.png)](#aprs-direwolf) | [![Aircraft](docs/screenshots/aircraft.png)](#aircraft-ads-b) | [![SSTV](docs/screenshots/sstv.png)](#sstv) |
+| **Sensors (rtl_433, TPMS)** | **ISS passes** | **Settings** |
+| [![Sensors](docs/screenshots/sensors.png)](#sensors-rtl_433-tpms) | [![Passes](docs/screenshots/passes.png)](#passes-and-scheduling) | [![Settings](docs/screenshots/settings.png)](#settings) |
+
+All screenshots are of the simulated receiver in the dev stack, so you can see the same thing
+without a dongle.
 
 ## TL;DR
 
@@ -54,7 +68,7 @@ Details in [Deploying on a Raspberry Pi 5](#deploying-on-a-raspberry-pi-5).
   trails, range rings and range stats, aircraft database, Home Assistant sensors
 - [ ] M9: signal classifier (voice / data / broadcast labels on the spectrum)
 
-Also still to do: testing on real hardware, CI, a licence. Details in
+Also still to do: testing on real hardware, a licence. Details in
 [SPEC.md](SPEC.md#left-to-do-besides-m7m9).
 
 ## Prerequisites
@@ -206,15 +220,40 @@ show up instantly without rebuilding the image.
 
 ### Tests
 
+Unit tests (DSP, decoders, SSTV encode → decode, ADS-B, auth, …) and the UI type check need
+no running stack:
+
+```bash
+cargo test                          # needs Rust; or in Docker, see below
+cd web && npm ci && npm run check   # svelte-check
+```
+
+No Rust installed? Run the Rust tests in the official image instead:
+`docker run --rm -v "${PWD}:/src" -w /src rust:1-bookworm cargo test` (bash or PowerShell).
+
 With the dev stack running:
 
-- `./scripts/smoke-test.sh` checks the API: health, login, auth and CSRF rules.
+- `./scripts/smoke-test.sh` checks the API: health, login, auth and CSRF rules, and each
+  feature's endpoints.
 - `./scripts/ui-test.sh` runs Playwright (in its official Docker image, nothing to install) at
-  1920, 1366, 820 and 375 px wide. It checks that no page scrolls sideways, that the spectrum
-  toolbar doesn't move on hover, and checks the settings tabs, the profile page and
-  remembered waterfall colours.
+  1920, 1366, 820 and 375 px wide. It checks that no page scrolls sideways and exercises the
+  receiver front panel, spectrum zoom and tuning, bookmarks and F-keys, settings tabs, maps,
+  lists and galleries. Pass Playwright options through, e.g.
+  `./scripts/ui-test.sh --project=phone-375`. Some tests only run at one width, or skip
+  themselves when the stack can't support them (e.g. no ADS-B receiver), so a run shows some
+  as skipped.
+- `./scripts/screenshots.sh` regenerates the screenshots in this README
+  (`docs/screenshots/`). It borrows a simulated ADS-B receiver for the Aircraft shot and puts
+  your setting back afterwards.
 
-Both are bash scripts: on Windows run them from Git Bash or WSL.
+These are bash scripts: on Windows run them from Git Bash or WSL.
+
+**Continuous integration.** [GitHub Actions](.github/workflows/ci.yml) runs all of the above
+on every push to `main` and every pull request: `cargo test`, `svelte-check` and the
+production UI build, then it builds the Docker image, starts the dev stack and runs the
+smoke and Playwright tests against it. The badge at the top shows the result for `main`;
+click it for the logs. A run can also be started by hand from the repository's **Actions**
+tab (**CI → Run workflow**).
 
 ## Deploying on a Raspberry Pi 5
 
@@ -351,6 +390,11 @@ The channel is shaded on the spectrum.
 
 ## Spectrum tools
 
+<img src="docs/screenshots/phone.png" alt="The spectrum page on a phone, with the receiver folded to one line" width="260" align="right">
+
+Everything works on a phone or tablet too: the tab bar scrolls, the front panel folds to
+one line (**Compact**), and you drag and pinch-zoom the spectrum with your fingers.
+
 - **Band plan:** the strip above the spectrum shows UK amateur bands with their RSGB
   sub-bands, plus broadcast, aviation, marine, CB/PMR446, ISM/SRD and satellite bands.
   Choose groups under **Band plan**; hover to name the band. With **Auto mode** on the
@@ -414,6 +458,8 @@ The channel is shaded on the spectrum.
   **Manage**: click tiles to select several and delete them, ✎ to edit, **F** to put one
   on a function key, and export CSV or import a CSV (our own export, CHIRP or gqrx
   `bookmarks.csv`).
+
+  ![The bookmark manager open on the Calling list](docs/screenshots/bookmarks.png)
 - **Harmonics check (admins):** click a short-range device's signal (a key fob, sensor or
   telemetry link) so you're listening to it, then **Check harmonics** under the spectrum.
   It measures the carrier, retunes to the 2nd–5th harmonics (as far as the dongle reaches),
