@@ -4,6 +4,8 @@
   import SMeter from './SMeter.svelte';
   import LcdDigits from './LcdDigits.svelte';
   import TuningKnob from './TuningKnob.svelte';
+  import SelectorKnob from './SelectorKnob.svelte';
+  import AudioMeter from './AudioMeter.svelte';
   import { api, type Profile, type RadioPatch, type RadioState, type SdrDevice } from '../lib/api';
   import { CHANNEL_STEP, MODES, channelEdges, tunedHz, type AudioMode } from '../lib/audio';
   import { describeRanges, unsupported } from '../lib/coverage';
@@ -53,7 +55,24 @@
   })();
   // Phones start with the bar folded to one line so the page itself is in view.
   const narrow = typeof matchMedia === 'function' && matchMedia('(max-width: 640px)').matches;
-  let collapsed = $state<boolean>(stored.collapsed ?? narrow);
+  type Size = 'compact' | 'medium' | 'large';
+  const SIZES: { id: Size; label: string; title: string }[] = [
+    { id: 'compact', label: 'Compact', title: 'One line: frequency, Play and a bar meter' },
+    { id: 'medium', label: 'Medium', title: 'Display, meters, tuning knob and function keys' },
+    { id: 'large', label: 'Large', title: 'The whole front panel' },
+  ];
+  // Older browsers stored `collapsed` (Hide/Show).
+  let size = $state<Size>(
+    ['compact', 'medium', 'large'].includes(stored.size)
+      ? stored.size
+      : (stored.collapsed ?? narrow)
+        ? 'compact'
+        : 'large',
+  );
+  const collapsed = $derived(size === 'compact');
+  const large = $derived(size === 'large');
+  /** Manual gain to go back to when the gain knob is pulled out of AGC. */
+  let lastGain = $state<number | null>(typeof stored.lastGain === 'number' ? stored.lastGain : null);
   let open = $state<Record<Drawer, boolean>>({
     presets: stored.presets ?? false,
     settings: stored.settings ?? false,
@@ -64,7 +83,7 @@
   // svelte-ignore state_referenced_locally
   let step = $state<number>(typeof stored.step === 'number' ? stored.step : CHANNEL_STEP[listen.mode]);
   $effect(() => {
-    const v = { collapsed, ...open, trim, vhfScale, step };
+    const v = { size, ...open, trim, vhfScale, step, lastGain };
     try {
       localStorage.setItem(LAYOUT, JSON.stringify(v));
     } catch {
@@ -158,6 +177,35 @@
     if (cur !== null && !g.includes(cur)) g.push(cur);
     return g.sort((a, b) => a - b);
   });
+
+  // ---- RF gain knob: pushed in = AGC; out, it steps through the dongle's gains.
+  $effect(() => {
+    const g = radio?.settings.gain_db;
+    if (g !== null && g !== undefined) lastGain = g;
+  });
+  const agc = $derived(!!radio && radio.settings.gain_db === null);
+  const gainLabels = $derived(gainOptions.map((g) => `${g.toFixed(1)} dB`));
+  /** Where the gain knob points: the current gain, or the one it returns to from AGC. */
+  const gainIndex = $derived.by(() => {
+    if (!gainOptions.length) return -1;
+    const g = radio?.settings.gain_db ?? lastGain;
+    if (g === null || g === undefined) return Math.floor(gainOptions.length / 2);
+    let best = 0;
+    gainOptions.forEach((x, i) => {
+      if (Math.abs(x - g) < Math.abs(gainOptions[best] - g)) best = i;
+    });
+    return best;
+  });
+  function pushGain() {
+    if (agc) {
+      const g = gainIndex >= 0 ? gainOptions[gainIndex] : null;
+      if (g !== null) apply({ gain_db: g });
+    } else {
+      apply({ auto_gain: true });
+    }
+  }
+  const rateLabels = $derived((radio?.sample_rates ?? []).map(formatRate));
+  const rateIndex = $derived(radio ? radio.sample_rates.indexOf(radio.settings.sample_rate) : -1);
 
   async function apply(patch: RadioPatch) {
     busy = true;
@@ -328,7 +376,7 @@
 
 <svelte:window onclick={closeMenu} onkeydown={(e) => e.key === 'Escape' && (menu = null)} />
 
-<section class="panel rx" class:collapsed aria-label="Receiver">
+<section class="panel rx" class:collapsed class:medium={size === 'medium'} aria-label="Receiver">
   <div class="top">
     <h2>Receiver</h2>
     {#if collapsed && radio}
@@ -341,20 +389,27 @@
           title={listen.on ? 'Stop listening' : 'Listen'}
           onclick={() => rx.toggle()}><span class="led" class:on={listen.on}></span>{listen.on ? 'Stop' : 'Play'}</button
         >
-        <strong class="num">{rx.active} {formatMHz(listen.hz, 4)}</strong>
+        <strong class="num"
+          ><span class="hide-xs">{rx.active} </span>{(listen.hz / 1e6).toFixed(4)}<span class="hide-xs"> MHz</span></strong
+        >
         <span class="muted small-text hide-xs">{modeLabel(listen.mode)}</span>
         <span class="bar-meter"><SMeter bar {dbm} {s9} label={formatMHz(listen.hz, 4)} /></span>
         {#if dbm !== null}<span class="s-mini small-text hide-xs">{sReading(dbm, s9)}</span>{/if}
       </span>
     {/if}
-    <button
-      type="button"
-      class="small fold"
-      aria-expanded={!collapsed}
-      aria-controls="rx-body"
-      title={collapsed ? 'Show the receiver' : 'Fold the receiver away'}
-      onclick={() => (collapsed = !collapsed)}>{collapsed ? 'Show' : 'Hide'}<span class="chev" aria-hidden="true"></span></button
-    >
+    <div class="sizes" role="group" aria-label="Receiver size">
+      {#each SIZES as z (z.id)}
+        <button
+          type="button"
+          class="small"
+          aria-pressed={size === z.id}
+          aria-label={z.label}
+          title={z.title}
+          onclick={() => (size = z.id)}
+          ><span class="hide-xs">{z.label}</span><span class="show-xs" aria-hidden="true">{z.label[0]}</span></button
+        >
+      {/each}
+    </div>
   </div>
 
   {#if !radio}
@@ -365,6 +420,7 @@
         <!-- ---- display row: S-meter, LCD, knob -->
         <div class="meter">
           <SMeter {dbm} {s9} label={formatMHz(listen.hz, 4)} />
+          <AudioMeter levels={() => rx.audioLevels()} />
         </div>
 
         <div class="lcd" aria-label="Display">
@@ -456,7 +512,38 @@
       </div>
 
       <!-- ---- keys -->
+      {#if large}
       <div class="controls">
+        <div class="group rf" role="group" aria-label="RF">
+          <span class="lbl">RF</span>
+          <div class="knobs">
+            <SelectorKnob
+              label="Gain"
+              options={gainLabels}
+              index={gainIndex}
+              pushable
+              pushed={agc}
+              pushedText="AGC"
+              disabled={locked || !gainOptions.length}
+              title={locked
+                ? 'Gain (an admin can change it)'
+                : agc
+                  ? 'AGC on: click to pull the knob out and set the gain by hand'
+                  : 'Turn to set the gain; click to push in for AGC'}
+              onchange={(i) => apply({ gain_db: gainOptions[i] })}
+              onpush={pushGain}
+            />
+            <SelectorKnob
+              label="Rate"
+              options={rateLabels}
+              index={rateIndex}
+              disabled={locked || rateLabels.length < 2}
+              title={locked ? 'Sample rate (an admin can change it)' : 'Turn to change the sample rate'}
+              onchange={(i) => apply({ sample_rate: radio.sample_rates[i] })}
+            />
+          </div>
+        </div>
+
         <div class="group full-sm" role="group" aria-label="Audio">
           <span class="lbl">Audio</span>
           <div class="keys">
@@ -581,6 +668,8 @@
         </div>
       </div>
 
+      {/if}
+
       <!-- ---- function keys -->
       <div class="fkeys" role="group" aria-label="Function keys">
         <div class="fk-row">
@@ -631,6 +720,16 @@
           {/each}
         </div>
         <div class="fk-side">
+          {#if !large}
+            <button
+              type="button"
+              class="key wide play"
+              aria-pressed={listen.on}
+              disabled={rx.starting}
+              onclick={() => rx.toggle()}
+              ><span class="led" class:on={listen.on}></span>{rx.starting ? 'Starting…' : listen.on ? 'Stop' : 'Play'}</button
+            >
+          {/if}
           <button
             type="button"
             class="key"
@@ -662,6 +761,7 @@
       {#if fkeys.error}<p class="error">{fkeys.error}</p>{/if}
 
       <!-- ---- drawers -->
+      {#if large}
       <div class="drawers" role="group" aria-label="Receiver sections">
         <button
           type="button"
@@ -861,14 +961,21 @@
         </div>
       {/if}
 
+      {/if}
+
       {#if err}<p class="error">{err}</p>{/if}
     </div>
   {/if}
+  <!-- The radio's feet. -->
+  <span class="foot left" aria-hidden="true"></span>
+  <span class="foot right" aria-hidden="true"></span>
 </section>
 
 <style>
   .rx {
+    position: relative;
     padding: 12px 14px;
+    margin-bottom: 16px;
     min-width: 0;
     background: var(--face);
     border-color: var(--face-edge);
@@ -889,11 +996,59 @@
     text-transform: uppercase;
     color: var(--face-label);
   }
-  .fold {
+  .sizes {
     margin-left: auto;
     display: inline-flex;
-    align-items: center;
-    gap: 6px;
+    flex: none;
+  }
+  .sizes button {
+    border-radius: 0;
+    padding: 4px 9px;
+  }
+  .sizes button:first-child {
+    border-radius: 6px 0 0 6px;
+  }
+  .sizes button:last-child {
+    border-radius: 0 6px 6px 0;
+  }
+  .sizes button + button {
+    margin-left: -1px;
+  }
+  .sizes button[aria-pressed='true'] {
+    position: relative;
+    background: var(--accent);
+    color: var(--accent-text);
+    border-color: var(--accent);
+  }
+  .show-xs {
+    display: none;
+  }
+  /* Feet under the chassis, like the radio's: rubber with a metal band. */
+  .foot {
+    position: absolute;
+    bottom: -18px;
+    width: clamp(80px, 13%, 170px);
+    height: 18px;
+    border-radius: 0 0 10px 10px;
+    border: 1px solid #000;
+    border-top: none;
+    background: linear-gradient(
+      180deg,
+      #3a3e46 0 2px,
+      #b4bac4 2px 5px,
+      #5b6069 5px 6px,
+      #2c3036 6px,
+      #121417 100%
+    );
+    box-shadow:
+      inset 0 -2px 3px rgba(255, 255, 255, 0.06),
+      0 4px 6px rgba(0, 0, 0, 0.35);
+  }
+  .foot.left {
+    left: 9%;
+  }
+  .foot.right {
+    right: 9%;
   }
   .mini {
     flex: 1 1 auto;
@@ -929,12 +1084,6 @@
     transition: transform 0.15s ease;
   }
   [aria-expanded='true'] .chev {
-    transform: rotate(45deg) translate(-2px, -2px);
-  }
-  .fold .chev {
-    transform: rotate(-135deg) translate(-2px, -2px);
-  }
-  .fold[aria-expanded='false'] .chev {
     transform: rotate(45deg) translate(-2px, -2px);
   }
 
@@ -1023,8 +1172,9 @@
   }
   .meter {
     grid-area: meter;
-    display: flex;
-    justify-content: center;
+    display: grid;
+    justify-items: center;
+    gap: 8px;
   }
   .knob-col {
     grid-area: knob;
@@ -1211,6 +1361,10 @@
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+  }
+  .rf .knobs {
+    display: flex;
+    gap: 14px;
   }
   .key.auto {
     justify-self: start;
@@ -1546,6 +1700,15 @@
     }
     .hide-xs {
       display: none;
+    }
+    .show-xs {
+      display: inline;
+    }
+    .sizes button {
+      padding: 4px 7px;
+    }
+    .bar-meter {
+      min-width: 64px;
     }
     /* Folded on a phone: give the heading's room to the bar meter (still read out). */
     .collapsed .top h2 {

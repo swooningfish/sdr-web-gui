@@ -15,10 +15,15 @@ async function openTab(page: Page, name: string) {
   await page.waitForTimeout(400);
 }
 
+/** Show the receiver at a size (Compact, Medium or Large). */
+async function receiverSize(page: Page, size: 'Compact' | 'Medium' | 'Large') {
+  const btn = page.getByRole('group', { name: 'Receiver size' }).getByRole('button', { name: size, exact: true });
+  if ((await btn.getAttribute('aria-pressed')) !== 'true') await btn.click();
+}
+
 /** Unfold a section under the receiver (Centre & presets, Gain & settings). */
 async function openDrawer(page: Page, name: RegExp) {
-  const fold = page.getByRole('button', { name: /^(Show|Hide)$/ });
-  if ((await fold.getAttribute('aria-expanded')) === 'false') await fold.click();
+  await receiverSize(page, 'Large');
   const btn = page.locator('.drawers').getByRole('button', { name });
   if ((await btn.getAttribute('aria-expanded')) !== 'true') await btn.click();
 }
@@ -216,8 +221,7 @@ test('band plan strip shows and its groups are remembered', async ({ page }) => 
 
 /** Unfold the receiver and open the slide-out bookmark manager. */
 async function openBookmarks(page: Page) {
-  const fold = page.getByRole('button', { name: /^(Show|Hide)$/ });
-  if ((await fold.getAttribute('aria-expanded')) === 'false') await fold.click();
+  await receiverSize(page, 'Large');
   await page.getByRole('group', { name: 'Function keys' }).getByRole('button', { name: 'Bookmarks', exact: true }).click();
   const drawer = page.getByRole('complementary', { name: 'Bookmarks' });
   await expect(drawer).toBeVisible();
@@ -291,10 +295,63 @@ test('a bookmark can be added, put on an F-key, recalled and deleted', async ({ 
   else await page.request.delete('/api/fkeys/8', { headers: await csrf(page) });
 });
 
+test('the receiver has three sizes and fits the screen at each', async ({ page }) => {
+  await openTab(page, 'Spectrum');
+  const knob = page.getByRole('slider', { name: /^Tuning/ });
+  const fkeys = page.getByRole('group', { name: 'Function keys' });
+  await receiverSize(page, 'Compact');
+  await expect(knob).toBeHidden();
+  expect(await overflow(page)).toBeLessThanOrEqual(0);
+  await receiverSize(page, 'Medium');
+  await expect(knob).toBeVisible();
+  await expect(fkeys).toBeVisible();
+  await expect(page.getByRole('meter', { name: 'Audio level' })).toBeVisible();
+  await expect(page.getByRole('group', { name: 'Mode' })).toHaveCount(0);
+  expect(await overflow(page)).toBeLessThanOrEqual(0);
+  await receiverSize(page, 'Large');
+  await expect(page.getByRole('group', { name: 'Mode' })).toBeVisible();
+  await expect(page.getByRole('slider', { name: /^Gain/ })).toBeVisible();
+  await expect(page.getByRole('slider', { name: 'Rate' })).toBeVisible();
+  expect(await overflow(page)).toBeLessThanOrEqual(0);
+  // Remembered across a reload.
+  await receiverSize(page, 'Medium');
+  await page.reload();
+  await expect(page.getByRole('group', { name: 'Receiver size' }).getByRole('button', { name: 'Medium' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await receiverSize(page, 'Large');
+});
+
+test('the gain knob pushes in for AGC and turns through the gains', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop-1920', 'state-changing test runs once');
+  const radio = await (await page.request.get('/api/radio')).json();
+  test.skip(!radio.can_tune || radio.gains_db.length < 2, 'receiver has no gain steps to set');
+  const gain = async () => (await (await page.request.get('/api/radio')).json()).settings.gain_db as number | null;
+  const before = radio.settings.gain_db as number | null;
+  await openTab(page, 'Spectrum');
+  await receiverSize(page, 'Large');
+  const knob = page.getByRole('slider', { name: /^Gain/ });
+  // Into AGC first, so the test starts the same way each time.
+  if (before !== null) {
+    await knob.press('Enter');
+    await expect.poll(gain).toBeNull();
+  }
+  await expect(knob).toHaveAttribute('aria-valuetext', 'AGC');
+  await knob.press('Enter'); // pull out: a manual gain
+  await expect.poll(gain).not.toBeNull();
+  const manual = (await gain())!;
+  await knob.press(manual === Math.max(...radio.gains_db) ? 'ArrowDown' : 'ArrowUp');
+  await expect.poll(gain, { timeout: 5000 }).not.toBe(manual);
+  // Put it back.
+  if (before === null) await knob.press('Enter');
+  else await page.request.post('/api/radio', { data: { gain_db: before }, headers: await csrf(page) });
+  await expect.poll(gain).toBe(before);
+});
+
 test('A/B swaps the VFO being heard and A=B copies it', async ({ page }) => {
   await openTab(page, 'Spectrum');
-  const fold = page.getByRole('button', { name: /^(Show|Hide)$/ });
-  if ((await fold.getAttribute('aria-expanded')) === 'false') await fold.click();
+  await receiverSize(page, 'Large');
   const knob = page.getByRole('slider', { name: /^Tuning/ });
   const a = await knob.getAttribute('aria-valuenow');
   await page.getByRole('button', { name: /^[AB]=[AB]$/ }).click();

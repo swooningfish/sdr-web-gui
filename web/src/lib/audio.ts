@@ -261,6 +261,8 @@ export class AudioPlayer {
   private ctx: AudioContext | null = null;
   private sink: Sink | null = null;
   private gain: GainNode | null = null;
+  private analyser: AnalyserNode | null = null;
+  private scratch: Float32Array<ArrayBuffer> | null = null;
   private res = new Resampler();
   private rate = 0;
   onstats: (s: PlayerStats) => void = () => {};
@@ -274,11 +276,17 @@ export class AudioPlayer {
       const sink = ctx.audioWorklet ? await workletSink(ctx, onstats) : scriptSink(ctx, onstats);
       const gain = ctx.createGain();
       gain.gain.value = volume;
+      // The level meter reads what you hear: after the volume control.
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
       sink.node.connect(gain).connect(ctx.destination);
+      gain.connect(analyser);
       await ctx.resume();
       this.ctx = ctx;
       this.sink = sink;
       this.gain = gain;
+      this.analyser = analyser;
+      this.scratch = new Float32Array(analyser.fftSize);
       this.rate = 0;
     } catch (e) {
       await ctx.close();
@@ -298,6 +306,21 @@ export class AudioPlayer {
     this.sink.push(this.res.process(pcm, f.rate / this.ctx.sampleRate));
   }
 
+  /** RMS and peak of the last ~40 ms of output, in dBFS (null when stopped). */
+  levels(): { rms: number; peak: number } | null {
+    if (!this.analyser || !this.scratch) return null;
+    this.analyser.getFloatTimeDomainData(this.scratch);
+    let sum = 0;
+    let peak = 0;
+    for (const v of this.scratch) {
+      sum += v * v;
+      const a = Math.abs(v);
+      if (a > peak) peak = a;
+    }
+    const db = (x: number) => (x > 1e-6 ? 20 * Math.log10(x) : -120);
+    return { rms: db(Math.sqrt(sum / this.scratch.length)), peak: db(peak) };
+  }
+
   setVolume(v: number) {
     if (this.gain) this.gain.gain.value = v;
   }
@@ -308,6 +331,8 @@ export class AudioPlayer {
     this.ctx = null;
     this.sink = null;
     this.gain = null;
+    this.analyser = null;
+    this.scratch = null;
     await ctx?.close();
   }
 }

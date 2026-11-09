@@ -381,15 +381,23 @@ The channel is shaded on the spectrum.
   when the channel is outside the sampled band) and the centre frequency, rate, gain and
   device. Beside it are an analogue **S-meter** for the channel you're listening to (read
   from the spectrum, so it works without audio; dBm is estimated from the gain, with a
-  per-browser trim and an optional IARU VHF scale under *Gain & settings*) and the
-  **tuning knob**: drag it round, scroll over it, or focus it and use the arrow keys
-  (Page Up/Down for ten steps), with the **step** below it. Click the big frequency to
-  type one. Keys below: **Play/Stop**, **Mute**, AF volume, squelch; the mode keys and
-  **Auto mode**; **A / B** swaps which VFO you hear and **A=B** copies it to the other (VFO B
-  is a dashed orange marker on the spectrum); **NR**, **AFC**, **CW dec** and **Digital**.
-  **Centre & presets** (centre frequency and nudges, presets, rotation profiles and the
-  rotation switch) and **Gain & settings** fold out below; **Hide** folds the whole panel
-  to one line with a Play key and a bar meter. Each browser remembers what's open.
+  per-browser trim and an optional IARU VHF scale under *Gain & settings*), with an
+  **audio meter** under it (what you hear, after the volume: LED segments for the level and
+  a peak-hold segment, −54 to 0 dBFS), and the **tuning knob**: drag it round, scroll over
+  it, or focus it and use the arrow keys (Page Up/Down for ten steps), with the **step**
+  below it. Click the big frequency to type one. Keys below: the **RF** knobs, **Play/Stop**,
+  **Mute**, AF volume, squelch; the mode keys and **Auto mode**; **A / B** swaps which VFO
+  you hear and **A=B** copies it to the other (VFO B is a dashed orange marker on the
+  spectrum); **NR**, **AFC**, **CW dec** and **Digital**. **Centre & presets** (centre
+  frequency and nudges, presets, rotation profiles and the rotation switch) and **Gain &
+  settings** fold out below.
+- **RF knobs (admins):** **Gain** pushes in for AGC (a click, or Enter, with the ring lit);
+  pulled out, turn it (drag up/right, scroll or arrow keys) through the dongle's gain steps.
+  It comes out at the last manual gain. **Rate** turns through the sample rates. Both apply
+  once the knob stops, so turning past several values retunes once.
+- **Sizes:** **Compact** is one line (Play, the frequency, a bar meter), **Medium** the
+  display, meters, tuning knob and function keys, **Large** the whole panel. Each browser
+  remembers the size and what's open.
 - **Function keys F1–F8:** each recalls a frequency and mode, usually a bookmark. Click an
   empty key to pick a bookmark for it; right-click (or long-press on a touch screen) a key,
   or turn on **F-Set** and click it, to pick another, store what you're hearing, or clear

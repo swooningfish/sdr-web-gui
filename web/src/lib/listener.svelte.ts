@@ -240,6 +240,11 @@ export class Listener {
     this.player.stop();
   }
 
+  /** Output level now (dBFS RMS and peak), for the audio meter. */
+  audioLevels() {
+    return this.listen.on ? this.player.levels() : null;
+  }
+
   toggle() {
     if (this.listen.on) this.stop();
     else this.start();
