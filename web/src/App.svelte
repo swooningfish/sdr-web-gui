@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { api, type RadioState, type User } from './lib/api';
   import { Stream } from './lib/stream';
   import { formatMHz } from './lib/format';
@@ -118,6 +118,33 @@
     if (!a || a.test || !schedule.info?.config.auto_switch || switchedFor === a.aos_ms) return;
     switchedFor = a.aos_ms;
     if (keepPage !== a.aos_ms) view = 'passes';
+  });
+
+  // While a pass is recording, listen to its downlink (following Doppler) so
+  // the S-meter and audio read the satellite rather than whatever channel was
+  // picked before. Afterwards go back, unless the listener moved off it.
+  let passListen: { aos: number; before: { hz: number; mode: AudioMode }; hz: number } | null = null;
+  $effect(() => {
+    const a = schedule.info?.status.active;
+    if (a?.recording) {
+      const hz = Math.round((a.record_hz + (a.doppler_hz ?? 0)) / 100) * 100;
+      if (passListen?.aos !== a.aos_ms) {
+        passListen = { aos: a.aos_ms, before: untrack(() => ({ hz: listen.hz, mode: listen.mode })), hz };
+        listen.mode = 'nfm';
+        listen.hz = hz;
+      } else if (untrack(() => listen.hz) === passListen.hz && hz !== passListen.hz) {
+        passListen.hz = hz;
+        listen.hz = hz;
+      }
+      return;
+    }
+    if (!passListen) return;
+    const { before, hz } = passListen;
+    passListen = null;
+    if (untrack(() => listen.hz) === hz) {
+      listen.mode = before.mode;
+      listen.hz = before.hz;
+    }
   });
 
   async function logout() {
