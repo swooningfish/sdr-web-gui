@@ -93,7 +93,7 @@ fn from_row(r: Row) -> Bookmark {
 
 const COLS: &str = "id, owner_id, name, freq_hz, mode, grp, colour, notes, updated_at";
 
-fn mode_str(m: Mode) -> String {
+pub(crate) fn mode_str(m: Mode) -> String {
     serde_json::to_value(m).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_else(|| "nfm".into())
 }
 

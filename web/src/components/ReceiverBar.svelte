@@ -1,38 +1,49 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import RotationToggle from './RotationToggle.svelte';
-  import BookmarksPanel from './BookmarksPanel.svelte';
   import SMeter from './SMeter.svelte';
+  import LcdDigits from './LcdDigits.svelte';
+  import TuningKnob from './TuningKnob.svelte';
   import { api, type Profile, type RadioPatch, type RadioState, type SdrDevice } from '../lib/api';
-  import { channelEdges, tunedHz, type Listen } from '../lib/audio';
-  import type { Bookmark } from '../lib/bookmarks.svelte';
+  import { CHANNEL_STEP, MODES, channelEdges, tunedHz, type AudioMode } from '../lib/audio';
   import { describeRanges, unsupported } from '../lib/coverage';
+  import { fkeys, SLOTS } from '../lib/fkeys.svelte';
   import { formatMHz, formatRate, parseFrequency, PRESETS } from '../lib/format';
+  import type { Listener, VfoName } from '../lib/listener.svelte';
   import { schedule } from '../lib/schedule.svelte';
   import { channelDbfs, s9Dbm, sReading, toDbm } from '../lib/smeter';
   import type { WaterfallFrame } from '../lib/stream';
 
-  /** The receiver, at the top of every page: tuning, S-meter, presets,
-   * bookmarks and the dongle's settings (the last three fold away). */
+  /** The receiver's front panel, at the top of every page: the display with
+   * VFO A and B, the S-meter and tuning knob, mode and audio keys, the
+   * programmable function keys, and folding drawers for the centre
+   * frequency, presets and the dongle's settings. */
   let {
     radio,
     isAdmin,
-    listen,
-    onbookmark,
-    onmanage,
+    rx,
+    ontune,
+    onbookmarks,
+    onsavebookmark,
     onsettings,
   }: {
     radio: RadioState | null;
     isAdmin: boolean;
-    listen: Listen;
-    onbookmark: (b: Bookmark) => void;
-    onmanage: () => void;
+    rx: Listener;
+    /** Listen at `hz` (in `mode`, if given); the app brings it into the sampled band. */
+    ontune: (hz: number, mode?: AudioMode) => void;
+    /** Open the bookmark manager; with a slot, to pick a bookmark for that F-key. */
+    onbookmarks: (slot?: number) => void;
+    /** Open the bookmark manager to save what's being heard. */
+    onsavebookmark: () => void;
     onsettings: () => void;
   } = $props();
 
+  const listen = $derived(rx.listen);
+
   // ---- remembered layout (per browser)
   const LAYOUT = 'sdr.rxbar';
-  type Drawer = 'presets' | 'bookmarks' | 'settings';
+  type Drawer = 'presets' | 'settings';
   const stored = (() => {
     try {
       return JSON.parse(localStorage.getItem(LAYOUT) ?? '{}');
@@ -45,14 +56,15 @@
   let collapsed = $state<boolean>(stored.collapsed ?? narrow);
   let open = $state<Record<Drawer, boolean>>({
     presets: stored.presets ?? false,
-    bookmarks: stored.bookmarks ?? false,
     settings: stored.settings ?? false,
   });
   // S-meter calibration: trim in dB, and the IARU VHF scale (S9 = −93 dBm above 30 MHz).
   let trim = $state<number>(stored.trim ?? 0);
   let vhfScale = $state<boolean>(stored.vhfScale ?? false);
+  // svelte-ignore state_referenced_locally
+  let step = $state<number>(typeof stored.step === 'number' ? stored.step : CHANNEL_STEP[listen.mode]);
   $effect(() => {
-    const v = { collapsed, ...open, trim, vhfScale };
+    const v = { collapsed, ...open, trim, vhfScale, step };
     try {
       localStorage.setItem(LAYOUT, JSON.stringify(v));
     } catch {
@@ -159,7 +171,7 @@
     }
   }
 
-  function submitFreq(e: SubmitEvent) {
+  function submitCentre(e: SubmitEvent) {
     e.preventDefault();
     const hz = parseFrequency(freqInput);
     if (hz === null) {
@@ -187,7 +199,134 @@
   }
 
   const presetTitle = (hz: number, why: string | null) => (why ? `${formatMHz(hz)}: ${why}` : formatMHz(hz));
+
+  // ---- the display: VFO frequency entry (click the big digits to type one)
+  const MODE_KEYS: { value: AudioMode; label: string }[] = [
+    { value: 'lsb', label: 'LSB' },
+    { value: 'usb', label: 'USB' },
+    { value: 'cw', label: 'CW' },
+    { value: 'am', label: 'AM' },
+    { value: 'nfm', label: 'NFM' },
+    { value: 'wfm', label: 'WFM' },
+  ];
+  const STEPS = [10, 50, 100, 500, 1_000, 2_500, 5_000, 6_250, 10_000, 12_500, 25_000, 100_000, 1_000_000];
+  const stepLabel = (s: number) => (s >= 1e6 ? `${s / 1e6} MHz` : s >= 1000 ? `${s / 1000} kHz` : `${s} Hz`);
+
+  let typing = $state(false);
+  let typed = $state('');
+  let typeBox = $state<HTMLInputElement | undefined>();
+  function startTyping() {
+    typed = (listen.hz / 1e6).toFixed(4);
+    typing = true;
+    queueMicrotask(() => {
+      typeBox?.focus();
+      typeBox?.select();
+    });
+  }
+  function submitTyped(e: SubmitEvent) {
+    e.preventDefault();
+    const hz = parseFrequency(typed);
+    if (hz === null) {
+      rx.err = 'Enter a frequency like 145.8 or 433.92M';
+      return;
+    }
+    rx.err = null;
+    typing = false;
+    ontune(hz);
+  }
+
+  /** "145.800" (MHz, kHz) and "000" (Hz), MHz padded to four cells. */
+  function digits(hz: number): [string, string] {
+    const h = Math.max(0, Math.round(hz));
+    const mhz = String(Math.floor(h / 1e6)).padStart(4, ' ');
+    const khz = String(Math.floor(h / 1e3) % 1000).padStart(3, '0');
+    const rest = String(h % 1000).padStart(3, '0');
+    return [`${mhz}.${khz}`, `.${rest}`];
+  }
+  const mainDigits = $derived(digits(listen.hz));
+  const otherName = $derived<VfoName>(rx.active === 'A' ? 'B' : 'A');
+  const subDigits = $derived(digits(rx.other.hz));
+  const modeLabel = (m: AudioMode) => MODES.find((x) => x.value === m)?.label ?? m.toUpperCase();
+
+  function knobStep(n: number) {
+    const hz = Math.round((listen.hz + n * step) / step) * step;
+    ontune(hz);
+  }
+
+  function setMode(m: AudioMode) {
+    listen.mode = m;
+    step = CHANNEL_STEP[m];
+  }
+
+  // ---- audio
+  const meter = $derived(rx.level === null ? 0 : Math.min(1, Math.max(0, (rx.level + 110) / 100)));
+  const sqPos = $derived(Math.min(1, Math.max(0, (rx.squelch + 110) / 100)));
+  const outside = $derived(
+    listen.on &&
+      (!rx.inBand || (!!radio && Math.abs(listen.hz - radio.settings.center_hz) > radio.settings.sample_rate * 0.45)),
+  );
+  const busySig = $derived(listen.on && rx.open && rx.level !== null);
+
+  // ---- function keys
+  let fset = $state(false);
+  let menu = $state<number | null>(null);
+  let pressTimer: ReturnType<typeof setTimeout> | null = null;
+  let longPressed = false;
+
+  function recall(slot: number) {
+    const k = fkeys.recall(slot);
+    if (k) ontune(k.freq_hz, k.mode);
+  }
+  function fkeyClick(slot: number) {
+    if (longPressed) {
+      longPressed = false;
+      return;
+    }
+    if (fset) {
+      menu = menu === slot ? null : slot;
+      return;
+    }
+    if (fkeys.keys[slot - 1]) recall(slot);
+    else onbookmarks(slot);
+  }
+  function fkeyDown(e: PointerEvent, slot: number) {
+    if (e.pointerType === 'mouse') return;
+    longPressed = false;
+    pressTimer = setTimeout(() => {
+      longPressed = true;
+      menu = slot;
+    }, 550);
+  }
+  function fkeyUp() {
+    if (pressTimer) clearTimeout(pressTimer);
+    pressTimer = null;
+  }
+  async function storeHere(slot: number) {
+    menu = null;
+    try {
+      await fkeys.assign(slot, { id: 0, name: `${(listen.hz / 1e6).toFixed(4)} ${modeLabel(listen.mode)}`, freq_hz: listen.hz, mode: listen.mode });
+    } catch (e) {
+      fkeys.error = e instanceof Error ? e.message : String(e);
+    }
+  }
+  async function clearKey(slot: number) {
+    menu = null;
+    try {
+      await fkeys.clear(slot);
+    } catch (e) {
+      fkeys.error = e instanceof Error ? e.message : String(e);
+    }
+  }
+  const isCurrent = (slot: number) => {
+    const k = fkeys.recall(slot);
+    return !!k && k.freq_hz === listen.hz && k.mode === listen.mode;
+  };
+  function closeMenu(e: MouseEvent) {
+    if (menu !== null && !(e.target as HTMLElement).closest('.fkeys')) menu = null;
+  }
 </script>
+
+<svelte:window onclick={closeMenu} onkeydown={(e) => e.key === 'Escape' && (menu = null)} />
 
 <section class="panel rx" class:collapsed aria-label="Receiver">
   <div class="top">
@@ -195,8 +334,15 @@
     {#if collapsed && radio}
       <span class="mini">
         <span class="dot" class:ok={radio.connected} class:bad={!radio.connected}></span>
-        <strong class="num">{formatMHz(radio.settings.center_hz, 4)}</strong>
-        <span class="muted small-text hide-xs">{formatRate(radio.settings.sample_rate)}</span>
+        <button
+          type="button"
+          class="key mini-play"
+          aria-pressed={listen.on}
+          title={listen.on ? 'Stop listening' : 'Listen'}
+          onclick={() => rx.toggle()}><span class="led" class:on={listen.on}></span>{listen.on ? 'Stop' : 'Play'}</button
+        >
+        <strong class="num">{rx.active} {formatMHz(listen.hz, 4)}</strong>
+        <span class="muted small-text hide-xs">{modeLabel(listen.mode)}</span>
         <span class="bar-meter"><SMeter bar {dbm} {s9} label={formatMHz(listen.hz, 4)} /></span>
         {#if dbm !== null}<span class="s-mini small-text hide-xs">{sReading(dbm, s9)}</span>{/if}
       </span>
@@ -215,74 +361,307 @@
     {#if !collapsed}<p class="muted">Connecting…</p>{/if}
   {:else}
     <div id="rx-body" hidden={collapsed}>
-      <div class="main">
-        <div class="ident">
-          <div class="status">
-            <span class="dot" class:ok={radio.connected} class:bad={!radio.connected}></span>
-            <div class="ident-text">
-              <div class="device-name">{radio.device ?? 'No device'}</div>
-              <div class="muted small-text">
-                {radio.source}{radio.tuner ? ` · ${radio.tuner}` : ''} · {formatRate(radio.settings.sample_rate)}
-              </div>
-              {#if radio.ranges.length}
-                <div class="muted small-text">Covers {describeRanges(radio.ranges)}</div>
-              {/if}
-            </div>
-          </div>
-          {#if radio.can_select && devices.length > 1}
-            <div class="device">
-              <label for="sdr">Device</label>
-              <select id="sdr" value={radio.device_id ?? ''} disabled={!isAdmin || busy} onchange={selectDevice}>
-                {#if !devices.some((d) => d.id === radio.device_id)}
-                  <option value={radio.device_id ?? ''}>{radio.device ?? radio.device_id ?? 'None'}</option>
-                {/if}
-                {#each GROUPS as g (g.source)}
-                  {@const list = devices.filter((d) => d.source === g.source)}
-                  {#if list.length}
-                    <optgroup label={g.label}>
-                      {#each list as d (d.id)}
-                        <option value={d.id}>{d.name}{d.tuner ? ` (${d.tuner})` : ''}</option>
-                      {/each}
-                    </optgroup>
-                  {/if}
-                {/each}
-              </select>
-            </div>
-          {/if}
-          {#if radio.error}<p class="error">{radio.error}</p>{/if}
-        </div>
-
-        <form class="freq" onsubmit={submitFreq}>
-          <label for="freq">Centre frequency (MHz)</label>
-          <div class="row">
-            <input
-              id="freq"
-              inputmode="decimal"
-              autocomplete="off"
-              bind:value={freqInput}
-              oninput={() => (dirty = true)}
-              onfocus={() => (editing = true)}
-              onblur={leaveFreq}
-              disabled={locked}
-            />
-            <button type="submit" disabled={locked}>Tune</button>
-          </div>
-          <div class="row nudges">
-            <button type="button" class="small" disabled={locked} onclick={() => nudge(-1e6)}>−1M</button>
-            <button type="button" class="small" disabled={locked} onclick={() => nudge(-100e3)}>−100k</button>
-            <button type="button" class="small" disabled={locked} onclick={() => nudge(100e3)}>+100k</button>
-            <button type="button" class="small" disabled={locked} onclick={() => nudge(1e6)}>+1M</button>
-          </div>
-        </form>
-
+      <div class="face">
+        <!-- ---- display row: S-meter, LCD, knob -->
         <div class="meter">
           <SMeter {dbm} {s9} label={formatMHz(listen.hz, 4)} />
-          <div class="meter-caption small-text muted" title="The S-meter reads the channel you're listening to">
-            {formatMHz(listen.hz, 4)} {listen.mode.toUpperCase()}
+        </div>
+
+        <div class="lcd" aria-label="Display">
+          <div class="annun" aria-hidden="true">
+            <span class:lit={busySig} class="ok">BUSY</span>
+            <span class:lit={rx.squelchOn && listen.mode !== 'wfm'}>SQL</span>
+            <span class:lit={rx.nr}>NR</span>
+            <span class:lit={rx.afcActive} class:ok={rx.afcActive && rx.afcLocked}>AFC</span>
+            <span class:lit={rx.cwActive}>CW-DEC</span>
+            <span class:lit={rx.digitalActive} class:ok={rx.syncFresh}>DIG{rx.syncFresh && rx.sync ? ` ${rx.sync.mode}` : ''}</span>
+            <span class:lit={rx.muted} class="warn">MUTE</span>
+            <span class:lit={outside} class="bad">OUT</span>
+            <span class="spacer"></span>
+            <span class="lit">{rx.autoMode ? 'AUTO' : ''}</span>
+          </div>
+
+          <div class="vfo-row main-row">
+            <span class="vfo-tag rx-tag" title="VFO {rx.active}: the one you hear">
+              <span>VFO</span><strong>{rx.active}</strong>
+            </span>
+            {#if typing}
+              <form class="type-freq" onsubmit={submitTyped}>
+                <input
+                  id="listen-freq"
+                  bind:this={typeBox}
+                  bind:value={typed}
+                  inputmode="decimal"
+                  autocomplete="off"
+                  aria-label="Frequency (MHz)"
+                  onkeydown={(e) => e.key === 'Escape' && (typing = false)}
+                  onblur={() => setTimeout(() => (typing = false), 150)}
+                />
+                <button type="submit" class="key">Set</button>
+              </form>
+            {:else}
+              <button
+                type="button"
+                class="digits main-digits"
+                title="Click to type a frequency"
+                aria-label="VFO {rx.active} {formatMHz(listen.hz, 4)}. Click to type a frequency"
+                onclick={startTyping}
+              >
+                <LcdDigits text={mainDigits[0]} /><span class="hz"><LcdDigits text={mainDigits[1]} /></span>
+              </button>
+            {/if}
+            <span class="mode-tag">{modeLabel(listen.mode)}</span>
+          </div>
+
+          <div class="vfo-row sub-row">
+            <span class="vfo-tag" title="VFO {otherName}: press A/B to hear it">
+              <span>VFO</span><strong>{otherName}</strong>
+            </span>
+            <span class="digits sub-digits" aria-label="VFO {otherName} {formatMHz(rx.other.hz, 4)}">
+              <LcdDigits text={subDigits[0]} /><span class="hz"><LcdDigits text={subDigits[1]} /></span>
+            </span>
+            <span class="mode-tag">{modeLabel(rx.other.mode)}</span>
+            {#if rx.afcActive && listen.on && listen.afc != null}
+              <span class="afc-read" title="AFC correction">AFC {listen.afc >= 0 ? '+' : '−'}{(Math.abs(listen.afc) / 1000).toFixed(2)}k</span>
+            {/if}
+          </div>
+
+          <div class="lcd-foot">
+            <span class="dot" class:ok={radio.connected} class:bad={!radio.connected}></span>
+            <span>CTR {formatMHz(radio.settings.center_hz, 3)}</span>
+            <span>{formatRate(radio.settings.sample_rate)}</span>
+            <span>{radio.settings.gain_db === null ? 'AGC' : `${radio.settings.gain_db.toFixed(1)} dB`}</span>
+            <span class="dev" title={radio.device ?? ''}>{radio.device ?? 'No device'}{radio.tuner ? ` · ${radio.tuner}` : ''}</span>
+            {#if listen.on && rx.stats}
+              <span class="stats">{rx.stats.playing ? `${Math.round(rx.stats.buffered * 1000)} ms` : 'buffering'} · {rx.kbps} kb/s</span>
+            {/if}
+          </div>
+        </div>
+
+        <div class="knob-col">
+          <TuningKnob
+            onstep={knobStep}
+            label="Tuning, VFO {rx.active}"
+            value={listen.hz}
+            valuetext="{formatMHz(listen.hz, 4)} {modeLabel(listen.mode)}"
+          />
+          <label class="step">
+            <span class="lbl">Step</span>
+            <select bind:value={step} aria-label="Tuning step">
+              {#each STEPS as s (s)}<option value={s}>{stepLabel(s)}</option>{/each}
+              {#if !STEPS.includes(step)}<option value={step}>{stepLabel(step)}</option>{/if}
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <!-- ---- keys -->
+      <div class="controls">
+        <div class="group full-sm" role="group" aria-label="Audio">
+          <span class="lbl">Audio</span>
+          <div class="keys">
+            <button
+              type="button"
+              class="key wide play"
+              aria-pressed={listen.on}
+              disabled={rx.starting}
+              onclick={() => rx.toggle()}
+              ><span class="led" class:on={listen.on}></span>{rx.starting ? 'Starting…' : listen.on ? 'Stop' : 'Play'}</button
+            >
+            <button type="button" class="key" aria-pressed={rx.muted} onclick={() => (rx.muted = !rx.muted)}
+              ><span class="led" class:on={rx.muted}></span>Mute</button
+            >
+          </div>
+          <label class="slider">
+            <span class="lbl">AF</span>
+            <input type="range" min="0" max="2" step="0.05" bind:value={rx.volume} aria-label="Volume" />
+            <span class="num">{Math.round(rx.volume * 100)}%</span>
+          </label>
+          <div class="slider">
+            <button
+              type="button"
+              class="key tiny"
+              aria-pressed={rx.squelchOn && listen.mode !== 'wfm'}
+              disabled={listen.mode === 'wfm'}
+              title="Squelch: mute until a signal is above the level"
+              onclick={() => (rx.squelchOn = !rx.squelchOn)}
+              ><span class="led" class:on={rx.squelchOn && listen.mode !== 'wfm'}></span>SQL</button
+            >
+            <input
+              type="range"
+              min="-110"
+              max="-20"
+              bind:value={rx.squelch}
+              aria-label="Squelch level"
+              disabled={!rx.squelchOn || listen.mode === 'wfm'}
+            />
+            <span class="num">{rx.squelch} dB</span>
+          </div>
+          <div class="level" aria-label="Audio level" title={rx.level === null ? 'No audio' : `${rx.level.toFixed(1)} dBFS`}>
+            <div class="fill" class:closed={!rx.open} style:width="{meter * 100}%"></div>
+            {#if rx.squelchOn && listen.mode !== 'wfm'}<div class="sq" style:left="{sqPos * 100}%"></div>{/if}
+          </div>
+        </div>
+
+        <div class="group full-sm" role="group" aria-label="Mode">
+          <span class="lbl">Mode</span>
+          <div class="keys mode-keys">
+            {#each MODE_KEYS as m (m.value)}
+              <button type="button" class="key" aria-pressed={listen.mode === m.value} onclick={() => setMode(m.value)}
+                ><span class="led" class:on={listen.mode === m.value}></span>{m.label}</button
+              >
+            {/each}
+          </div>
+          <button
+            type="button"
+            class="key auto"
+            aria-pressed={rx.autoMode}
+            title="Clicking the spectrum picks the mode the band plan suggests"
+            onclick={() => (rx.autoMode = !rx.autoMode)}><span class="led" class:on={rx.autoMode}></span>Auto mode</button
+          >
+        </div>
+
+        <div class="group" role="group" aria-label="VFO">
+          <span class="lbl">VFO</span>
+          <div class="keys vfo-keys">
+            <button
+              type="button"
+              class="key"
+              title="Swap: listen on VFO {otherName} ({formatMHz(rx.other.hz, 4)} {modeLabel(rx.other.mode)})"
+              onclick={() => rx.swap()}>A / B</button
+            >
+            <button
+              type="button"
+              class="key"
+              title="Copy VFO {rx.active} to VFO {otherName}"
+              onclick={() => rx.copy()}>{rx.active}={otherName}</button
+            >
+          </div>
+        </div>
+
+        <div class="group" role="group" aria-label="Decode and filters">
+          <span class="lbl">DSP</span>
+          <div class="keys dsp-keys">
+            <button
+              type="button"
+              class="key"
+              aria-pressed={rx.nr}
+              title="Spectral noise reduction: removes steady background hiss"
+              onclick={() => (rx.nr = !rx.nr)}><span class="led" class:on={rx.nr}></span>NR</button
+            >
+            <button
+              type="button"
+              class="key"
+              aria-pressed={rx.afcActive}
+              disabled={!rx.afcWorks}
+              title={rx.afcWorks
+                ? 'Automatic frequency control: follow a signal that drifts (up to ±50 kHz in NFM, ±10 kHz in AM)'
+                : 'AFC works in NFM and AM'}
+              onclick={() => (rx.afcOn = !rx.afcOn)}><span class="led" class:on={rx.afcActive}></span>AFC</button
+            >
+            <button
+              type="button"
+              class="key"
+              aria-pressed={rx.cwActive}
+              disabled={listen.mode === 'wfm'}
+              title="Decode Morse: CW signals, beacons and FM repeater idents"
+              onclick={() => (rx.cwOn = !rx.cwOn)}><span class="led" class:on={rx.cwActive}></span>CW dec</button
+            >
+            <button
+              type="button"
+              class="key"
+              aria-pressed={rx.digitalActive}
+              disabled={listen.mode !== 'nfm'}
+              title={listen.mode === 'nfm'
+                ? 'Decode digital voice: DMR, D-STAR, System Fusion, NXDN, P25, dPMR and M17'
+                : 'Digital decoding works in NFM'}
+              onclick={() => (rx.digitalOn = !rx.digitalOn)}><span class="led" class:on={rx.digitalActive}></span>Digital</button
+            >
           </div>
         </div>
       </div>
 
+      <!-- ---- function keys -->
+      <div class="fkeys" role="group" aria-label="Function keys">
+        <div class="fk-row">
+          {#each Array.from({ length: SLOTS }, (_, i) => i + 1) as slot (slot)}
+            {@const k = fkeys.keys[slot - 1]}
+            {@const shown = fkeys.recall(slot)}
+            <div class="fk-cell">
+              <button
+                type="button"
+                class="key fkey"
+                class:empty={!k}
+                class:setting={fset}
+                aria-haspopup={fset ? 'menu' : undefined}
+                aria-expanded={menu === slot ? true : undefined}
+                aria-label={shown
+                  ? `F${slot}: ${shown.name}, ${formatMHz(shown.freq_hz, 4)} ${modeLabel(shown.mode)}`
+                  : `F${slot}: not set. Pick a bookmark for it`}
+                title={shown
+                  ? `${shown.name} · ${formatMHz(shown.freq_hz, 4)} ${modeLabel(shown.mode)}\nRight-click (or long-press) to change`
+                  : 'Not set: click to pick a bookmark'}
+                onclick={() => fkeyClick(slot)}
+                oncontextmenu={(e) => {
+                  e.preventDefault();
+                  menu = slot;
+                }}
+                onpointerdown={(e) => fkeyDown(e, slot)}
+                onpointerup={fkeyUp}
+                onpointerleave={fkeyUp}
+              >
+                <span class="led" class:on={isCurrent(slot)}></span>
+                <span class="fnum">F{slot}</span>
+                <span class="fname">{shown ? shown.name : '—'}</span>
+              </button>
+              {#if menu === slot}
+                <div class="fmenu" role="menu" aria-label="F{slot}">
+                  <button type="button" role="menuitem" onclick={() => ((menu = null), onbookmarks(slot))}
+                    >Pick a bookmark…</button
+                  >
+                  <button type="button" role="menuitem" onclick={() => storeHere(slot)}
+                    >Store {formatMHz(listen.hz, 4)} {modeLabel(listen.mode)}</button
+                  >
+                  {#if k}
+                    <button type="button" role="menuitem" class="danger" onclick={() => clearKey(slot)}>Clear F{slot}</button>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+        <div class="fk-side">
+          <button
+            type="button"
+            class="key"
+            aria-pressed={fset}
+            title="Program the F-keys: click a key to change it"
+            onclick={() => {
+              fset = !fset;
+              menu = null;
+            }}><span class="led" class:on={fset}></span>F-Set</button
+          >
+          <button
+            type="button"
+            class="key"
+            title="Bookmark {formatMHz(listen.hz, 4)} ({modeLabel(listen.mode)})"
+            onclick={onsavebookmark}>★ Save</button
+          >
+          <button type="button" class="key wide accent" onclick={() => onbookmarks()}>Bookmarks</button>
+        </div>
+      </div>
+
+      {#if outside}
+        <p class="oob small-text">
+          {formatMHz(listen.hz, 4)} is outside the tuned band ({formatMHz(radio.settings.center_hz, 3)} ± {(
+            radio.settings.sample_rate / 2e6
+          ).toFixed(2)} MHz).
+        </p>
+      {/if}
+      {#if rx.err}<p class="error">{rx.err}</p>{/if}
+      {#if fkeys.error}<p class="error">{fkeys.error}</p>{/if}
+
+      <!-- ---- drawers -->
       <div class="drawers" role="group" aria-label="Receiver sections">
         <button
           type="button"
@@ -290,14 +669,7 @@
           aria-expanded={open.presets}
           aria-controls="rx-presets"
           onclick={() => (open.presets = !open.presets)}
-          ><span class="chev" aria-hidden="true"></span>Presets{profiles.length ? ` & rotation (${profiles.length})` : ''}</button
-        >
-        <button
-          type="button"
-          class="small drawer-btn"
-          aria-expanded={open.bookmarks}
-          aria-controls="rx-bookmarks"
-          onclick={() => (open.bookmarks = !open.bookmarks)}><span class="chev" aria-hidden="true"></span>Bookmarks</button
+          ><span class="chev" aria-hidden="true"></span>Centre &amp; presets{profiles.length ? ` (${profiles.length} profiles)` : ''}</button
         >
         <button
           type="button"
@@ -316,6 +688,27 @@
 
       {#if open.presets}
         <div class="drawer" id="rx-presets">
+          <form class="freq" onsubmit={submitCentre}>
+            <label for="freq">Centre frequency (MHz)</label>
+            <div class="row">
+              <input
+                id="freq"
+                inputmode="decimal"
+                autocomplete="off"
+                bind:value={freqInput}
+                oninput={() => (dirty = true)}
+                onfocus={() => (editing = true)}
+                onblur={leaveFreq}
+                disabled={locked}
+              />
+              <button type="submit" disabled={locked}>Tune</button>
+              <button type="button" class="small" disabled={locked} onclick={() => nudge(-1e6)}>−1M</button>
+              <button type="button" class="small" disabled={locked} onclick={() => nudge(-100e3)}>−100k</button>
+              <button type="button" class="small" disabled={locked} onclick={() => nudge(100e3)}>+100k</button>
+              <button type="button" class="small" disabled={locked} onclick={() => nudge(1e6)}>+1M</button>
+            </div>
+          </form>
+          <h3 class="sub-head">Presets</h3>
           <div class="chips">
             {#each PRESETS as p (p.label)}
               {@const why = unsupported(radio, p.hz)}
@@ -362,15 +755,34 @@
         </div>
       {/if}
 
-      {#if open.bookmarks}
-        <div class="drawer" id="rx-bookmarks">
-          <BookmarksPanel bare {listen} {isAdmin} onselect={onbookmark} {onmanage} />
-        </div>
-      {/if}
-
       {#if open.settings}
         <div class="drawer" id="rx-settings">
+          <div class="ident small-text">
+            <strong>{radio.device ?? 'No device'}</strong>
+            <span class="muted">{radio.source}{radio.tuner ? ` · ${radio.tuner}` : ''} · {formatRate(radio.settings.sample_rate)}</span>
+            {#if radio.ranges.length}<span class="muted">Covers {describeRanges(radio.ranges)}</span>{/if}
+          </div>
+          {#if radio.error}<p class="error">{radio.error}</p>{/if}
           <div class="grid">
+            {#if radio.can_select && devices.length > 1}
+              <label for="sdr">Device</label>
+              <select id="sdr" value={radio.device_id ?? ''} disabled={!isAdmin || busy} onchange={selectDevice}>
+                {#if !devices.some((d) => d.id === radio.device_id)}
+                  <option value={radio.device_id ?? ''}>{radio.device ?? radio.device_id ?? 'None'}</option>
+                {/if}
+                {#each GROUPS as g (g.source)}
+                  {@const list = devices.filter((d) => d.source === g.source)}
+                  {#if list.length}
+                    <optgroup label={g.label}>
+                      {#each list as d (d.id)}
+                        <option value={d.id}>{d.name}{d.tuner ? ` (${d.tuner})` : ''}</option>
+                      {/each}
+                    </optgroup>
+                  {/if}
+                {/each}
+              </select>
+            {/if}
+
             <label for="rate">Sample rate</label>
             <select
               id="rate"
@@ -458,6 +870,11 @@
   .rx {
     padding: 12px 14px;
     min-width: 0;
+    background: var(--face);
+    border-color: var(--face-edge);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 2px 10px rgba(0, 0, 0, 0.25);
   }
   .top {
     display: flex;
@@ -467,6 +884,10 @@
   }
   .top h2 {
     margin: 0;
+    font-size: 13px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--face-label);
   }
   .fold {
     margin-left: auto;
@@ -517,71 +938,426 @@
     transform: rotate(45deg) translate(-2px, -2px);
   }
 
-  .main {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(260px, 340px) 230px;
-    gap: 12px 20px;
+  /* ---- hardware keys */
+  .key {
+    position: relative;
+    display: inline-flex;
     align-items: center;
-    margin-top: 10px;
-  }
-  .status {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-  }
-  .ident-text {
-    min-width: 0;
-  }
-  .device-name {
-    overflow-wrap: anywhere;
-  }
-  .device {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 8px 12px;
-    align-items: center;
-    margin-top: 10px;
-    font-size: 14px;
-  }
-  .device label {
-    color: var(--muted);
-  }
-  .device select {
-    min-width: 0;
-  }
-  .freq {
-    display: flex;
-    flex-direction: column;
+    justify-content: center;
     gap: 6px;
-    min-width: 0;
+    min-height: 32px;
+    padding: 9px 10px 5px;
+    border-radius: 4px;
+    border: 1px solid var(--key-edge);
+    background: var(--key);
+    color: var(--key-text);
+    font: 600 11.5px/1 ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.12),
+      0 2px 0 var(--key-edge),
+      0 3px 4px rgba(0, 0, 0, 0.25);
+    transition: transform 0.05s ease, box-shadow 0.05s ease;
   }
-  .freq label {
-    color: var(--muted);
-    font-size: 13px;
+  .key:hover:not(:disabled) {
+    border-color: var(--accent);
   }
-  .row {
-    display: flex;
-    gap: 6px;
+  .key:active:not(:disabled) {
+    transform: translateY(2px);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      0 0 0 var(--key-edge);
   }
-  .row input {
-    flex: 1;
-    min-width: 0;
-    font-size: 18px;
-    font-variant-numeric: tabular-nums;
+  .key.wide {
+    min-width: 84px;
   }
-  .nudges button {
-    flex: 1;
-    min-width: 0;
+  .key.tiny {
+    min-height: 26px;
+    padding: 7px 7px 4px;
+    font-size: 10.5px;
   }
-  .meter {
-    display: grid;
-    justify-items: center;
-    gap: 2px;
+  .key.accent {
+    color: var(--accent);
   }
-  .meter-caption {
-    font-variant-numeric: tabular-nums;
+  /* LED strip on top of a key, like the radio's PROC/MONI keys. */
+  .led {
+    position: absolute;
+    top: 3px;
+    left: 50%;
+    width: 16px;
+    height: 3px;
+    margin-left: -8px;
+    border-radius: 2px;
+    background: var(--led-off);
+  }
+  .led.on {
+    background: var(--led);
+    box-shadow: 0 0 6px var(--led);
+  }
+  .play .led.on {
+    background: var(--ok);
+    box-shadow: 0 0 6px var(--ok);
+  }
+  .mini-play {
+    min-height: 26px;
+    padding: 7px 8px 4px;
+    font-size: 10.5px;
+  }
+  .lbl {
+    font: 600 10px/1 ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--face-label);
   }
 
+  /* ---- display row */
+  .face {
+    display: grid;
+    grid-template-columns: 236px minmax(0, 1fr) auto;
+    grid-template-areas: 'meter lcd knob';
+    gap: 14px;
+    align-items: center;
+    margin-top: 10px;
+  }
+  .meter {
+    grid-area: meter;
+    display: flex;
+    justify-content: center;
+  }
+  .knob-col {
+    grid-area: knob;
+    display: grid;
+    justify-items: center;
+    gap: 8px;
+  }
+  .step {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .step select {
+    padding: 3px 6px;
+    font-size: 12px;
+  }
+
+  .lcd {
+    grid-area: lcd;
+    min-width: 0;
+    display: grid;
+    gap: 4px;
+    padding: 8px 14px 8px;
+    border-radius: 8px;
+    border: 2px solid #05090b;
+    background: var(--lcd);
+    color: var(--lcd-text);
+    box-shadow:
+      inset 0 2px 10px rgba(0, 0, 0, 0.7),
+      0 0 0 3px var(--face-edge);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  .annun {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 10px;
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    color: var(--lcd-text);
+  }
+  .annun span {
+    opacity: 0.12;
+  }
+  .annun .lit {
+    opacity: 1;
+  }
+  .annun .ok.lit {
+    color: #4ade80;
+  }
+  .annun .warn.lit {
+    color: #fbbf24;
+  }
+  .annun .bad.lit {
+    color: #f87171;
+  }
+  .annun .spacer {
+    flex: 1;
+  }
+  .vfo-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    min-width: 0;
+  }
+  .vfo-tag {
+    display: grid;
+    justify-items: center;
+    align-self: center;
+    padding: 2px 5px;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    font-size: 9px;
+    line-height: 1.1;
+    opacity: 0.85;
+  }
+  .vfo-tag strong {
+    font-size: 15px;
+  }
+  .rx-tag {
+    background: var(--lcd-text);
+    color: #071419;
+    border-color: var(--lcd-text);
+    opacity: 1;
+  }
+  .digits {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+    min-width: 0;
+    color: inherit;
+  }
+  button.digits {
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: 4px;
+    cursor: text;
+  }
+  button.digits:hover {
+    background: rgba(200, 243, 255, 0.05);
+  }
+  .main-digits {
+    font-size: clamp(30px, 4.4vw, 52px);
+  }
+  .main-digits .hz {
+    font-size: 0.55em;
+  }
+  .sub-row {
+    color: var(--lcd-sub);
+  }
+  .sub-digits {
+    font-size: clamp(18px, 2vw, 24px);
+  }
+  .sub-digits .hz {
+    font-size: 0.7em;
+  }
+  .mode-tag {
+    align-self: center;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+  .main-row .mode-tag {
+    font-size: 18px;
+  }
+  .afc-read {
+    align-self: center;
+    margin-left: auto;
+    font-size: 12px;
+    color: #4ade80;
+  }
+  .type-freq {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    min-width: 0;
+  }
+  .type-freq input {
+    width: 9em;
+    min-width: 0;
+    font: 600 26px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: rgba(0, 0, 0, 0.35);
+    color: var(--lcd-text);
+    border-color: var(--lcd-dim);
+  }
+  .lcd-foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px 12px;
+    padding-top: 4px;
+    border-top: 1px solid rgba(200, 243, 255, 0.12);
+    font-size: 11px;
+    color: var(--lcd-dim);
+    min-width: 0;
+  }
+  .lcd-foot .dev {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    max-width: 22em;
+  }
+  .lcd-foot .stats {
+    margin-left: auto;
+  }
+
+  /* ---- key groups */
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 22px;
+    margin-top: 14px;
+    align-items: flex-start;
+  }
+  .group {
+    display: grid;
+    gap: 7px;
+    align-content: start;
+    min-width: 0;
+  }
+  .keys {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .key.auto {
+    justify-self: start;
+    font-size: 10.5px;
+    min-height: 26px;
+    padding: 7px 8px 4px;
+  }
+  .slider {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .slider .lbl {
+    width: 2.6em;
+  }
+  .slider input[type='range'] {
+    flex: 1;
+    min-width: 90px;
+    width: 140px;
+  }
+  .slider .num {
+    width: 4.3em;
+    text-align: right;
+    font-size: 12px;
+    color: var(--face-label);
+  }
+  .level {
+    position: relative;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--led-off);
+    overflow: hidden;
+  }
+  .fill {
+    height: 100%;
+    background: var(--ok);
+    transition: width 0.1s linear;
+  }
+  .fill.closed {
+    background: var(--muted);
+  }
+  .sq {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--warn);
+  }
+
+  /* ---- function keys */
+  .fkeys {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 8px 16px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--face-edge);
+  }
+  .fk-row {
+    flex: 1 1 520px;
+    display: grid;
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+    gap: 6px;
+    min-width: 0;
+  }
+  .fk-cell {
+    position: relative;
+    min-width: 0;
+  }
+  .fkey {
+    width: 100%;
+    min-width: 0;
+    height: 46px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+    padding: 9px 6px 5px;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .fnum {
+    font-size: 10px;
+    color: var(--face-label);
+    text-align: left;
+    letter-spacing: 0.08em;
+  }
+  .fname {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: center;
+  }
+  .fkey.empty .fname {
+    color: var(--face-label);
+    font-weight: 400;
+  }
+  .fkey.setting {
+    border-style: dashed;
+    border-color: var(--led);
+  }
+  .fmenu {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 6px);
+    left: 0;
+    display: grid;
+    min-width: 210px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+  .fk-cell:nth-child(n + 6) .fmenu {
+    left: auto;
+    right: 0;
+  }
+  .fmenu button {
+    text-align: left;
+    background: transparent;
+    border-color: transparent;
+    font-size: 13px;
+    padding: 6px 10px;
+  }
+  .fmenu button:hover {
+    background: var(--surface-2);
+  }
+  .fk-side {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+  .fk-side .key {
+    height: 46px;
+  }
+
+  .oob {
+    color: var(--warn);
+    margin: 8px 0 0;
+  }
+
+  /* ---- drawers */
   .drawers {
     display: flex;
     flex-wrap: wrap;
@@ -589,7 +1365,7 @@
     gap: 6px;
     margin-top: 12px;
     padding-top: 10px;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--face-edge);
   }
   .drawer-btn {
     display: inline-flex;
@@ -618,8 +1394,35 @@
     padding: 10px 12px;
     border: 1px solid var(--border);
     border-radius: 8px;
-    background: color-mix(in srgb, var(--surface-2) 45%, transparent);
+    background: var(--surface);
     min-width: 0;
+  }
+  .freq {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+  }
+  .freq label {
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .row input {
+    flex: 1 1 140px;
+    min-width: 0;
+    max-width: 220px;
+    font-size: 17px;
+    font-variant-numeric: tabular-nums;
+  }
+  .ident {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 12px;
+    margin-bottom: 10px;
   }
   .sub-head {
     margin: 12px 0 6px;
@@ -679,19 +1482,61 @@
   }
 
   @media (max-width: 1100px) {
-    .main {
-      grid-template-columns: minmax(0, 1fr) 230px;
-    }
-    .ident {
-      grid-column: 1 / -1;
+    .face {
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas:
+        'lcd lcd'
+        'meter knob';
     }
   }
   @media (max-width: 640px) {
-    .main {
-      grid-template-columns: minmax(0, 1fr);
+    .face {
+      gap: 10px;
     }
     .meter :global(.smeter) {
-      max-width: 220px;
+      max-width: 200px;
+    }
+    .knob-col :global(.knob) {
+      width: 104px !important;
+      height: 104px !important;
+    }
+    .lcd {
+      padding: 6px 10px;
+    }
+    .annun {
+      font-size: 9.5px;
+      gap: 2px 7px;
+    }
+    .main-digits {
+      font-size: clamp(26px, 9vw, 40px);
+    }
+    .main-row .mode-tag {
+      font-size: 14px;
+    }
+    .vfo-row {
+      gap: 7px;
+    }
+    .controls {
+      gap: 12px;
+    }
+    .group.full-sm {
+      flex: 1 1 100%;
+    }
+    .slider input[type='range'] {
+      width: auto;
+    }
+    .fk-row {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      flex-basis: 100%;
+    }
+    .fk-cell:nth-child(n + 6) .fmenu {
+      left: 0;
+      right: auto;
+    }
+    .fk-cell:nth-child(4n) .fmenu,
+    .fk-cell:nth-child(4n - 1) .fmenu {
+      left: auto;
+      right: 0;
     }
     .grid {
       grid-template-columns: auto minmax(0, 1fr);

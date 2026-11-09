@@ -14,6 +14,7 @@
     canTune = false,
     ontune,
     listen = null,
+    sub = null,
     onpick,
     bookmarks = [],
     onbookmark,
@@ -26,6 +27,8 @@
     ontune?: (hz: number) => void;
     /** Channel being listened to, shaded on the spectrum. */
     listen?: Listen | null;
+    /** The other VFO (not heard): a dim dashed marker. */
+    sub?: { hz: number; mode: Listen['mode'] } | null;
     /** Single click: pick a frequency to listen to. */
     onpick?: (hz: number) => void;
     /** Bookmarks, flagged above the spectrum. */
@@ -464,6 +467,27 @@
         ctx.fill();
       }
     };
+    // The other VFO: a dim outline so it can be found again.
+    if (sub && !(listen && sub.hz === listen.hz && sub.mode === listen.mode)) {
+      const [lo, hi] = channelEdges(sub.hz, sub.mode);
+      const x0 = xOf(lo);
+      const x1 = Math.max(x0 + 2 * dpr, xOf(hi));
+      ctx.fillStyle = 'rgba(251,146,60,0.08)';
+      ctx.fillRect(x0, 0, x1 - x0, plotH);
+      const xs = Math.round(xOf(sub.hz)) + 0.5;
+      ctx.strokeStyle = 'rgba(251,146,60,0.75)';
+      ctx.lineWidth = dpr;
+      ctx.setLineDash([3 * dpr, 3 * dpr]);
+      ctx.beginPath();
+      ctx.moveTo(xs, 0);
+      ctx.lineTo(xs, plotH);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(251,146,60,0.95)';
+      ctx.font = `${10 * dpr}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.fillText('B', xs + 3 * dpr, 11 * dpr);
+      ctx.lineWidth = 1;
+    }
     // Listening channel: shaded band plus a line where it is tuned. With AFC
     // following a signal the channel moves and a dashed line keeps the dial.
     if (listen) {
@@ -825,6 +849,8 @@
     void listen?.hz;
     void listen?.mode;
     void listen?.on;
+    void sub?.hz;
+    void sub?.mode;
     void bookmarks;
     void bandGroups;
     void vStart;

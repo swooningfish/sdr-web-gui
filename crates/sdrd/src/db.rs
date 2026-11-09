@@ -68,6 +68,17 @@ CREATE TABLE IF NOT EXISTS bookmarks (
     updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS bookmarks_owner ON bookmarks(owner_id, freq_hz);
+CREATE TABLE IF NOT EXISTS fkeys (
+    -- Each user's programmable function keys on the receiver's front panel
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    slot        INTEGER NOT NULL,
+    name        TEXT    NOT NULL,
+    freq_hz     INTEGER NOT NULL,
+    mode        TEXT    NOT NULL,
+    -- The bookmark it was set from, if any (no FK: a key outlives it)
+    bookmark_id INTEGER,
+    PRIMARY KEY (user_id, slot)
+);
 CREATE TABLE IF NOT EXISTS aircraft_db (
     icao  INTEGER PRIMARY KEY,
     reg   TEXT,

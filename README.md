@@ -325,21 +325,22 @@ Every line's sync pulse is tracked, so slant from clock differences is corrected
 
 ## Live audio
 
-Press **Play** in the *Listen* panel on the Spectrum tab, then click the waterfall (or type a
-frequency) to listen anywhere inside the tuned band. The channel is shaded on the spectrum.
+Press **Play** on the receiver's front panel, then click the waterfall, turn the tuning knob or
+click the big frequency on the display to type one, to listen anywhere inside the tuned band.
+The channel is shaded on the spectrum.
 
 - Modes: **NFM**, **AM**, **WFM** (broadcast, 50 µs de-emphasis, RDS), **USB**, **LSB**,
   **CW** (a carrier on the dial frequency is heard as a 700 Hz note).
-- **Decode CW** shows Morse as text under the Listen panel (5–40 WPM, speed found
+- **CW dec** shows Morse as text under the spectrum (5–40 WPM, speed found
   automatically). It also reads the Morse ident an FM repeater sends after an over (NFM).
-- **Decode digital** (NFM) identifies and decodes digital voice: DMR, D-STAR, System Fusion
-  (YSF), NXDN, P25, dPMR and M17, detected automatically. The panel shows who is on air
+- **Digital** (NFM) identifies and decodes digital voice: DMR, D-STAR, System Fusion
+  (YSF), NXDN, P25, dPMR and M17, detected automatically. The strip under the spectrum shows who is on air
   (callsign or radio ID, talkgroup or destination, colour code / NAC / RAN / CAN, talker alias
   and text messages), a log of recent calls, and optionally DSD-neo's console. It uses
   [DSD-neo](https://github.com/arancormonk/dsd-neo), one process per listener, fed the raw FM
   discriminator. Decoded voice is not played (the AMBE/IMBE vocoders are patent-encumbered);
   you hear the FM audio as usual.
-- **RDS:** in WFM the panel shows the station name, programme type and radio text.
+- **RDS:** in WFM the strip under the spectrum shows the station name, programme type and radio text.
 - **Squelch**, **noise reduction** (spectral; removes steady hiss), **volume** and **mute**.
   Settings are remembered per browser; clicks snap to the mode's channel raster.
 - Audio is demodulated per listener in sdrd and streamed over the existing WebSocket as
@@ -352,8 +353,8 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
 
 - **Band plan:** the strip above the spectrum shows UK amateur bands with their RSGB
   sub-bands, plus broadcast, aviation, marine, CB/PMR446, ISM/SRD and satellite bands.
-  Choose groups under **Band plan**; hover to name the band. With *Pick the mode from the
-  band plan* (Listen panel), clicking airband picks AM, broadcast FM picks WFM, and so on.
+  Choose groups under **Band plan**; hover to name the band. With **Auto mode** on the
+  front panel, clicking airband picks AM, broadcast FM picks WFM, and so on.
 - **Moving along the band (admins):** drag the spectrum, swipe sideways on a trackpad,
   scroll the mouse wheel once the spectrum has focus (click it first), or use the
   Left/Right arrow keys (Shift for bigger steps). Up/Down step the listening frequency.
@@ -374,24 +375,39 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
   marker to move the radio) and click the level (e.g. **×8**) to fit the whole range
   again. An arrow at the edge points to the radio when it's off the part shown. Hide it
   under **Band plan**.
-- **Receiver bar:** at the top of every page, under the tabs: the device, centre frequency
-  and nudges, and an analogue **S-meter** for the channel you're listening to (read from the
-  spectrum, so it works without audio; dBm is estimated from the gain, with a per-browser
-  trim and an optional IARU VHF scale under *Gain & settings*). **Presets & rotation**,
-  **Bookmarks** and **Gain & settings** fold out below it; **Hide** folds the whole bar to
-  one line. Each browser remembers what's open.
-- **Presets & rotation:** the built-in presets plus every rotation profile as a quick-tune
-  button, and the rotation switch.
-- **Bookmarks:** flags above the spectrum and a list in the receiver bar; click one to
-  listen (admins also retune if it's outside the band). **★ Save** keeps the current
-  frequency. The **station list** is shared with everyone (admins edit it); **mine** are
-  yours alone. **Calling** lists standard calling frequencies (IARU Region 1 / UK band
-  plans) and **Repeaters** lists repeaters near the station from RepeaterBook (see
-  [Settings](#settings)); ☆ saves one as a bookmark. **Manage** opens Settings →
-  Bookmarks: edit, delete several, export CSV, or import a CSV (our own export, CHIRP or
-  gqrx `bookmarks.csv`).
+- **Receiver front panel:** at the top of every page, laid out like a transceiver. The
+  display shows **VFO A** and **VFO B** (the one you hear is the big one), annunciators
+  (BUSY when the squelch is open, SQL, NR, AFC, CW-DEC, DIG with the sync found, MUTE, OUT
+  when the channel is outside the sampled band) and the centre frequency, rate, gain and
+  device. Beside it are an analogue **S-meter** for the channel you're listening to (read
+  from the spectrum, so it works without audio; dBm is estimated from the gain, with a
+  per-browser trim and an optional IARU VHF scale under *Gain & settings*) and the
+  **tuning knob**: drag it round, scroll over it, or focus it and use the arrow keys
+  (Page Up/Down for ten steps), with the **step** below it. Click the big frequency to
+  type one. Keys below: **Play/Stop**, **Mute**, AF volume, squelch; the mode keys and
+  **Auto mode**; **A / B** swaps which VFO you hear and **A=B** copies it to the other (VFO B
+  is a dashed orange marker on the spectrum); **NR**, **AFC**, **CW dec** and **Digital**.
+  **Centre & presets** (centre frequency and nudges, presets, rotation profiles and the
+  rotation switch) and **Gain & settings** fold out below; **Hide** folds the whole panel
+  to one line with a Play key and a bar meter. Each browser remembers what's open.
+- **Function keys F1–F8:** each recalls a frequency and mode, usually a bookmark. Click an
+  empty key to pick a bookmark for it; right-click (or long-press on a touch screen) a key,
+  or turn on **F-Set** and click it, to pick another, store what you're hearing, or clear
+  it. Keys are saved per user on the server, so they follow you to any browser. A key keeps
+  its own copy, so it still works if its bookmark is deleted; while the bookmark exists the
+  key follows its edits. The lit key is the one you're on.
+- **Bookmarks:** flags above the spectrum, and a manager that slides out from the right
+  (**Bookmarks** on the front panel; Escape closes it). Bookmarks are tiles, grouped by
+  group (or band, or repeater mode); click one to listen (admins also retune if it's
+  outside the band). **★ Save** keeps the current frequency. The **station list** is shared
+  with everyone (admins edit it); **mine** are yours alone. **Calling** lists standard
+  calling frequencies (IARU Region 1 / UK band plans) and **Repeaters** lists repeaters near
+  the station from RepeaterBook (see [Settings](#settings)); ☆ saves one as a bookmark.
+  **Manage**: click tiles to select several and delete them, ✎ to edit, **F** to put one
+  on a function key, and export CSV or import a CSV (our own export, CHIRP or gqrx
+  `bookmarks.csv`).
 - **Harmonics check (admins):** click a short-range device's signal (a key fob, sensor or
-  telemetry link) so you're listening to it, then **Check harmonics** in the side column.
+  telemetry link) so you're listening to it, then **Check harmonics** under the spectrum.
   It measures the carrier, retunes to the 2nd–5th harmonics (as far as the dongle reaches),
   watches each for a few seconds and rates each one **Good**, **Medium** or **Bad** against
   **Ofcom** (UK SRD bands, ETSI EN 300 220-1 spurious limits) and **FCC** Part 15
@@ -410,8 +426,8 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
 
 Admins get **Settings**, split into tabs: Receiver (SDR devices), Decoders (rtl_433, APRS,
 SSTV), Rotation (profiles), Passes (location, satellites, auto-switch, TLEs, test pass),
-Bookmarks, Integrations (MQTT / Home Assistant, RepeaterBook), Users and System (read-only
-server settings). Viewers get Settings with just the Bookmarks tab, to manage their own.
+Integrations (MQTT / Home Assistant, RepeaterBook), Users and System (read-only server
+settings). Everyone manages their bookmarks and function keys from the receiver.
 
 **RepeaterBook** (Integrations) fills *Bookmarks → Repeaters* with repeaters within a radius
 (default 1 mile) of the station location. RepeaterBook only serves approved clients:

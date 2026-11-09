@@ -27,6 +27,7 @@ mod db;
 mod decoders;
 mod dsp;
 mod events;
+mod fkeys;
 mod mqtt;
 mod orbit;
 mod recorder;

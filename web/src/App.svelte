@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import { api, type RadioState, type User } from './lib/api';
   import { Stream } from './lib/stream';
   import { formatMHz } from './lib/format';
@@ -10,9 +10,12 @@
   import ReceiverBar from './components/ReceiverBar.svelte';
   import PassNotice from './components/PassNotice.svelte';
   import { schedule } from './lib/schedule.svelte';
-  import ListenPanel from './components/ListenPanel.svelte';
   import HarmonicsPanel from './components/HarmonicsPanel.svelte';
+  import DecoderPanel from './components/DecoderPanel.svelte';
+  import BookmarkDrawer from './components/BookmarkDrawer.svelte';
   import { MODES, snap, type AudioMode, type Listen } from './lib/audio';
+  import { Listener } from './lib/listener.svelte';
+  import { fkeys } from './lib/fkeys.svelte';
   import { ALL_GROUPS, modeAt } from './lib/bandplan';
   import { bookmarks, type Bookmark } from './lib/bookmarks.svelte';
   import Sensors from './components/Sensors.svelte';
@@ -31,12 +34,17 @@
   >('spectrum');
   let settingsTab = $state<SettingsTab>('receiver');
   let waterfall = $state<ReturnType<typeof Waterfall> | undefined>();
-  let listenPanel = $state<ReturnType<typeof ListenPanel> | undefined>();
   let harmonics = $state<ReturnType<typeof HarmonicsPanel> | undefined>();
   let listen = $state<Listen>({ on: false, hz: 145_800_000, mode: 'nfm' });
-  let autoMode = $state(true);
   const ALL_BANDS = new Set(ALL_GROUPS);
   let stream: Stream | null = null;
+  /** Audio, the two VFOs and decoders: driven by the front panel. */
+  const rx = new Listener(listen, (m) => stream?.send(m));
+  onDestroy(rx.attach());
+  /** The bookmark manager (slides out over the page). */
+  let bmOpen = $state(false);
+  let bmAssign = $state<number | null>(null);
+  let bmAdding = $state(false);
   let sensors = $state<ReturnType<typeof Sensors> | undefined>();
   let dashboard = $state<ReturnType<typeof Dashboard> | undefined>();
   let aprs = $state<ReturnType<typeof Aprs> | undefined>();
@@ -58,10 +66,17 @@
     checking = false;
   });
 
-  // Bookmarks follow whoever is signed in.
+  // Bookmarks and F-keys follow whoever is signed in.
   $effect(() => {
-    if (user) bookmarks.load();
-    else bookmarks.clear();
+    if (user) {
+      bookmarks.load();
+      fkeys.load();
+    } else {
+      bookmarks.clear();
+      fkeys.reset();
+      untrack(() => rx.stop());
+      bmOpen = false;
+    }
   });
 
   // One WebSocket per signed-in session.
@@ -86,12 +101,12 @@
         }
       },
       onSstvRows: (r) => sstv?.rows(r),
-      onAudio: (f) => listenPanel?.feed(f),
-      onAudioStatus: (kind, message) => listenPanel?.status(kind, message),
-      onDecoded: (m) => listenPanel?.decoded(m),
+      onAudio: (f) => rx.feed(f),
+      onAudioStatus: (kind, message) => rx.status(kind, message),
+      onDecoded: (m) => rx.decoded(m),
       onConnection: (c) => {
         wsUp = c;
-        if (c) listenPanel?.reconnected();
+        if (c) rx.reconnected();
       },
       onAuthLost: () => {
         user = null;
@@ -164,7 +179,7 @@
 
   /** Listen at `hz` (clicked on the spectrum), in the band plan's mode if wanted. */
   function pick(hz: number) {
-    if (autoMode) {
+    if (rx.autoMode) {
       const m = modeAt(hz, ALL_BANDS);
       if (m) listen.mode = m;
     }
@@ -175,9 +190,14 @@
 
   /** Listen to a bookmark; admins also retune when it's outside the band. */
   function selectBookmark(b: Bookmark) {
-    listen.hz = b.freq_hz;
-    listen.mode = b.mode;
-    bringIntoBand(b.freq_hz, b.mode, 0.45);
+    tuneListen(b.freq_hz, b.mode);
+  }
+
+  /** Front panel (knob, typed frequency, F-keys): listen at `hz`. */
+  function tuneListen(hz: number, mode?: AudioMode) {
+    if (mode) listen.mode = mode;
+    listen.hz = hz;
+    bringIntoBand(hz, listen.mode, 0.45);
   }
 
   /**
@@ -229,8 +249,9 @@
       <button type="button" class="tab" class:active={view === 'aircraft'} onclick={() => (view = 'aircraft')}>Aircraft</button>
       <button type="button" class="tab" class:active={view === 'sstv'} onclick={() => (view = 'sstv')}>SSTV</button>
       <button type="button" class="tab" class:active={view === 'passes'} onclick={() => (view = 'passes')}>Passes</button>
-      <!-- Viewers get Settings too, with just their bookmarks. -->
-      <button type="button" class="tab" class:active={view === 'settings'} onclick={() => (view = 'settings')}>Settings</button>
+      {#if isAdmin}
+        <button type="button" class="tab" class:active={view === 'settings'} onclick={() => (view = 'settings')}>Settings</button>
+      {/if}
     </nav>
     <div class="status-bar">
       <span class="pill" title={wsUp ? 'Live stream connected' : 'Reconnecting…'}>
@@ -260,11 +281,16 @@
         bind:this={receiver}
         {radio}
         {isAdmin}
-        {listen}
-        onbookmark={selectBookmark}
-        onmanage={() => {
-          settingsTab = 'bookmarks';
-          view = 'settings';
+        {rx}
+        ontune={tuneListen}
+        onbookmarks={(slot) => {
+          bmAssign = slot ?? null;
+          bmOpen = true;
+        }}
+        onsavebookmark={() => {
+          bmAssign = null;
+          bmAdding = true;
+          bmOpen = true;
         }}
         onsettings={() => {
           settingsTab = 'rotation';
@@ -280,6 +306,7 @@
           canTune={isAdmin && !!radio?.can_tune}
           ontune={tuneTo}
           {listen}
+          sub={rx.other}
           onpick={pick}
           bookmarks={bookmarks.list}
           onbookmark={selectBookmark}
@@ -289,10 +316,8 @@
           onrate={(r) => api.configure({ sample_rate: r }).catch((e) => console.warn('rate change failed', e))}
         />
       </div>
-      <div class="side">
-        <ListenPanel bind:this={listenPanel} {radio} bind:listen bind:autoMode send={(m) => stream?.send(m)} />
-        <HarmonicsPanel bind:this={harmonics} {radio} {listen} {isAdmin} />
-      </div>
+      <DecoderPanel {rx} />
+      <HarmonicsPanel bind:this={harmonics} {radio} {listen} {isAdmin} />
     </div>
     <!-- Kept mounted so live events keep arriving while another tab is open. -->
     <div hidden={view !== 'dashboard'}>
@@ -324,21 +349,20 @@
           view = 'settings';
         }} />
     </div>
-    {#if view === 'settings'}
-      <Settings
-        {radio}
-        me={user}
-        bind:tab={settingsTab}
-        {listen}
-        onlisten={(b) => {
-          selectBookmark(b);
-          view = 'spectrum';
-        }}
-      />
+    {#if view === 'settings' && isAdmin}
+      <Settings {radio} me={user} bind:tab={settingsTab} />
     {:else if view === 'profile'}
       <Profile {user} onlogout={logout} />
     {/if}
   </main>
+  <BookmarkDrawer
+    bind:open={bmOpen}
+    bind:assign={bmAssign}
+    bind:adding={bmAdding}
+    {listen}
+    {isAdmin}
+    onselect={selectBookmark}
+  />
 {/if}
 
 <style>
@@ -420,20 +444,12 @@
   }
   .spectrum-view {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 320px;
+    grid-template-columns: minmax(0, 1fr);
     gap: 16px;
     align-items: start;
   }
   .spectrum-view[hidden] {
     display: none;
-  }
-  .side {
-    display: grid;
-    /* One column no wider than the space: long lists and forms wrap or
-       scroll inside their panels instead of widening the page. */
-    grid-template-columns: minmax(0, 1fr);
-    gap: 16px;
-    min-width: 0;
   }
   .wf-panel {
     min-width: 0;
@@ -442,11 +458,6 @@
     min-height: 100vh;
     display: grid;
     place-items: center;
-  }
-  @media (max-width: 900px) {
-    .spectrum-view {
-      grid-template-columns: minmax(0, 1fr);
-    }
   }
   @media (max-width: 560px) {
     .hide-sm {

@@ -1,4 +1,5 @@
 import type { Bookmark, BookmarkInput, ImportResult } from './bookmarks.svelte';
+import type { FKey, FKeyInput } from './fkeys.svelte';
 
 export type Role = 'admin' | 'viewer';
 
@@ -556,6 +557,9 @@ export const api = {
   updateBookmark: (id: number, b: BookmarkInput) => req<{ ok: boolean }>('PUT', `/bookmarks/${id}`, b),
   deleteBookmarks: (ids: number[]) => req<{ deleted: number; skipped: number }>('POST', '/bookmarks/delete', { ids }),
   importBookmarks: (csv: string, shared: boolean) => req<ImportResult>('POST', '/bookmarks/import', { csv, shared }),
+  fkeys: () => req<FKey[]>('GET', '/fkeys'),
+  setFkey: (slot: number, k: FKeyInput) => req<{ ok: boolean }>('PUT', `/fkeys/${slot}`, k),
+  clearFkey: (slot: number) => req<{ ok: boolean }>('DELETE', `/fkeys/${slot}`),
   geocode: (q: string) =>
     req<{ places: { name: string; lat_deg: number; lon_deg: number }[] }>(
       'GET',
