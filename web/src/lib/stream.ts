@@ -18,7 +18,7 @@ export interface StreamHandlers {
   onAudio: (f: AudioFrame) => void;
   /** audio_started / audio_stopped / audio_error replies. */
   onAudioStatus: (kind: string, message: string | null) => void;
-  /** Decoded Morse (`cw`) or RDS (`rds`) for our listener. */
+  /** Decoded Morse (`cw`), RDS (`rds`), AFC or digital voice for our listener. */
   onDecoded: (msg: DecodedMsg) => void;
   onConnection: (connected: boolean) => void;
   onAuthLost: () => void;
@@ -49,7 +49,52 @@ export interface AfcMsg {
   locked: boolean;
 }
 
-export type DecodedMsg = CwMsg | RdsMsg | AfcMsg;
+/** A call on air, as dsd-neo sees it. */
+export interface DigitalCall {
+  slot: number;
+  /** DMR, P25p1, NXDN, M17, … (may be empty). */
+  protocol: string;
+  /** Callsign or radio ID; null until decoded. */
+  src: string | null;
+  /** Talkgroup, destination callsign or radio. */
+  dst: string | null;
+  name: string;
+  enc: boolean;
+  emergency: boolean;
+}
+
+/** A row of dsd-neo's event history. */
+export interface DigitalEvent {
+  /** Stable for the row's life; an `update` replaces the row with this id. */
+  id: string;
+  update: boolean;
+  /** Unix seconds the call started. */
+  time: number;
+  protocol: string;
+  src: string | null;
+  dst: string | null;
+  /** Colour code, NAC, RAN or CAN, e.g. "CC 1" (may be empty). */
+  code: string;
+  alias: string;
+  text: string;
+  gps: string;
+  /** dsd-neo's one-line description. */
+  summary: string;
+  enc: boolean;
+  emergency: boolean;
+}
+
+/** Digital voice decoding for our listener (one of the fields is set). */
+export interface DigitalMsg {
+  type: 'digital';
+  calls?: DigitalCall[];
+  event?: DigitalEvent;
+  /** New console lines. */
+  log?: string[];
+  error?: string;
+}
+
+export type DecodedMsg = CwMsg | RdsMsg | AfcMsg | DigitalMsg;
 
 /** Live SSTV rows (layout documented in decoders/sstv.rs). */
 export interface SstvRows {
@@ -145,7 +190,8 @@ export class Stream {
           if (m.type === 'radio') this.h.onRadio(m.state as RadioState);
           else if (m.type === 'event') this.h.onEvent(m.device as Device, m.event as EventRow);
           else if (typeof m.type === 'string' && m.type.startsWith('audio_')) this.h.onAudioStatus(m.type, m.message ?? null);
-          else if (m.type === 'cw' || m.type === 'rds' || m.type === 'afc') this.h.onDecoded(m as DecodedMsg);
+          else if (m.type === 'cw' || m.type === 'rds' || m.type === 'afc' || m.type === 'digital')
+            this.h.onDecoded(m as DecodedMsg);
         } catch {
           /* ignore malformed */
         }

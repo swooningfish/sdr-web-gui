@@ -3,7 +3,7 @@
   import type { RadioState } from '../lib/api';
   import { AFC_MODES, AudioPlayer, MODES, type AudioFrame, type Listen, type PlayerStats } from '../lib/audio';
   import { formatMHz, parseFrequency } from '../lib/format';
-  import type { DecodedMsg, RdsMsg } from '../lib/stream';
+  import type { DecodedMsg, DigitalCall, DigitalEvent, RdsMsg } from '../lib/stream';
 
   let {
     radio,
@@ -42,6 +42,8 @@
   let nr = $state<boolean>(saved.nr ?? false);
   let cwOn = $state<boolean>(saved.cw ?? false);
   let afcOn = $state<boolean>(saved.afc ?? false);
+  let digitalOn = $state<boolean>(saved.digital ?? false);
+  let consoleOn = $state<boolean>(saved.dsdConsole ?? false);
   if (typeof saved.hz === 'number') listen.hz = saved.hz;
   if (typeof saved.mode === 'string') listen.mode = saved.mode;
   if (typeof saved.autoMode === 'boolean') autoMode = saved.autoMode;
@@ -53,9 +55,48 @@
   let afcLocked = $state(false);
   const afcWorks = $derived(AFC_MODES.includes(listen.mode));
   const afcActive = $derived(afcOn && afcWorks);
+  const digitalActive = $derived(digitalOn && listen.mode === 'nfm');
+
+  /** Digital voice: calls on air, recent calls (newest first) and dsd-neo's console. */
+  let onAir = $state<DigitalCall[]>([]);
+  let heard = $state<(DigitalEvent & { hz: number })[]>([]);
+  let dsdLog = $state<string[]>([]);
+  let dsdErr = $state<string | null>(null);
+  /** Mode dsd-neo keeps finding frame sync for (e.g. "DMR", "M17") and when it
+   * last did. Noise gives the odd false sync, so a mode counts only after
+   * SYNC_RUN syncs in a row within SYNC_GAP_MS of each other. */
+  let sync = $state<{ mode: string; at: number } | null>(null);
+  let syncRun = { mode: '', n: 0, at: 0 };
+  const SYNC_RUN = 3;
+  const SYNC_GAP_MS = 500;
+  function sawSync(mode: string) {
+    const t = Date.now();
+    syncRun = mode === syncRun.mode && t - syncRun.at < SYNC_GAP_MS ? { mode, n: syncRun.n + 1, at: t } : { mode, n: 1, at: t };
+    if (syncRun.n >= SYNC_RUN) sync = { mode, at: t };
+  }
+  let now = $state(Date.now());
+  let logBox = $state<HTMLElement | undefined>();
+  const syncFresh = $derived(!!sync && now - sync.at < 1500);
+  $effect(() => {
+    if (!digitalActive || !listen.on) return;
+    const t = setInterval(() => (now = Date.now()), 500);
+    return () => clearInterval(t);
+  });
 
   $effect(() => {
-    const prefs = { squelchOn, squelch, volume, nr, cw: cwOn, afc: afcOn, autoMode, hz: listen.hz, mode: listen.mode };
+    const prefs = {
+      squelchOn,
+      squelch,
+      volume,
+      nr,
+      cw: cwOn,
+      afc: afcOn,
+      digital: digitalOn,
+      dsdConsole: consoleOn,
+      autoMode,
+      hz: listen.hz,
+      mode: listen.mode,
+    };
     try {
       localStorage.setItem(PREFS, JSON.stringify(prefs));
     } catch {
@@ -118,6 +159,7 @@
       nr,
       cw: cwOn && listen.mode !== 'wfm',
       afc: afcActive,
+      digital: digitalActive,
     };
   }
 
@@ -137,6 +179,24 @@
       if (!afcActive || !listen.on) return;
       listen.afc = m.offset_hz;
       afcLocked = m.locked;
+    } else if (m.type === 'digital') {
+      if (!digitalActive) return;
+      if (m.error !== undefined) dsdErr = m.error;
+      if (m.calls) onAir = m.calls;
+      if (m.event) {
+        const e = { ...m.event, hz: listen.hz };
+        const i = heard.findIndex((h) => h.id === e.id);
+        if (i >= 0) heard[i] = { ...e, hz: heard[i].hz };
+        else heard = [e, ...heard].slice(0, 50);
+      }
+      if (m.log) {
+        dsdErr = null;
+        dsdLog = [...dsdLog, ...m.log].slice(-300);
+        for (const l of m.log) {
+          const s = /Sync:\s*[+-]?([A-Za-z0-9-]+)/.exec(l);
+          if (s) sawSync(s[1]);
+        }
+      }
     } else if (m.type === 'cw') {
       cwText = (cwText + m.text).slice(-800);
       cwWpm = m.wpm;
@@ -145,12 +205,37 @@
     }
   }
 
-  // A new station: forget the old one's RDS.
+  // A new station: forget the old one's RDS and what was on air.
   $effect(() => {
     void listen.hz;
     void listen.mode;
     rds = null;
+    onAir = [];
+    sync = null;
   });
+
+  // Digital decoding turned off or on: start afresh.
+  $effect(() => {
+    void digitalActive;
+    onAir = [];
+    sync = null;
+    dsdErr = null;
+  });
+
+  // Keep the newest console line in view.
+  $effect(() => {
+    void dsdLog;
+    void consoleOn;
+    if (logBox) logBox.scrollTop = logBox.scrollHeight;
+  });
+
+  function party(p: string | null): string {
+    return p ?? '?';
+  }
+
+  function clock(unix: number): string {
+    return new Date(unix * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
 
   // Keep the newest Morse in view.
   $effect(() => {
@@ -327,6 +412,17 @@
         : 'AFC works in NFM and AM'}
       onclick={() => (afcOn = !afcOn)}>AFC</button
     >
+    <button
+      type="button"
+      class="small"
+      class:active={digitalActive}
+      aria-pressed={digitalActive}
+      disabled={listen.mode !== 'nfm'}
+      title={listen.mode === 'nfm'
+        ? 'Decode digital voice: DMR, D-STAR, System Fusion, NXDN, P25, dPMR and M17 (callsigns, IDs, talkgroups)'
+        : 'Digital decoding works in NFM'}
+      onclick={() => (digitalOn = !digitalOn)}>Decode digital</button
+    >
   </div>
   {#if afcActive && listen.on}
     <p class="afc small-text" class:muted={!afcLocked}>
@@ -350,6 +446,83 @@
             >{listen.on ? 'Listening for Morse…' : 'Press Play to decode Morse.'}</span
           >{/if}
       </div>
+    </div>
+  {/if}
+
+  {#if digitalActive}
+    <div class="decoder digital">
+      <div class="dec-head small-text">
+        <span class="muted">
+          Digital voice{#if listen.on && syncFresh && sync}
+            · <span class="sync">{sync.mode} sync</span>{/if}
+        </span>
+        <span class="row">
+          <button
+            type="button"
+            class="small"
+            class:active={consoleOn}
+            aria-pressed={consoleOn}
+            title="Show what the decoder prints: every frame it syncs to"
+            onclick={() => (consoleOn = !consoleOn)}>Console</button
+          >
+          {#if heard.length || dsdLog.length}
+            <button
+              type="button"
+              class="small"
+              onclick={() => {
+                heard = [];
+                dsdLog = [];
+              }}>Clear</button
+            >
+          {/if}
+        </span>
+      </div>
+      {#if dsdErr}
+        <p class="warn small-text">{dsdErr}</p>
+      {:else if !listen.on}
+        <p class="small-text muted">Press Play to decode digital voice.</p>
+      {:else if onAir.length}
+        {#each onAir as c (c.slot)}
+          <div class="onair" class:emergency={c.emergency}>
+            {#if c.protocol}<span class="badge">{c.protocol}</span>{/if}
+            {#if onAir.length > 1}<span class="small-text muted">TS{c.slot + 1}</span>{/if}
+            <strong>{party(c.src)}</strong>
+            <span class="muted">→</span>
+            <span>{party(c.dst)}</span>
+            {#if c.name && c.name !== c.dst && c.name !== c.src}<span class="small-text muted">{c.name}</span>{/if}
+            {#if c.enc}<span class="tag">encrypted</span>{/if}
+            {#if c.emergency}<span class="tag warn">emergency</span>{/if}
+          </div>
+        {/each}
+      {:else}
+        <p class="small-text muted">
+          {syncFresh ? 'Receiving…' : 'Listening for DMR, D-STAR, YSF, NXDN, P25, dPMR and M17…'}
+        </p>
+      {/if}
+      {#if heard.length}
+        <ul class="heard small-text" aria-label="Recent digital calls">
+          {#each heard as e (e.id)}
+            <li title={e.summary}>
+              <span class="muted num-t">{clock(e.time)}</span>
+              {#if e.protocol}<span class="badge">{e.protocol}</span>{/if}
+              <strong>{party(e.src)}</strong>
+              <span class="muted">→ {party(e.dst)}</span>
+              {#if e.code}<span class="muted">{e.code}</span>{/if}
+              {#if e.enc}<span class="tag">encrypted</span>{/if}
+              {#if e.emergency}<span class="tag warn">emergency</span>{/if}
+              {#if e.hz !== listen.hz}<span class="muted">{formatMHz(e.hz, 4)}</span>{/if}
+              {#if e.alias}<span class="extra">“{e.alias}”</span>{/if}
+              {#if e.text}<span class="extra">{e.text}</span>{/if}
+              {#if e.gps}<span class="extra muted">{e.gps}</span>{/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      {#if consoleOn}
+        <pre class="console" bind:this={logBox} aria-label="Decoder console">{#if dsdLog.length}{dsdLog.join(
+              '\n',
+            )}{:else}<span class="muted">Nothing decoded yet.</span>{/if}</pre>
+      {/if}
     </div>
   {/if}
 
@@ -519,5 +692,79 @@
   }
   .pi {
     margin: 4px 0 0;
+  }
+  .digital .row {
+    gap: 4px;
+  }
+  .digital .active {
+    background: var(--accent);
+    color: var(--accent-text);
+    border-color: var(--accent);
+  }
+  .sync {
+    color: var(--ok);
+  }
+  .onair {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 8px;
+    margin: 4px 0;
+    font-size: 16px;
+    overflow-wrap: anywhere;
+  }
+  .onair.emergency strong {
+    color: var(--warn);
+  }
+  .badge {
+    padding: 0 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    background: var(--accent);
+    color: var(--accent-text);
+  }
+  .tag {
+    padding: 0 6px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    font-size: 11px;
+  }
+  .tag.warn {
+    border-color: var(--warn);
+  }
+  .heard {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 6px 0 0;
+    border-top: 1px solid var(--border);
+    max-height: 10em;
+    overflow-y: auto;
+  }
+  .heard li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 6px;
+    padding: 2px 0;
+    overflow-wrap: anywhere;
+  }
+  .num-t {
+    font-variant-numeric: tabular-nums;
+  }
+  .extra {
+    flex-basis: 100%;
+    padding-left: 1em;
+  }
+  .console {
+    margin: 8px 0 0;
+    max-height: 12em;
+    overflow: auto;
+    padding: 6px;
+    border-radius: 6px;
+    background: var(--surface);
+    font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre;
   }
 </style>

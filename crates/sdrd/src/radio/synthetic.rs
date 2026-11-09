@@ -39,6 +39,8 @@ enum Kind {
     SrdSpur,
     /// An unmodulated carrier that's always on.
     Steady,
+    /// M17 digital voice (4800 Bd 4FSK) from GB7SIM every `period` s.
+    M17 { period: f64 },
     /// An aircraft's ADS-B squitters on 1090 MHz (index into the flights).
     Aircraft { idx: usize },
 }
@@ -74,6 +76,20 @@ const BEACON_TEXT: &str = "VVV DE GB3SIM IO91 QRV";
 const REPEATER_IDENT: &str = "GB3SR";
 /// Repeater cycle: talk until 6 s, ident from 6.5 s, carrier off after.
 const REPEATER_TALK: f64 = 6.0;
+
+/// One M17 transmission (LSF, stream frames, EOT) from GB7SIM to all, made
+/// with dsd-neo's encoder (`-fZ -M M17:0:GB7SIM:ALL`): 4FSK symbols, four
+/// per byte, low bits first, as indexes into `M17_LEVELS`.
+const M17_SYMBOLS: &[u8] = include_bytes!("m17_sim.sym");
+const M17_LEVELS: [f64; 4] = [-3.0, -1.0, 1.0, 3.0];
+const M17_BAUD: f64 = 4_800.0;
+/// Deviation per symbol unit: ±3 is ±2.4 kHz.
+const M17_DEV: f64 = 800.0;
+
+fn m17_symbol(k: usize) -> Option<f64> {
+    let b = *M17_SYMBOLS.get(k / 4)?;
+    Some(M17_LEVELS[((b >> (2 * (k % 4))) & 3) as usize])
+}
 
 struct Emitter {
     freq_hz: f64,
@@ -162,6 +178,12 @@ impl SynthGen {
                 e(437_550_000.0, 0.12, Kind::Doppler { span_hz: 10_000.0, period: 120.0 }),
                 e(144_470_000.0, 0.08, Kind::Beacon { period: 20.0, wpm: 16.0 }),
                 e(145_712_500.0, 0.2, Kind::Repeater { period: 30.0 }),
+                {
+                    // The UK digital voice calling channel.
+                    let mut em = e(145_375_000.0, 0.15, Kind::M17 { period: 15.0 });
+                    em.next = 2.0;
+                    em
+                },
                 {
                     let mut em = e(96_100_000.0, 0.3, Kind::Broadcast);
                     em.rds = rds::encode::differential(&rds::encode::groups(
@@ -363,6 +385,25 @@ impl SynthGen {
                     }
                     Kind::SrdSpur => (offset, t.rem_euclid(1.0) < 0.8),
                     Kind::Steady => (offset, true),
+                    Kind::M17 { period } => {
+                        if t >= em.next {
+                            let late = t - em.next;
+                            em.next += period * ((late / period).floor() + 1.0);
+                            em.tx_start = t - late;
+                        }
+                        // Raised-cosine glide between symbol centres: no
+                        // intersymbol interference where the receiver samples.
+                        let pos = (t - em.tx_start) * M17_BAUD;
+                        let k = pos as usize;
+                        match m17_symbol(k) {
+                            Some(a) => {
+                                let b = m17_symbol(k + 1).unwrap_or(a);
+                                let w = 0.5 - 0.5 * (std::f64::consts::PI * pos.fract()).cos();
+                                (offset + M17_DEV * (a + (b - a) * w), true)
+                            }
+                            None => (offset, false),
+                        }
+                    }
                     Kind::Aircraft { idx } => {
                         if t >= em.next {
                             let wall = wall_secs();

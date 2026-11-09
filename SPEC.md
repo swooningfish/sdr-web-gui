@@ -121,6 +121,12 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
      plan, bookmarks, the sampled band and the view, and moves the radio on click or drag;
      it zooms (buttons, Ctrl + wheel, pinch) down to a few MHz across, pans by dragging,
      and fits the whole range again from its level button.
+   - Digital voice decoding (NFM, optional): the raw discriminator, resampled to 48 kHz,
+     goes to a per-listener DSD-neo (`SDRD_DSD_PATH`, built into the image, pinned) that
+     auto-detects DMR, D-STAR, YSF, NXDN, P25, dPMR and M17. Its JSON telemetry API gives
+     the calls on air and the event history (IDs/callsigns, talkgroup, CC/NAC/RAN/CAN,
+     alias, text); its console is shown on request. No decoded voice is played. Simulator:
+     M17 from GB7SIM on 145.375 every 15 s.
 8. **ADS-B aircraft map** ✅
    - Receiver: an optional second dongle kept on 1090 MHz at 2.4 MS/s (its own gain, PPM and
      bias-T), alongside the main one; the two can't open the same dongle. Without one,

@@ -18,6 +18,9 @@
 //! nudged towards it, then a sharp filter cuts the channel back out. It only
 //! moves while something coherent is in the window, so it holds its place
 //! through gaps instead of wandering off on noise.
+//!
+//! With `Params::digital` (NFM) the raw discriminator output, before the DC
+//! block and audio filters, is kept for the digital voice decoder.
 
 use num_complex::{Complex, Complex32};
 use serde::{Deserialize, Serialize};
@@ -114,6 +117,8 @@ pub struct Params {
     pub cw: bool,
     /// Automatic frequency control: follow a drifting signal (NFM and AM).
     pub afc: bool,
+    /// Decode digital voice (DMR, D-STAR, YSF, …) from the discriminator (NFM).
+    pub digital: bool,
 }
 
 impl Params {
@@ -297,6 +302,9 @@ pub struct Demod {
     cw: Option<(RealDecim, Vec<f32>, CwDecoder)>,
     rds: Option<RdsDecoder>,
     afc: Option<Afc>,
+    /// Raw discriminator of the last block (at `mid_rate`), for digital decoding.
+    disc: Option<Vec<f32>>,
+    mid_rate: f64,
     iq: Vec<Complex32>,
     mid: Vec<f32>,
     post: Vec<f32>,
@@ -379,6 +387,8 @@ impl Demod {
             }),
             rds: (m == Mode::Wfm && mid_rate >= 150_000.0).then(|| RdsDecoder::new(mid_rate)),
             afc,
+            disc: (p.digital && m == Mode::Nfm).then(Vec::new),
+            mid_rate,
             lp,
             iq: Vec::new(),
             mid: Vec::new(),
@@ -411,6 +421,10 @@ impl Demod {
         }
         if let Some(rds) = self.rds.as_mut() {
             rds.process(&self.mid); // the multiplex, before de-emphasis
+        }
+        if let Some(disc) = self.disc.as_mut() {
+            disc.clear();
+            disc.extend_from_slice(&self.mid);
         }
         if let Some((a, y)) = self.deemph.as_mut() {
             for v in self.mid.iter_mut() {
@@ -473,6 +487,12 @@ impl Demod {
         }
     }
 
+    /// Raw FM discriminator of the last block (±1.0 = ±5 kHz) and its
+    /// sample rate, when digital decoding is on.
+    pub fn discriminator(&self) -> Option<(&[f32], f64)> {
+        self.disc.as_deref().map(|d| (d, self.mid_rate))
+    }
+
     /// Morse decoded since the last call.
     pub fn take_cw(&mut self) -> Option<CwText> {
         self.cw.as_mut()?.2.take()
@@ -511,7 +531,7 @@ mod tests {
 
     fn run(mode: Mode, carrier_off: f64, rate: u32, sig: impl Fn(f64) -> (f64, f64)) -> (Vec<f32>, f64, f32) {
         let center = 100_000_000u64;
-        let p = Params { freq_hz: (center as f64 + carrier_off) as u64, mode, squelch_db: None, nr: false, cw: false, afc: false };
+        let p = Params { freq_hz: (center as f64 + carrier_off) as u64, mode, squelch_db: None, nr: false, cw: false, afc: false, digital: false };
         let mut d = Demod::new(&p, center, rate);
         let data = iq(rate, 1.0, sig);
         let mut out = Vec::new();
@@ -577,7 +597,7 @@ mod tests {
     #[test]
     fn squelch_mutes_noise() {
         let center = 100_000_000u64;
-        let p = Params { freq_hz: center + 50_000, mode: Mode::Nfm, squelch_db: Some(-30.0), nr: true, cw: false, afc: false };
+        let p = Params { freq_hz: center + 50_000, mode: Mode::Nfm, squelch_db: Some(-30.0), nr: true, cw: false, afc: false, digital: false };
         let mut d = Demod::new(&p, center, 1_024_000);
         assert!((d.out_rate - 51_200.0 / 3.0).abs() < 1e-6);
         let quiet = iq(1_024_000, 0.2, |_| (0.0, 0.0));
@@ -647,7 +667,7 @@ mod tests {
             data.push(to_cu8((a * ph.cos() + noise()) as f32));
             data.push(to_cu8((a * ph.sin() + noise()) as f32));
         }
-        let p = Params { freq_hz: center + off as u64, mode: Mode::Cw, squelch_db: None, nr: false, cw: true, afc: false };
+        let p = Params { freq_hz: center + off as u64, mode: Mode::Cw, squelch_db: None, nr: false, cw: true, afc: false, digital: false };
         let mut d = Demod::new(&p, center, rate);
         let (mut out, mut text) = (Vec::new(), String::new());
         for chunk in data.chunks(2 * 51_200) {
@@ -677,7 +697,7 @@ mod tests {
             tone_ph = (tone_ph + TAU * 1000.0 / rate as f64) % TAU;
             off + if on { 2_500.0 * tone_ph.sin() } else { 0.0 }
         });
-        let p = Params { freq_hz: center + off as u64, mode: Mode::Nfm, squelch_db: None, nr: false, cw: true, afc: false };
+        let p = Params { freq_hz: center + off as u64, mode: Mode::Nfm, squelch_db: None, nr: false, cw: true, afc: false, digital: false };
         let mut d = Demod::new(&p, center, rate);
         let (mut out, mut text) = (Vec::new(), String::new());
         for chunk in data.chunks(2 * 51_200) {
@@ -702,7 +722,7 @@ mod tests {
                 + 0.04 * encode::baseband(&coded, t, BIT_RATE) * (TAU * SUBCARRIER_HZ * t).sin();
             off + 75_000.0 * mpx
         });
-        let p = Params { freq_hz: center + off as u64, mode: Mode::Wfm, squelch_db: None, nr: false, cw: false, afc: false };
+        let p = Params { freq_hz: center + off as u64, mode: Mode::Wfm, squelch_db: None, nr: false, cw: false, afc: false, digital: false };
         let mut d = Demod::new(&p, center, rate);
         let mut out = Vec::new();
         let mut last = None;
@@ -748,7 +768,7 @@ mod tests {
     }
 
     fn afc_params(center: u64, off: f64, mode: Mode) -> Params {
-        Params { freq_hz: (center as f64 + off) as u64, mode, squelch_db: None, nr: false, cw: false, afc: true }
+        Params { freq_hz: (center as f64 + off) as u64, mode, squelch_db: None, nr: false, cw: false, afc: true, digital: false }
     }
 
     #[test]

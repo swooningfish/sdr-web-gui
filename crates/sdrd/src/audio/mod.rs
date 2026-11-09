@@ -28,23 +28,27 @@
 //! (whenever something changes), and with AFC on
 //! `{"type":"afc","offset_hz":-1250,"locked":true}` (the correction from the
 //! dial frequency, when it moves by 25 Hz or more, the lock changes, or once
-//! a second).
+//! a second). With digital decoding on (NFM), `{"type":"digital",…}`
+//! messages carry what dsd-neo decodes (see `digital`).
 
 pub mod adpcm;
 pub mod cw;
 pub mod demod;
+pub mod digital;
 pub mod nr;
 pub mod rds;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use serde_json::json;
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::radio::IqBlock;
-use demod::{Demod, Params};
+use demod::{Demod, Mode, Params};
+use digital::Digital;
 
 pub const FRAME_AUDIO: u8 = 3;
 
@@ -65,7 +69,7 @@ impl Drop for ListenerGuard {
 pub enum Out {
     /// Binary audio frame.
     Frame(Bytes),
-    /// JSON message (decoded Morse or RDS).
+    /// JSON message (decoded Morse, RDS, digital voice, AFC).
     Text(String),
 }
 
@@ -81,6 +85,7 @@ pub fn start(
     max: usize,
     iq_rx: broadcast::Receiver<Arc<IqBlock>>,
     params: Params,
+    dsd_path: String,
 ) -> Result<Listener, String> {
     let n = count.fetch_add(1, Ordering::Relaxed);
     if n >= max {
@@ -97,7 +102,7 @@ pub fn start(
     let (frames_tx, frames) = mpsc::channel(40);
     std::thread::Builder::new()
         .name("audio".into())
-        .spawn(move || run(iq_rx, params_rx, frames_tx, stop))
+        .spawn(move || run(iq_rx, params_rx, frames_tx, stop, dsd_path))
         .map_err(|e| e.to_string())?;
     Ok(Listener { params: params_tx, frames, _guard: guard })
 }
@@ -126,6 +131,7 @@ fn run(
     params_rx: watch::Receiver<Params>,
     out: mpsc::Sender<Out>,
     stop: Arc<AtomicBool>,
+    dsd_path: String,
 ) {
     let mut demod: Option<(Params, (u64, u32), Demod)> = None;
     let mut st = adpcm::State::default();
@@ -134,6 +140,11 @@ fn run(
     // Last AFC report sent, and blocks since.
     let mut afc_sent: Option<(f64, bool)> = None;
     let mut afc_age = 0u32;
+    // Digital voice decoder, and when to try starting it again after a failure.
+    let mut digital: Option<Digital> = None;
+    let mut digital_retry: Option<Instant> = None;
+    let mut digital_msgs = Vec::new();
+    let digital_error = |e: &str| Out::Text(json!({ "type": "digital", "error": e }).to_string());
     while !stop.load(Ordering::Relaxed) && !out.is_closed() {
         let block = match iq_rx.blocking_recv() {
             Ok(b) => b,
@@ -187,6 +198,34 @@ fn run(
                 afc_age = 0;
                 let msg = json!({ "type": "afc", "offset_hz": off.round(), "locked": locked });
                 let _ = out.try_send(Out::Text(msg.to_string()));
+            }
+        }
+        if !(p.digital && p.mode == Mode::Nfm) {
+            digital = None;
+            digital_retry = None;
+        } else if digital.is_none() && digital_retry.is_none_or(|t| Instant::now() >= t) {
+            match Digital::start(&dsd_path) {
+                Ok(dd) => digital = Some(dd),
+                Err(e) => {
+                    tracing::warn!("digital decoder: {e}");
+                    let _ = out.try_send(digital_error(&e));
+                    digital_retry = Some(Instant::now() + Duration::from_secs(30));
+                }
+            }
+        }
+        if let Some(dd) = digital.as_mut() {
+            if let Some((disc, rate)) = d.discriminator() {
+                dd.feed(disc, rate, open);
+            }
+            let res = dd.poll(&mut digital_msgs);
+            for m in digital_msgs.drain(..) {
+                let _ = out.try_send(Out::Text(m));
+            }
+            if let Err(e) = res {
+                tracing::warn!("digital decoder: {e}");
+                let _ = out.try_send(digital_error(&e));
+                digital = None;
+                digital_retry = Some(Instant::now() + Duration::from_secs(10));
             }
         }
         if let Some(r) = d.take_rds() {

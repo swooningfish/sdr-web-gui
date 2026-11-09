@@ -125,8 +125,8 @@ takes seconds.
 
 ### Test signals
 
-The simulated receiver puts test signals on 96.1, 144.470, 144.800, 145.7125, 145.800,
-145.825, 433.920 and 437.550 MHz (Doppler-drifting carrier). Use the presets to see them.
+The simulated receiver puts test signals on 96.1, 144.470, 144.800, 145.375, 145.7125,
+145.800, 145.825, 433.920 and 437.550 MHz (Doppler-drifting carrier). Use the presets to see them.
 They are real, decodable transmissions:
 
 - **144.800 / 145.825 (VHF block, the default):** APRS packets that Direwolf decodes: a car
@@ -137,6 +137,8 @@ They are real, decodable transmissions:
 - **433.92 (ISM preset, or *Tune* on the Sensors page):** two Nexus temperature/humidity
   sensors that rtl_433 decodes within ~15 s.
 - **144.470 (VHF block):** a CW beacon every 20 s. Listen in **CW** with **Decode CW** on.
+- **145.375 (VHF block):** M17 digital voice from GB7SIM every 15 s. Listen in **NFM** with
+  **Decode digital** on.
 - **145.7125 (VHF block):** a repeater: an over of "speech", then its Morse ident on a 1 kHz
   tone. Listen in **NFM** with **Decode CW** on.
 - **96.1 MHz (tune to ~96.25):** an FM broadcast station with RDS ("SIM FM", radio text).
@@ -330,6 +332,13 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
   **CW** (a carrier on the dial frequency is heard as a 700 Hz note).
 - **Decode CW** shows Morse as text under the Listen panel (5–40 WPM, speed found
   automatically). It also reads the Morse ident an FM repeater sends after an over (NFM).
+- **Decode digital** (NFM) identifies and decodes digital voice: DMR, D-STAR, System Fusion
+  (YSF), NXDN, P25, dPMR and M17, detected automatically. The panel shows who is on air
+  (callsign or radio ID, talkgroup or destination, colour code / NAC / RAN / CAN, talker alias
+  and text messages), a log of recent calls, and optionally DSD-neo's console. It uses
+  [DSD-neo](https://github.com/arancormonk/dsd-neo), one process per listener, fed the raw FM
+  discriminator. Decoded voice is not played (the AMBE/IMBE vocoders are patent-encumbered);
+  you hear the FM audio as usual.
 - **RDS:** in WFM the panel shows the station name, programme type and radio text.
 - **Squelch**, **noise reduction** (spectral; removes steady hiss), **volume** and **mute**.
   Settings are remembered per browser; clicks snap to the mode's channel raster.
