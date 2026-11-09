@@ -33,7 +33,7 @@
     isAdmin: boolean;
     rx: Listener;
     /** Listen at `hz` (in `mode`, if given); the app brings it into the sampled band. */
-    ontune: (hz: number, mode?: AudioMode) => void;
+    ontune: (hz: number, mode?: AudioMode, sampleRate?: number | null) => void;
     /** Open the bookmark manager; with a slot, to pick a bookmark for that F-key. */
     onbookmarks: (slot?: number) => void;
     /** Open the bookmark manager to save what's being heard. */
@@ -323,7 +323,7 @@
 
   function recall(slot: number) {
     const k = fkeys.recall(slot);
-    if (k) ontune(k.freq_hz, k.mode);
+    if (k) ontune(k.freq_hz, k.mode, k.sample_rate);
   }
   function fkeyClick(slot: number) {
     if (longPressed) {

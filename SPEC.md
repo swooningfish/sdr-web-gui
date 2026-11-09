@@ -106,8 +106,10 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
    - Bookmarks: a shared station list (admins edit) plus each user's own. Flags on the
      spectrum, a Bookmarks panel under Listen (search, list/group filter, ★ Save), and a
      Bookmarks page from its cog (sortable table, edit, multi-select delete, CSV export of
-     all/station/mine, CSV import of our own format, CHIRP or gqrx). Picking a bookmark
-     outside the band retunes the radio for admins.
+     all/station/mine, CSV import of our own format, CHIRP or gqrx). A bookmark keeps the
+     sample rate it was saved at (optional); picking one switches to that rate and, outside
+     the band, retunes the radio for admins. Anyone who can edit a bookmark can update it to
+     what's tuned now (frequency, mode, sample rate).
    - CW mode (700 Hz beat note, band-pass, AGC) and a Morse decoder (optional, any mode
      but WFM): tone lock, adaptive speed (5–40 WPM), word-by-word output with junk
      filtering; reads FM repeater idents in NFM.

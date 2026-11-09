@@ -1,7 +1,7 @@
 //! Frequency bookmarks: a shared station list (admins edit) plus each user's
 //! own. Stored in SQLite; CSV import/export.
 //!
-//! CSV export columns: `name,frequency_mhz,mode,group,colour,notes`.
+//! CSV export columns: `name,frequency_mhz,mode,group,colour,notes,sample_rate`.
 //! Import reads that, and also CHIRP exports (Name, Frequency, Mode, Comment)
 //! and gqrx `bookmarks.csv` (semicolon separated, frequency in Hz).
 
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
 use crate::audio::demod::Mode;
-use crate::radio::{MAX_FREQ_HZ, MIN_FREQ_HZ};
+use crate::radio::{MAX_FREQ_HZ, MIN_FREQ_HZ, SAMPLE_RATES};
 
 pub const MAX_PER_LIST: i64 = 5_000;
 const MAX_NAME: usize = 64;
@@ -29,6 +29,9 @@ pub struct BookmarkIn {
     pub colour: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
+    /// Receiver sample rate to switch to when tuning it (None = leave as is).
+    #[serde(default)]
+    pub sample_rate: Option<u32>,
     /// In the shared station list (admins only) rather than the user's own.
     #[serde(default)]
     pub shared: bool,
@@ -43,6 +46,7 @@ pub struct Bookmark {
     pub group: Option<String>,
     pub colour: Option<String>,
     pub notes: Option<String>,
+    pub sample_rate: Option<u32>,
     pub shared: bool,
     pub updated_at: i64,
 }
@@ -71,11 +75,16 @@ impl BookmarkIn {
                 return Err("colour must look like #3b82f6".into());
             }
         }
+        if let Some(r) = self.sample_rate {
+            if !SAMPLE_RATES.contains(&r) {
+                return Err(format!("{r} S/s isn't a sample rate the receiver supports"));
+            }
+        }
         Ok(self)
     }
 }
 
-type Row = (i64, Option<i64>, String, i64, String, Option<String>, Option<String>, Option<String>, i64);
+type Row = (i64, Option<i64>, String, i64, String, Option<String>, Option<String>, Option<String>, Option<i64>, i64);
 
 fn from_row(r: Row) -> Bookmark {
     Bookmark {
@@ -87,11 +96,12 @@ fn from_row(r: Row) -> Bookmark {
         group: r.5,
         colour: r.6,
         notes: r.7,
-        updated_at: r.8,
+        sample_rate: r.8.and_then(|v| u32::try_from(v).ok()),
+        updated_at: r.9,
     }
 }
 
-const COLS: &str = "id, owner_id, name, freq_hz, mode, grp, colour, notes, updated_at";
+const COLS: &str = "id, owner_id, name, freq_hz, mode, grp, colour, notes, sample_rate, updated_at";
 
 pub(crate) fn mode_str(m: Mode) -> String {
     serde_json::to_value(m).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_else(|| "nfm".into())
@@ -131,8 +141,8 @@ pub async fn count(db: &SqlitePool, owner: Option<i64>) -> Result<i64> {
 pub async fn insert(db: &SqlitePool, owner: Option<i64>, b: &BookmarkIn) -> Result<i64> {
     let now = crate::db::now();
     let r = sqlx::query(
-        "INSERT INTO bookmarks (owner_id, name, freq_hz, mode, grp, colour, notes, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO bookmarks (owner_id, name, freq_hz, mode, grp, colour, notes, sample_rate, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(owner)
     .bind(&b.name)
@@ -141,6 +151,7 @@ pub async fn insert(db: &SqlitePool, owner: Option<i64>, b: &BookmarkIn) -> Resu
     .bind(&b.group)
     .bind(&b.colour)
     .bind(&b.notes)
+    .bind(b.sample_rate)
     .bind(now)
     .bind(now)
     .execute(db)
@@ -151,7 +162,7 @@ pub async fn insert(db: &SqlitePool, owner: Option<i64>, b: &BookmarkIn) -> Resu
 pub async fn update(db: &SqlitePool, id: i64, owner: Option<i64>, b: &BookmarkIn) -> Result<()> {
     sqlx::query(
         "UPDATE bookmarks SET owner_id = ?, name = ?, freq_hz = ?, mode = ?, grp = ?, colour = ?, notes = ?, \
-         updated_at = ? WHERE id = ?",
+         sample_rate = ?, updated_at = ? WHERE id = ?",
     )
     .bind(owner)
     .bind(&b.name)
@@ -160,6 +171,7 @@ pub async fn update(db: &SqlitePool, id: i64, owner: Option<i64>, b: &BookmarkIn
     .bind(&b.group)
     .bind(&b.colour)
     .bind(&b.notes)
+    .bind(b.sample_rate)
     .bind(crate::db::now())
     .bind(id)
     .execute(db)
@@ -205,7 +217,7 @@ fn csv_field(s: &str) -> String {
 }
 
 pub fn to_csv(list: &[Bookmark]) -> String {
-    let mut out = String::from("name,frequency_mhz,mode,group,colour,notes\r\n");
+    let mut out = String::from("name,frequency_mhz,mode,group,colour,notes,sample_rate\r\n");
     for b in list {
         let fields = [
             csv_field(&b.name),
@@ -214,6 +226,7 @@ pub fn to_csv(list: &[Bookmark]) -> String {
             csv_field(b.group.as_deref().unwrap_or("")),
             csv_field(b.colour.as_deref().unwrap_or("")),
             csv_field(b.notes.as_deref().unwrap_or("")),
+            b.sample_rate.map(|r| r.to_string()).unwrap_or_default(),
         ];
         out.push_str(&fields.join(","));
         out.push_str("\r\n");
@@ -314,6 +327,7 @@ pub fn from_csv(text: &str) -> Result<Parsed, String> {
     let group = col(&["group", "category", "folder", "tags", "tag"]);
     let colour = col(&["colour", "color"]);
     let notes = col(&["notes", "note", "comment", "comments"]);
+    let rate = col(&["sample_rate", "samplerate", "sample rate"]);
     if freq_mhz.is_none() && freq_hz.is_none() {
         return Err("no Frequency column".into());
     }
@@ -350,6 +364,7 @@ pub fn from_csv(text: &str) -> Result<Parsed, String> {
             group: get(group).map(|g| g.split(',').next().unwrap_or("").trim().to_string()),
             colour: get(colour).filter(|c| !c.is_empty()),
             notes: get(notes),
+            sample_rate: get(rate).and_then(|v| v.parse().ok()),
             shared: false,
         };
         match b.validate() {
@@ -373,6 +388,7 @@ mod tests {
             group: Some("Repeaters".into()),
             colour: Some("#22c55e".into()),
             notes: Some("CTCSS 77.0, \"busy\"".into()),
+            sample_rate: Some(2_048_000),
             shared: true,
             updated_at: 0,
         }
@@ -392,6 +408,8 @@ mod tests {
         assert_eq!(p.rows[1].name, "=SUM(A1)");
         assert_eq!(p.rows[1].mode, Mode::Cw);
         assert_eq!(p.rows[1].colour.as_deref(), Some("#22c55e"));
+        assert_eq!(p.rows[1].sample_rate, Some(2_048_000));
+        assert_eq!(p.rows[0].sample_rate, Some(2_048_000));
     }
 
     #[test]
@@ -429,6 +447,7 @@ mod tests {
             group: Some(" ".into()),
             colour: Some("#ABCDEF".into()),
             notes: None,
+            sample_rate: Some(2_400_000),
             shared: false,
         };
         let v = ok.clone().validate().unwrap();
@@ -437,7 +456,8 @@ mod tests {
         assert_eq!(v.colour.as_deref(), Some("#abcdef"));
         assert!(BookmarkIn { name: "".into(), ..ok.clone() }.validate().is_err());
         assert!(BookmarkIn { freq_hz: 3, ..ok.clone() }.validate().is_err());
-        assert!(BookmarkIn { colour: Some("red".into()), ..ok }.validate().is_err());
+        assert!(BookmarkIn { colour: Some("red".into()), ..ok.clone() }.validate().is_err());
+        assert!(BookmarkIn { sample_rate: Some(1_234), ..ok }.validate().is_err());
         assert!(from_csv("a,b\n1,2\n").is_err());
     }
 }

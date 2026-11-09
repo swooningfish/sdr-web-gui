@@ -131,6 +131,8 @@ pub async fn open(path: &Path) -> Result<SqlitePool> {
         ],
     )
     .await?;
+    // Receiver sample rate to switch to when tuning the bookmark; NULL = leave it.
+    add_columns(&pool, "bookmarks", &[("sample_rate", "INTEGER")]).await?;
     Ok(pool)
 }
 

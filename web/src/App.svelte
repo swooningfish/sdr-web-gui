@@ -188,34 +188,43 @@
     bringIntoBand(listen.hz, listen.mode, 0.5);
   }
 
-  /** Listen to a bookmark; admins also retune when it's outside the band. */
+  /** Listen to a bookmark; admins also switch to its sample rate and retune
+   * when it's outside the band. */
   function selectBookmark(b: Bookmark) {
-    tuneListen(b.freq_hz, b.mode);
+    tuneListen(b.freq_hz, b.mode, b.sample_rate);
   }
 
-  /** Front panel (knob, typed frequency, F-keys): listen at `hz`. */
-  function tuneListen(hz: number, mode?: AudioMode) {
+  /** Front panel (knob, typed frequency, F-keys): listen at `hz`, at
+   * `sampleRate` if one is given (a bookmark's). */
+  function tuneListen(hz: number, mode?: AudioMode, sampleRate?: number | null) {
     if (mode) listen.mode = mode;
     listen.hz = hz;
-    bringIntoBand(hz, listen.mode, 0.45);
+    bringIntoBand(hz, listen.mode, 0.45, sampleRate);
   }
 
   /**
    * Admins: retune so a channel at `hz` sits within `margin` × the sample
    * rate of the centre, a little off the dongle's DC spike in the middle.
+   * With `rate`, switch to that sample rate too.
    */
-  function bringIntoBand(hz: number, mode: AudioMode, margin: number) {
+  function bringIntoBand(hz: number, mode: AudioMode, margin: number, rate?: number | null) {
     if (!radio || !isAdmin || !radio.can_tune) return;
-    const { center_hz, sample_rate } = radio.settings;
+    const { center_hz } = radio.settings;
+    const newRate = rate && rate !== radio.settings.sample_rate && radio.sample_rates.includes(rate) ? rate : null;
+    const sample_rate = newRate ?? radio.settings.sample_rate;
     const bw = MODES.find((m) => m.value === mode)?.bw ?? 12_500;
-    if (Math.abs(hz - center_hz) + bw / 2 <= sample_rate * margin) return;
+    const inBand = Math.abs(hz - center_hz) + bw / 2 <= sample_rate * margin;
+    if (inBand && !newRate) return;
     const offset = Math.min(150_000, sample_rate * 0.1);
-    tuneTo(Math.round((hz + offset) / 1000) * 1000);
+    configure({
+      ...(inBand ? {} : { center_hz: Math.round((hz + offset) / 1000) * 1000 }),
+      ...(newRate ? { sample_rate: newRate } : {}),
+    });
   }
 
-  async function tuneTo(hz: number) {
+  async function configure(patch: { center_hz?: number; sample_rate?: number }) {
     try {
-      await api.configure({ center_hz: hz });
+      await api.configure(patch);
     } catch (e) {
       console.warn('tune failed', e);
     }
@@ -304,7 +313,7 @@
         <Waterfall
           bind:this={waterfall}
           canTune={isAdmin && !!radio?.can_tune}
-          ontune={tuneTo}
+          ontune={(hz) => configure({ center_hz: hz })}
           {listen}
           sub={rx.other}
           onpick={pick}
@@ -361,6 +370,7 @@
     bind:adding={bmAdding}
     {listen}
     {isAdmin}
+    {radio}
     onselect={selectBookmark}
   />
 {/if}

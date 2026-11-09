@@ -35,12 +35,13 @@ class FKeyStore {
     }
   }
 
-  /** What a key recalls: the bookmark as it is now, else the key's own copy. */
-  recall(slot: number): FKeyInput | null {
+  /** What a key recalls: the bookmark as it is now (with its sample rate),
+   * else the key's own copy. */
+  recall(slot: number): (FKeyInput & { sample_rate?: number | null }) | null {
     const k = this.keys[slot - 1];
     if (!k) return null;
     const b = k.bookmark_id ? bookmarks.list.find((x) => x.id === k.bookmark_id) : undefined;
-    return b ? { name: b.name, freq_hz: b.freq_hz, mode: b.mode, bookmark_id: b.id } : k;
+    return b ? { name: b.name, freq_hz: b.freq_hz, mode: b.mode, bookmark_id: b.id, sample_rate: b.sample_rate } : k;
   }
 
   async assign(slot: number, b: Pick<Bookmark, 'id' | 'name' | 'freq_hz' | 'mode'>) {

@@ -13,6 +13,8 @@ export interface Bookmark {
   group: string | null;
   colour: string | null;
   notes: string | null;
+  /** Receiver sample rate to switch to when tuning it (null = leave as is). */
+  sample_rate: number | null;
   /** In the station's shared list (else the user's own). */
   shared: boolean;
   can_edit: boolean;
@@ -26,7 +28,14 @@ export interface BookmarkInput {
   group: string | null;
   colour: string | null;
   notes: string | null;
+  sample_rate: number | null;
   shared: boolean;
+}
+
+/** The fields a bookmark is saved from. */
+export function inputOf(b: Bookmark): BookmarkInput {
+  const { name, freq_hz, mode, group, colour, notes, sample_rate, shared } = b;
+  return { name, freq_hz, mode, group, colour, notes, sample_rate, shared };
 }
 
 export type Scope = 'all' | 'shared' | 'mine';

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { MODES, type AudioMode } from '../lib/audio';
-  import { parseFrequency } from '../lib/format';
+  import { formatMHz, formatRate, parseFrequency } from '../lib/format';
   import { bookmarks, colourOf, type BookmarkInput } from '../lib/bookmarks.svelte';
 
   /** Add or edit one bookmark. */
@@ -8,12 +8,18 @@
     initial,
     isAdmin,
     title,
+    sampleRates = [],
+    current = null,
     onsave,
     oncancel,
   }: {
     initial: BookmarkInput;
     isAdmin: boolean;
     title: string;
+    /** Rates the receiver offers. */
+    sampleRates?: number[];
+    /** What's tuned now, for "Use what's tuned now". */
+    current?: { hz: number; mode: AudioMode; rate: number | null } | null;
     onsave: (b: BookmarkInput) => Promise<void>;
     oncancel: () => void;
   } = $props();
@@ -30,6 +36,17 @@
   let useColour = $state(!!seed.colour);
   let colour = $state(seed.colour ?? colourOf(seed));
   let notes = $state(seed.notes ?? '');
+  /** 0 = leave the receiver's rate as it is. */
+  let rate = $state(seed.sample_rate ?? 0);
+  // A saved rate the receiver no longer lists still shows (and keeps).
+  const rates = $derived([...new Set([...sampleRates, ...(seed.sample_rate ? [seed.sample_rate] : [])])].sort((a, b) => a - b));
+
+  function useCurrent() {
+    if (!current) return;
+    freq = (current.hz / 1e6).toFixed(4);
+    mode = current.mode;
+    if (current.rate) rate = current.rate;
+  }
   let shared = $state(seed.shared && admin);
   let busy = $state(false);
   let err = $state<string | null>(null);
@@ -53,6 +70,7 @@
         group: group.trim() || null,
         colour: useColour ? colour : null,
         notes: notes.trim() || null,
+        sample_rate: rate || null,
         shared,
       });
     } catch (e) {
@@ -79,6 +97,13 @@
       >Mode
       <select bind:value={mode}>
         {#each MODES as m (m.value)}<option value={m.value}>{m.label}</option>{/each}
+      </select></label
+    >
+    <label
+      >Sample rate
+      <select bind:value={rate} title="Switched to when the bookmark is tuned (admins)">
+        <option value={0}>Leave as is</option>
+        {#each rates as r (r)}<option value={r}>{formatRate(r)}</option>{/each}
       </select></label
     >
     <label
@@ -111,6 +136,14 @@
   <div class="actions">
     <button type="submit" class="small primary" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
     <button type="button" class="small" onclick={oncancel}>Cancel</button>
+    {#if current}
+      <button
+        type="button"
+        class="small"
+        title="Set frequency, mode and sample rate to what you're tuned to"
+        onclick={useCurrent}>Use what's tuned now ({formatMHz(current.hz, 4)})</button
+      >
+    {/if}
   </div>
 </form>
 
@@ -182,6 +215,7 @@
   }
   .actions {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
   }
 </style>

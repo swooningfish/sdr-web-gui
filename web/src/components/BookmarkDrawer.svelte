@@ -1,12 +1,13 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { formatMHz, relTime } from '../lib/format';
+  import { formatMHz, formatRate, relTime } from '../lib/format';
   import type { Listen } from '../lib/audio';
-  import { api, type RepeaterList } from '../lib/api';
+  import { api, type RadioState, type RepeaterList } from '../lib/api';
   import { CALLING } from '../lib/calling';
   import {
     bookmarks,
     colourOf,
+    inputOf,
     matches,
     type Bookmark,
     type BookmarkInput,
@@ -26,6 +27,7 @@
     adding = $bindable(false),
     listen,
     isAdmin,
+    radio = null,
     onselect,
   }: {
     open?: boolean;
@@ -35,6 +37,7 @@
     adding?: boolean;
     listen: Listen;
     isAdmin: boolean;
+    radio?: RadioState | null;
     onselect: (b: Bookmark) => void;
   } = $props();
 
@@ -118,7 +121,7 @@
     notes: string | null,
     colour: string,
   ): Bookmark {
-    return { id, name, freq_hz, mode, group, colour, notes, shared: true, can_edit: false, updated_at: 0 };
+    return { id, name, freq_hz, mode, group, colour, notes, sample_rate: null, shared: true, can_edit: false, updated_at: 0 };
   }
   const calling = CALLING.map((c, i) => pseudo(-1 - i, c.name, c.freq_hz, c.mode, c.group, null, '#a3e635'));
   const repeaters = $derived(
@@ -196,8 +199,51 @@
     source = 'saved';
     editing = {
       id: null,
-      input: { name: '', freq_hz: listen.hz, mode: listen.mode, group: null, colour: null, notes: null, shared: isAdmin },
+      input: {
+        name: '',
+        freq_hz: listen.hz,
+        mode: listen.mode,
+        group: null,
+        colour: null,
+        notes: null,
+        sample_rate: rateNow,
+        shared: isAdmin,
+      },
     };
+  }
+
+  /** The receiver's sample rate now (saved with new bookmarks). */
+  const rateNow = $derived(radio?.settings.sample_rate ?? null);
+  const tunedNow = $derived({ hz: listen.hz, mode: listen.mode, rate: rateNow });
+
+  /** A bookmark you can change on the frequency you're tuned to, whose mode
+   * or sample rate differs from what you're using: offer to update it. */
+  const stale = $derived(
+    bookmarks.list.find(
+      (b) =>
+        b.can_edit &&
+        b.freq_hz === listen.hz &&
+        (b.mode !== listen.mode || (rateNow !== null && b.sample_rate !== rateNow)),
+    ) ?? null,
+  );
+
+  /** Overwrite a bookmark's frequency, mode and sample rate with what's tuned now. */
+  async function updateToCurrent(b: Bookmark, ask: boolean) {
+    const what = `${formatMHz(listen.hz, 4)} ${listen.mode.toUpperCase()}${rateNow ? ` at ${formatRate(rateNow)}` : ''}`;
+    if (ask && !confirm(`Update ${b.name} to ${what}?`)) return;
+    msg = null;
+    err = null;
+    try {
+      await bookmarks.update(b.id, {
+        ...inputOf(b),
+        freq_hz: listen.hz,
+        mode: listen.mode,
+        sample_rate: rateNow ?? b.sample_rate,
+      });
+      msg = `Updated ${b.name} to ${what}.`;
+    } catch (e) {
+      err = e instanceof Error ? e.message : String(e);
+    }
   }
 
   /** Keep a calling frequency or repeater as a real bookmark. */
@@ -212,6 +258,7 @@
         group: source === 'calling' ? 'Calling' : 'Repeaters',
         colour: null,
         notes: b.notes,
+        sample_rate: null,
         shared: isAdmin,
       },
     };
@@ -219,7 +266,7 @@
 
   function edit(b: Bookmark) {
     msg = null;
-    editing = { id: b.id, input: { ...b } };
+    editing = { id: b.id, input: inputOf(b) };
   }
 
   async function save(input: BookmarkInput) {
@@ -358,6 +405,17 @@
       disabled={!!editing}
       title="Bookmark {formatMHz(listen.hz, 4)} ({listen.mode.toUpperCase()})">★ Save {formatMHz(listen.hz, 4)}</button
     >
+    {#if stale}
+      <button
+        type="button"
+        class="small"
+        onclick={() => updateToCurrent(stale!, false)}
+        disabled={!!editing}
+        title="Save {listen.mode.toUpperCase()}{rateNow ? ` and ${formatRate(rateNow)}` : ''} into {stale.name} (now {stale.mode.toUpperCase()}{stale.sample_rate
+          ? ` at ${formatRate(stale.sample_rate)}`
+          : ''})">↻ Update {stale.name}</button
+      >
+    {/if}
     <label class="small-text check"><input type="checkbox" bind:checked={grouped} /> By group</label>
     {#if source === 'saved'}
       <button
@@ -380,6 +438,8 @@
       <BookmarkEditor
         initial={editing.input}
         {isAdmin}
+        sampleRates={radio?.sample_rates ?? []}
+        current={tunedNow}
         title={editing.id === null ? `Bookmark ${formatMHz(editing.input.freq_hz, 4)}` : `Edit ${editing.input.name}`}
         onsave={save}
         oncancel={() => (editing = null)}
@@ -439,7 +499,9 @@
                   class:assigning={assign !== null}
                   style:--sw={colourOf(b)}
                   aria-pressed={manage && b.can_edit ? sel.has(b.id) : undefined}
-                  title={[b.name, formatMHz(b.freq_hz, 4), b.notes].filter(Boolean).join('\n')}
+                  title={[b.name, formatMHz(b.freq_hz, 4), b.sample_rate ? `Sample rate ${formatRate(b.sample_rate)}` : '', b.notes]
+                    .filter(Boolean)
+                    .join('\n')}
                   onclick={(e) => tileClick(b, e)}
                 >
                   <span class="t-name">{b.name}</span>
@@ -454,6 +516,16 @@
                   <div class="t-tools">
                     {#if b.can_edit}
                       <button type="button" class="tool" aria-label="Edit {b.name}" title="Edit" onclick={() => edit(b)}>✎</button>
+                      <button
+                        type="button"
+                        class="tool"
+                        aria-label="Update {b.name} to what's tuned now"
+                        title="Update to what's tuned now ({formatMHz(listen.hz, 4)} {listen.mode.toUpperCase()}{rateNow
+                          ? `, ${formatRate(rateNow)}`
+                          : ''})"
+                        disabled={!!editing}
+                        onclick={() => updateToCurrent(b, true)}>↻</button
+                      >
                     {/if}
                     <button
                       type="button"

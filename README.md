@@ -450,12 +450,15 @@ one line (**Compact**), and you drag and pinch-zoom the spectrum with your finge
   key follows its edits. The lit key is the one you're on.
 - **Bookmarks:** flags above the spectrum, and a manager that slides out from the right
   (**Bookmarks** on the front panel; Escape closes it). Bookmarks are tiles, grouped by
-  group (or band, or repeater mode); click one to listen (admins also retune if it's
-  outside the band). **★ Save** keeps the current frequency. The **station list** is shared
+  group (or band, or repeater mode); click one to listen (admins also switch to its sample
+  rate, and retune if it's outside the band). **★ Save** keeps the current frequency, mode
+  and sample rate. Tuned to a bookmark you can edit but on a different mode or sample rate,
+  **↻ Update** saves them into it. The **station list** is shared
   with everyone (admins edit it); **mine** are yours alone. **Calling** lists standard
   calling frequencies (IARU Region 1 / UK band plans) and **Repeaters** lists repeaters near
   the station from RepeaterBook (see [Settings](#settings)); ☆ saves one as a bookmark.
-  **Manage**: click tiles to select several and delete them, ✎ to edit, **F** to put one
+  **Manage**: click tiles to select several and delete them, ✎ to edit, ↻ to update one to
+  what's tuned now (frequency, mode and sample rate), **F** to put one
   on a function key, and export CSV or import a CSV (our own export, CHIRP or gqrx
   `bookmarks.csv`).
 
