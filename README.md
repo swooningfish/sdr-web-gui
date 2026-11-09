@@ -309,6 +309,9 @@ Every line's sync pulse is tracked, so slant from clock differences is corrected
 
 - Default channels: **ISS SSTV 145.800 MHz** (in the default VHF block) and **ARISS UHF
   437.550 MHz**, both FM. Up to 4 channels under Settings → SSTV decoder.
+- When a channel isn't being listened to, the SSTV tab offers admins **Tune to VHF block**
+  (145.3 MHz) or **Tune to UHF block** (437.0 MHz, covering 436.1–437.9 MHz), whichever
+  holds that channel.
 - **SSTV** tab: images appear line by line as they are received, then go into the gallery
   with thumbnails, a full-size viewer, download and (admins) delete.
 - If the signal fades or the radio is retuned mid-image, whatever was received is still

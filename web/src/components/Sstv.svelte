@@ -3,12 +3,21 @@
   import { api, type Device, type EventRow, type RadioState, type SstvInfo } from '../lib/api';
   import type { SstvRows } from '../lib/stream';
   import { unsupported } from '../lib/coverage';
-  import { formatMHz, relTime } from '../lib/format';
+  import { formatMHz, formatRate, relTime } from '../lib/format';
   import { imageUrl, SSTV_MODES, zipUrl } from '../lib/sstv';
   import { Selection } from '../lib/selection.svelte';
 
   let { isAdmin, radio }: { isAdmin: boolean; radio: RadioState | null } = $props();
-  const vhfWhy = $derived(unsupported(radio, 145_300_000));
+
+  /**
+   * Blocks the SSTV tab offers to tune to. UHF is centred 550 kHz below ARISS
+   * 437.550 so the dongle's DC spike stays off the channel, and spans most of
+   * the 435–438 MHz satellite downlinks.
+   */
+  const BLOCKS = [
+    { name: 'VHF', hz: 145_300_000, rate: 2_048_000 },
+    { name: 'UHF', hz: 437_000_000, rate: 2_048_000 },
+  ];
 
   interface Live {
     channel: number;
@@ -33,7 +42,18 @@
   const buffers = new Map<number, ImageData>();
   const canvases = new Map<number, HTMLCanvasElement>();
 
-  const allIdle = $derived(!!info && info.status.channels.every((c) => !c.enabled || !c.in_band));
+  /** Same margin as `dsp::ddc::fits` (FM channel ±10 kHz). */
+  const inBlock = (b: (typeof BLOCKS)[number], hz: number) => Math.abs(hz - b.hz) + 10_000 <= b.rate * 0.45;
+
+  /** Blocks holding an enabled channel that isn't being listened to right now. */
+  const tunable = $derived.by(() => {
+    if (!info?.status.enabled || !isAdmin || !radio?.can_tune) return [];
+    const chans = info.status.channels.filter((c) => c.enabled);
+    return BLOCKS.filter((b) => {
+      const mine = chans.filter((c) => inBlock(b, c.frequency_hz));
+      return !unsupported(radio, b.hz) && mine.length > 0 && !mine.some((c) => c.in_band);
+    });
+  });
   const channelName = (i: number) => info?.status.channels[i]?.label ?? `Channel ${i + 1}`;
   const data = (e: EventRow) =>
     e.data as { id: string; mode: string; width: number; height: number; lines: number; complete: boolean };
@@ -157,9 +177,10 @@
     }
   }
 
-  async function tuneVhf() {
+  async function tune(b: (typeof BLOCKS)[number]) {
     try {
-      await api.configure({ center_hz: 145_300_000, sample_rate: 2_048_000 });
+      await api.configure({ center_hz: b.hz, sample_rate: b.rate });
+      info = await api.sstv();
     } catch (e) {
       err = e instanceof Error ? e.message : String(e);
     }
@@ -184,9 +205,11 @@
               {c.demod?.toUpperCase()}{why ? ' · not supported by this SDR' : c.enabled ? (c.in_band ? '' : ' · idle') : ' · off'}
             </span>
           {/each}
-          {#if allIdle && isAdmin && radio?.can_tune && !vhfWhy}
-            <button type="button" class="small" onclick={tuneVhf}>Tune to VHF block</button>
-          {/if}
+          {#each tunable as b (b.name)}
+            <button type="button" class="small" title="{formatMHz(b.hz, 3)} at {formatRate(b.rate)}" onclick={() => tune(b)}
+              >Tune to {b.name} block</button
+            >
+          {/each}
         </div>
       {/if}
     </div>
