@@ -383,3 +383,30 @@ test('the mini map zooms, pans and fits the whole range', async ({ page }, info)
   expect(await shown()).toEqual(full);
   expect(await overflow(page), 'mini map controls are wider than the window').toBeLessThanOrEqual(0);
 });
+
+test('harmonics check rates the simulated SRD against Ofcom and FCC', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop-1920', 'state-changing test runs once');
+  const radio = await (await page.request.get('/api/radio')).json();
+  test.skip(!radio.connected || !radio.can_tune || radio.source !== 'synthetic', 'needs the simulated receiver');
+  const sched = await (await page.request.get('/api/schedule')).json();
+  test.skip(sched.config.rotation, 'rotation is on');
+  const before: number = radio.settings.center_hz;
+  await openTab(page, 'Spectrum');
+  // Listen on the simulated SRD.
+  await page.evaluate(() => {
+    const p = JSON.parse(localStorage.getItem('sdr.listen') ?? '{}');
+    localStorage.setItem('sdr.listen', JSON.stringify({ ...p, hz: 434_200_000, mode: 'nfm' }));
+    localStorage.setItem('sdr.harmonics', JSON.stringify({ ofcom: true, fcc: true, backoff: 0, dwell: 2, maxN: 4 }));
+  });
+  await page.reload();
+  const panel = page.locator('section', { has: page.getByRole('heading', { name: 'Harmonics' }) });
+  await panel.getByRole('button', { name: 'Check harmonics' }).click();
+  await expect(panel.getByLabel('Overall result')).toBeVisible({ timeout: 60_000 });
+  // 2nd at -43 dBc (Ofcom limit -46: fails), 3rd at -33 dBc (fails Ofcom -40, passes FCC -26.8).
+  await expect(panel.locator('.overall').filter({ hasText: 'Ofcom' }).locator('.badge')).toHaveText('Bad');
+  await expect(panel.locator('.overall').filter({ hasText: 'FCC' }).locator('.badge')).toHaveText('Good');
+  // The radio goes back where it was.
+  await expect
+    .poll(async () => (await (await page.request.get('/api/radio')).json()).settings.center_hz, { timeout: 5000 })
+    .toBe(before);
+});

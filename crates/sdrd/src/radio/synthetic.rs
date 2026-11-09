@@ -31,6 +31,27 @@ enum Kind {
     Repeater { period: f64 },
     /// Broadcast FM: music-like tones, stereo pilot and RDS.
     Broadcast,
+    /// SRD telemetry (narrow 2-FSK, on 0.8 s of every 1 s), or its `n`th
+    /// harmonic (n > 1) for trying the harmonics check: same keying, n times
+    /// the deviation, as a real transmitter's harmonics would be.
+    Srd { n: u8 },
+}
+
+/// Simulated SRD: carrier, FSK deviation, bit rate.
+pub(super) const SRD_HZ: f64 = 434_200_000.0;
+const SRD_DEV: f64 = 3_000.0;
+const SRD_BAUD: f64 = 2_400.0;
+/// Harmonic levels in dBc (2nd, 3rd, 4th): marginal, failing and clean
+/// against the Ofcom limits (−46 / −40 / −40 dBc at 10 mW ERP).
+pub(super) const SRD_HARMONICS_DBC: [f64; 3] = [-43.0, -33.0, -60.0];
+const SRD_AMP: f64 = 0.3;
+
+/// Pseudo-random data bit `k` of the SRD's stream (same for every harmonic).
+fn srd_bit(k: u64) -> bool {
+    let mut x = k.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    x ^= x >> 29;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    (x >> 32) & 1 == 1
 }
 
 const BEACON_TEXT: &str = "VVV DE GB3SIM IO91 QRV";
@@ -96,8 +117,16 @@ impl SynthGen {
             em.next = first;
             em
         };
+        let srd = |n: u8| {
+            let amp = if n == 1 { SRD_AMP } else { SRD_AMP * 10f64.powf(SRD_HARMONICS_DBC[n as usize - 2] / 20.0) };
+            e(SRD_HZ * n as f64, amp, Kind::Srd { n })
+        };
         SynthGen {
             emitters: vec![
+                srd(1),
+                srd(2),
+                srd(3),
+                srd(4),
                 e(144_800_000.0, 0.25, Kind::Aprs { period: 10.0, channel: AprsChannel::Terrestrial }),
                 e(145_825_000.0, 0.12, Kind::Aprs { period: 30.0, channel: AprsChannel::Iss }),
                 {
@@ -291,6 +320,13 @@ impl SynthGen {
                             * rds::encode::baseband(&em.rds, t, rds::BIT_RATE)
                             * (TAU * rds::SUBCARRIER_HZ * t).sin();
                         (offset + 75_000.0 * (music + pilot + data), true)
+                    }
+                    Kind::Srd { n } => {
+                        // Gaussian-ish FSK: the ±1 data steers a smoothed deviation.
+                        let target = if srd_bit((t * SRD_BAUD) as u64) { 1.0 } else { -1.0 };
+                        let alpha = 1.0 - (-dt * SRD_BAUD * 3.0).exp();
+                        em.phase2 += (target - em.phase2) * alpha;
+                        (offset + n as f64 * SRD_DEV * em.phase2, t.rem_euclid(1.0) < 0.8)
                     }
                 };
                 em.phase = (em.phase + TAU * inst_hz * dt) % TAU;

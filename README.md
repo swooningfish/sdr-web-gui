@@ -340,6 +340,16 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
   The **station list** is shared with everyone (admins edit it); **mine** are yours
   alone. The cog opens the Bookmarks page: edit, delete several, export CSV, or import a
   CSV (our own export, CHIRP or gqrx `bookmarks.csv`).
+- **Harmonics check (admins):** click a short-range device's signal (a key fob, sensor or
+  telemetry link) so you're listening to it, then **Check harmonics** in the side column.
+  It measures the carrier, retunes to the 2nd–5th harmonics (as far as the dongle reaches),
+  watches each for a few seconds and rates each one **Good**, **Medium** or **Bad** against
+  **Ofcom** (UK SRD bands, ETSI EN 300 220-1 spurious limits) and **FCC** Part 15
+  (§15.231, §15.249, §15.227, with §15.205 restricted bands), saying which limit fails and
+  by how much. Limits assume the carrier is at the legal maximum unless you say it runs
+  lower. It's a pre-compliance indicator: the dongle isn't calibrated, so *Good* needs a
+  6 dB margin. Use a fixed gain, keep the device transmitting, and switch rotation off
+  first. The simulator has an SRD on 434.2 MHz with harmonics to try it on.
 
 ## Settings
 

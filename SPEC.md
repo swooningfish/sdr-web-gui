@@ -151,6 +151,10 @@ Along the way (from requests during the build, and Greg's own commits):
 - **Passes:** stop a test or real pass; station location by place/postcode search
   (Nominatim) or Maidenhead locator, with a clear hint when geolocation needs HTTPS;
   rotation on/off switch in the Receiver panel and Passes tab.
+- **Harmonics check:** measures a short-range device's carrier and its harmonics (retuning
+  to each) and rates them Good / Medium / Bad against Ofcom (EN 300 220-1 Table 19, UK SRD
+  ERP limits) and FCC Part 15 (§15.231(b), §15.249, §15.227, §15.205/§15.209) limits, in dBc
+  assuming a carrier at the legal maximum. Simulated SRD on 434.2 MHz with harmonics.
 - **UI:** settings in tabs, profile page (password), system info, waterfall palettes,
   spectrum toolbar that doesn't move on hover, phone-friendly tab bar.
 - **Tests:** API smoke test (`scripts/smoke-test.sh`) and Playwright layout tests at four

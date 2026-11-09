@@ -9,6 +9,7 @@
   import Waterfall from './components/Waterfall.svelte';
   import RadioPanel from './components/RadioPanel.svelte';
   import ListenPanel from './components/ListenPanel.svelte';
+  import HarmonicsPanel from './components/HarmonicsPanel.svelte';
   import { MODES, snap, type AudioMode, type Listen } from './lib/audio';
   import { ALL_GROUPS, modeAt } from './lib/bandplan';
   import { bookmarks, type Bookmark } from './lib/bookmarks.svelte';
@@ -30,6 +31,7 @@
   let settingsTab = $state<SettingsTab>('receiver');
   let waterfall = $state<ReturnType<typeof Waterfall> | undefined>();
   let listenPanel = $state<ReturnType<typeof ListenPanel> | undefined>();
+  let harmonics = $state<ReturnType<typeof HarmonicsPanel> | undefined>();
   let listen = $state<Listen>({ on: false, hz: 145_800_000, mode: 'nfm' });
   let autoMode = $state(true);
   const ALL_BANDS = new Set(ALL_GROUPS);
@@ -61,7 +63,10 @@
   $effect(() => {
     if (!user) return;
     const s = new Stream({
-      onFrame: (f) => waterfall?.push(f),
+      onFrame: (f) => {
+        waterfall?.push(f);
+        harmonics?.push(f);
+      },
       onRadio: (st) => (radio = st),
       onEvent: (d, ev) => {
         if (d.decoder === 'aprs') aprs?.push(d, ev);
@@ -221,6 +226,7 @@
       </div>
       <div class="side">
         <ListenPanel bind:this={listenPanel} {radio} bind:listen bind:autoMode send={(m) => stream?.send(m)} />
+        <HarmonicsPanel bind:this={harmonics} {radio} {listen} {isAdmin} />
         <BookmarksPanel {listen} {isAdmin} onselect={selectBookmark} onmanage={() => (view = 'bookmarks')} />
         <RadioPanel {radio} {isAdmin} />
       </div>
