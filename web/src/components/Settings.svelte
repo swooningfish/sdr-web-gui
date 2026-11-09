@@ -1,8 +1,5 @@
 <script lang="ts">
   import type { RadioState, User } from '../lib/api';
-  import type { Listen } from '../lib/audio';
-  import type { Bookmark } from '../lib/bookmarks.svelte';
-  import BookmarksPage from './BookmarksPage.svelte';
   import SdrDevices from './SdrDevices.svelte';
   import AdsbSettings from './AdsbSettings.svelte';
   import DecoderSettings from './DecoderSettings.svelte';
@@ -21,7 +18,6 @@
     | 'decoders'
     | 'rotation'
     | 'passes'
-    | 'bookmarks'
     | 'integrations'
     | 'users'
     | 'system';
@@ -30,15 +26,10 @@
     radio,
     me,
     tab = $bindable('receiver'),
-    listen,
-    onlisten,
   }: {
     radio: RadioState | null;
     me: User;
     tab?: SettingsTab;
-    /** What the Listen panel is tuned to, for "Add bookmark". */
-    listen: Listen;
-    onlisten: (b: Bookmark) => void;
   } = $props();
 
   const isAdmin = $derived(me.role === 'admin');
@@ -47,17 +38,15 @@
     { id: 'decoders', label: 'Decoders', admin: true },
     { id: 'rotation', label: 'Rotation', admin: true },
     { id: 'passes', label: 'Passes', admin: true },
-    // Everyone manages their own bookmarks here.
-    { id: 'bookmarks', label: 'Bookmarks', admin: false },
     { id: 'integrations', label: 'Integrations', admin: true },
     { id: 'users', label: 'Users', admin: true },
     { id: 'system', label: 'System', admin: true },
   ];
   const TABS = $derived(ALL_TABS.filter((t) => isAdmin || !t.admin));
 
-  // Viewers only have the Bookmarks tab.
+  // Settings are admin only; bookmarks live in the receiver's slide-out manager.
   $effect(() => {
-    if (!TABS.some((t) => t.id === tab)) tab = TABS[0].id;
+    if (TABS.length && !TABS.some((t) => t.id === tab)) tab = TABS[0].id;
   });
 </script>
 
@@ -89,10 +78,6 @@
     {:else if tab === 'passes'}
       <LocationSettings />
       <ScheduleSettings {radio} />
-    {:else if tab === 'bookmarks'}
-      <div class="wide">
-        <BookmarksPage {isAdmin} current={{ hz: listen.hz, mode: listen.mode }} {onlisten} />
-      </div>
     {:else if tab === 'integrations'}
       <Integrations />
       <RepeaterSettings />
@@ -132,10 +117,6 @@
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
     gap: 16px;
     align-items: start;
-    min-width: 0;
-  }
-  .wide {
-    grid-column: 1 / -1;
     min-width: 0;
   }
   @media (max-width: 760px) {

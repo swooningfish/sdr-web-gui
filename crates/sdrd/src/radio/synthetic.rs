@@ -29,8 +29,10 @@ enum Kind {
     /// FM repeater: an over of "speech", then its Morse ident on a 1 kHz
     /// tone, then the carrier drops; every `period` s.
     Repeater { period: f64 },
-    /// Broadcast FM: music-like tones, stereo pilot and RDS.
+    /// Broadcast FM: music-like tones, stereo pilot and RDS (if it has any).
     Broadcast,
+    /// A DAB multiplex (index into `DAB_MUXES`) naming its services.
+    Dab { mux: usize },
     /// SRD telemetry (narrow 2-FSK, on 0.8 s of every 1 s), or its `n`th
     /// harmonic (n > 1) for trying the harmonics check: same keying, n times
     /// the deviation, as a real transmitter's harmonics would be.
@@ -70,6 +72,52 @@ fn srd_bit(k: u64) -> bool {
     x ^= x >> 29;
     x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
     (x >> 32) & 1 == 1
+}
+
+/// Broadcast FM stations: frequency, amplitude, RDS PI, name and radio text
+/// (no name = no RDS).
+const FM_STATIONS: &[(f64, f64, u16, &str, &str)] = &[
+    (88_600_000.0, 0.2, 0xC201, "SIM TWO", "Simulated speech and music"),
+    (96_100_000.0, 0.3, 0xC0DE, "SIM FM", "You're listening to the simulated receiver"),
+    (101_300_000.0, 0.25, 0xC3A0, "SIMROCK", "Classic simulated rock"),
+    (104_900_000.0, 0.15, 0, "", ""),
+];
+
+/// DAB multiplexes: centre frequency (Band III channel) and what the FIC names.
+type Mux = (f64, u16, &'static str, &'static [(u16, &'static str)]);
+const DAB_MUXES: &[Mux] = &[
+    (
+        222_064_000.0, // 11D
+        0xC1A1,
+        "SIM DAB",
+        &[
+            (0xC221, "Sim Radio One"),
+            (0xC222, "Sim Jazz"),
+            (0xC223, "Sim News 24"),
+            (0xC224, "Sim Classics"),
+            (0xC225, "Sim Sport"),
+        ],
+    ),
+    (
+        225_648_000.0, // 12B
+        0xC1B2,
+        "SIM LOCAL",
+        &[(0xC231, "Sim Local FM"), (0xC232, "Sim Rock"), (0xC233, "Sim Gold")],
+    ),
+];
+
+/// One transmission frame per multiplex, made once (repeated on air).
+fn dab_frames() -> &'static [Vec<num_complex::Complex32>] {
+    static FRAMES: std::sync::OnceLock<Vec<Vec<num_complex::Complex32>>> = std::sync::OnceLock::new();
+    FRAMES.get_or_init(|| {
+        DAB_MUXES
+            .iter()
+            .enumerate()
+            .map(|(i, &(_, eid, label, services))| {
+                crate::dab::encode::frame(&crate::dab::encode::Spec { eid, label, services }, i as u64 + 1)
+            })
+            .collect()
+    })
 }
 
 const BEACON_TEXT: &str = "VVV DE GB3SIM IO91 QRV";
@@ -184,18 +232,16 @@ impl SynthGen {
                     em.next = 2.0;
                     em
                 },
-                {
-                    let mut em = e(96_100_000.0, 0.3, Kind::Broadcast);
-                    em.rds = rds::encode::differential(&rds::encode::groups(
-                        0xC0DE,
-                        10,
-                        "SIM FM",
-                        "You're listening to the simulated receiver",
-                    ));
-                    em
-                },
             ]
             .into_iter()
+            .chain(FM_STATIONS.iter().map(|&(hz, amp, pi, name, text)| {
+                let mut em = e(hz, amp, Kind::Broadcast);
+                if !name.is_empty() {
+                    em.rds = rds::encode::differential(&rds::encode::groups(pi, 10, name, text));
+                }
+                em
+            }))
+            .chain((0..DAB_MUXES.len()).map(|mux| e(DAB_MUXES[mux].0, 0.1, Kind::Dab { mux })))
             .chain((0..sim_aircraft::FLIGHTS.len()).map(|idx| {
                 let mut em = e(1_090_000_000.0, 0.3, Kind::Aircraft { idx });
                 // Stagger the first squitters.
@@ -234,7 +280,17 @@ impl SynthGen {
         let mut out = Vec::with_capacity(n * 2);
 
         let active: Vec<usize> = (0..self.emitters.len())
-            .filter(|&i| (self.emitters[i].freq_hz - center_hz as f64).abs() < half_bw - 15_000.0)
+            .filter(|&i| {
+                let em = &self.emitters[i];
+                let off = (em.freq_hz - center_hz as f64).abs();
+                match em.kind {
+                    // 1.5 MHz wide: shown while its centre is in the capture.
+                    // Nothing filters it, so any further out and it would
+                    // fold over into the middle (a dongle's filter stops that).
+                    Kind::Dab { .. } => off < half_bw,
+                    _ => off < half_bw - 15_000.0,
+                }
+            })
             .collect();
 
         for _ in 0..n {
@@ -246,6 +302,8 @@ impl SynthGen {
                 let offset = em.freq_hz - center_hz as f64;
                 // Share of this sample a pulse covers (pulsed emitters).
                 let mut weight = 1.0;
+                // Complex baseband to put on the carrier (DAB), else a plain carrier.
+                let mut baseband = None;
                 let (inst_hz, gate) = match em.kind {
                     Kind::Aprs { period, channel } => {
                         if t >= em.next {
@@ -371,9 +429,12 @@ impl SynthGen {
                         em.phase2 = (em.phase2 + TAU * root * 1.5 * dt) % TAU;
                         let music = 0.3 * em.tone_phase.sin() + 0.2 * em.phase2.sin();
                         let pilot = 0.09 * (TAU * 19_000.0 * t).sin();
-                        let data = 0.05
-                            * rds::encode::baseband(&em.rds, t, rds::BIT_RATE)
-                            * (TAU * rds::SUBCARRIER_HZ * t).sin();
+                        let data = if em.rds.is_empty() {
+                            0.0
+                        } else {
+                            0.05 * rds::encode::baseband(&em.rds, t, rds::BIT_RATE)
+                                * (TAU * rds::SUBCARRIER_HZ * t).sin()
+                        };
                         (offset + 75_000.0 * (music + pilot + data), true)
                     }
                     Kind::Srd { n } => {
@@ -428,12 +489,30 @@ impl SynthGen {
                         };
                         (offset, weight > 0.0)
                     }
+                    Kind::Dab { mux } => {
+                        // The multiplex's frame on a loop, read at our sample rate.
+                        let frame = &dab_frames()[mux];
+                        let z = frame[em.phase2 as usize % frame.len()];
+                        // Exactly one sample a sample at 2.048 MS/s.
+                        em.phase2 = (em.phase2 + crate::dab::RATE as f64 / rate_f) % frame.len() as f64;
+                        baseband = Some((z.re as f64, z.im as f64));
+                        (offset, true)
+                    }
                 };
                 em.phase = (em.phase + TAU * inst_hz * dt) % TAU;
                 if gate {
                     let a = em.amp * scale * weight;
-                    i_acc += a * em.phase.cos();
-                    q_acc += a * em.phase.sin();
+                    let (c, s) = (em.phase.cos(), em.phase.sin());
+                    match baseband {
+                        Some((re, im)) => {
+                            i_acc += a * (re * c - im * s);
+                            q_acc += a * (re * s + im * c);
+                        }
+                        None => {
+                            i_acc += a * c;
+                            q_acc += a * s;
+                        }
+                    }
                 }
             }
             out.push(to_cu8(i_acc as f32));

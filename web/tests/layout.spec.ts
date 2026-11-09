@@ -15,12 +15,23 @@ async function openTab(page: Page, name: string) {
   await page.waitForTimeout(400);
 }
 
-/** Unfold a section under the receiver (Presets & rotation, Bookmarks, …). */
+/** Show the receiver at a size (Compact, Medium or Large). */
+async function receiverSize(page: Page, size: 'Compact' | 'Medium' | 'Large') {
+  const btn = page.getByRole('group', { name: 'Receiver size' }).getByRole('button', { name: size, exact: true });
+  if ((await btn.getAttribute('aria-pressed')) !== 'true') await btn.click();
+}
+
+/** Unfold a section under the receiver (Centre & presets, Gain & settings). */
 async function openDrawer(page: Page, name: RegExp) {
-  const fold = page.getByRole('button', { name: /^(Show|Hide)$/ });
-  if ((await fold.getAttribute('aria-expanded')) === 'false') await fold.click();
+  await receiverSize(page, 'Large');
   const btn = page.locator('.drawers').getByRole('button', { name });
   if ((await btn.getAttribute('aria-expanded')) !== 'true') await btn.click();
+}
+
+/** Headers for a mutating API call made straight from a test. */
+async function csrf(page: Page) {
+  const me = await (await page.request.get('/api/auth/me')).json();
+  return { 'X-CSRF-Token': me.csrf };
 }
 
 /** Pixels the page is wider than the window (0 = no sideways scrolling). */
@@ -48,6 +59,8 @@ test('spectrum toolbar does not move when hovering the spectrum', async ({ page 
   const controls = page.locator('.wf .controls');
   const readout = page.locator('.wf .readout');
   await expect(controls).toBeVisible();
+  // The receiver's front panel can push the spectrum below the fold.
+  await page.locator('.wf canvas.spectrum').scrollIntoViewIfNeeded();
   const before = { bar: await toolbar.boundingBox(), ctl: await controls.boundingBox() };
 
   const plot = page.locator('.wf canvas.spectrum');
@@ -66,8 +79,8 @@ test('spectrum toolbar does not move when hovering the spectrum', async ({ page 
 test('settings are split into tabs', async ({ page }) => {
   await openTab(page, 'Settings');
   const tabs = page.getByRole('tab');
-  await expect(tabs).toHaveCount(8);
-  for (const name of ['Receiver', 'Decoders', 'Rotation', 'Passes', 'Bookmarks', 'Integrations', 'Users', 'System']) {
+  await expect(tabs).toHaveCount(7);
+  for (const name of ['Receiver', 'Decoders', 'Rotation', 'Passes', 'Integrations', 'Users', 'System']) {
     await page.getByRole('tab', { name }).click();
     await expect(page.getByRole('tab', { name })).toHaveAttribute('aria-selected', 'true');
     await expect(page.locator('#settings-panel .panel').first()).toBeVisible();
@@ -156,6 +169,7 @@ test('APRS map shows home and can centre on it', async ({ page }) => {
   await expect(btn).toBeEnabled();
   // Pan away, then centre: the house should end up in the middle of the map.
   const map = page.getByRole('region', { name: 'APRS station map' });
+  await map.scrollIntoViewIfNeeded();
   const m = (await map.boundingBox())!;
   await page.mouse.move(m.x + m.width * 0.5, m.y + m.height * 0.5);
   await page.mouse.down();
@@ -176,7 +190,7 @@ test('rotation can be switched on and off from the receiver presets', async ({ p
   test.skip(!cfg.profiles.length, 'no rotation profiles');
   const before: boolean = cfg.rotation;
   await openTab(page, 'Spectrum');
-  await openDrawer(page, /^Presets/);
+  await openDrawer(page, /^Centre/);
   const sw = page.locator('.rotation-box').getByRole('switch', { name: 'Rotation between profiles' });
   await expect(sw).toHaveAttribute('aria-checked', String(before));
   await sw.click();
@@ -205,54 +219,154 @@ test('band plan strip shows and its groups are remembered', async ({ page }) => 
   expect(await overflow(page)).toBeLessThanOrEqual(0);
 });
 
-test('bookmarks under the receiver open Settings → Bookmarks, which fits the screen', async ({ page }) => {
+/** Unfold the receiver and open the slide-out bookmark manager. */
+async function openBookmarks(page: Page) {
+  await receiverSize(page, 'Large');
+  await page.getByRole('group', { name: 'Function keys' }).getByRole('button', { name: 'Bookmarks', exact: true }).click();
+  const drawer = page.getByRole('complementary', { name: 'Bookmarks' });
+  await expect(drawer).toBeVisible();
+  return drawer;
+}
+
+test('the bookmark manager slides out with tiles and fits the screen', async ({ page }) => {
   await openTab(page, 'Spectrum');
-  await openDrawer(page, /^Bookmarks$/);
-  await expect(page.getByRole('list', { name: 'Bookmarks' }).or(page.getByText('No bookmarks yet.'))).toBeVisible();
+  const drawer = await openBookmarks(page);
   // Calling frequencies are always there.
-  await page.getByRole('button', { name: 'Calling', exact: true }).click();
-  await expect(page.getByRole('list', { name: 'Bookmarks' })).toContainText('FM calling');
-  expect(await overflow(page), 'bookmarks list is wider than the window').toBeLessThanOrEqual(0);
-  await page.getByRole('button', { name: 'Saved', exact: true }).click();
-  await page.getByRole('button', { name: '★ Save' }).click();
-  await expect(page.getByRole('form', { name: /Bookmark/ })).toBeVisible();
-  expect(await overflow(page), 'add form is wider than the window').toBeLessThanOrEqual(0);
-  await page.getByRole('button', { name: 'Cancel' }).click();
-  await page.getByRole('button', { name: 'Manage bookmarks' }).click();
-  await expect(page.getByRole('tab', { name: 'Bookmarks' })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('heading', { name: 'Import and export' })).toBeVisible();
-  expect(await overflow(page), 'bookmarks page is wider than the window').toBeLessThanOrEqual(0);
-  await openTab(page, 'Spectrum');
-  await expect(page.locator('.wf')).toBeVisible();
+  await drawer.getByRole('button', { name: 'Calling', exact: true }).click();
+  await expect(drawer.locator('.tiles').first()).toBeVisible();
+  await expect(drawer).toContainText('FM calling');
+  expect(await overflow(page), 'bookmark manager is wider than the window').toBeLessThanOrEqual(0);
+  await drawer.getByRole('button', { name: 'Saved', exact: true }).click();
+  await drawer.getByRole('button', { name: /^★ Save/ }).click();
+  await expect(drawer.getByRole('form', { name: /Bookmark/ })).toBeVisible();
+  await drawer.getByRole('button', { name: 'Cancel' }).click();
+  await drawer.getByRole('button', { name: 'Manage' }).click();
+  await expect(drawer.getByRole('heading', { name: 'Import and export' })).toBeVisible();
+  const scan = drawer.getByRole('region', { name: 'Scan for stations' });
+  await expect(scan.getByRole('button', { name: 'Scan FM' }).or(scan.getByRole('button', { name: 'Stop scan' }))).toBeVisible();
+  await expect(scan.getByRole('button', { name: 'Scan DAB' }).or(scan.getByRole('button', { name: 'Stop scan' }))).toBeVisible();
+  expect(await overflow(page)).toBeLessThanOrEqual(0);
+  await page.keyboard.press('Escape');
+  await expect(drawer).toBeHidden();
+  // Settings no longer has a Bookmarks tab.
+  await openTab(page, 'Settings');
+  await expect(page.getByRole('tab', { name: 'Bookmarks' })).toHaveCount(0);
 });
 
-test('a bookmark can be added, listened to and deleted', async ({ page }, info) => {
+test('a bookmark can be added, put on an F-key, recalled and deleted', async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop-1920', 'state-changing test runs once');
   const name = `Test ${Date.now()}`;
+  const before = await (await page.request.get('/api/fkeys')).json();
+  const f8 = before.find((k: { slot: number }) => k.slot === 8);
   await openTab(page, 'Spectrum');
-  await openDrawer(page, /^Bookmarks$/);
-  await page.getByRole('button', { name: 'Manage bookmarks' }).click();
-  await page.getByRole('button', { name: 'Add bookmark' }).click();
-  const form = page.getByRole('form', { name: 'New bookmark' });
+  let drawer = await openBookmarks(page);
+  await drawer.getByRole('button', { name: 'Saved', exact: true }).click();
+  await drawer.getByRole('button', { name: /^★ Save/ }).click();
+  const form = drawer.getByRole('form', { name: /Bookmark/ });
   await form.getByLabel('Name').fill(name);
   await form.getByLabel('Frequency (MHz)').fill('145.5');
   await form.getByLabel('Mode').selectOption('nfm');
   await form.getByLabel('My bookmarks').check();
   await form.getByRole('button', { name: 'Save' }).click();
-  const row = page.locator('tbody tr').filter({ hasText: name });
-  await expect(row).toContainText('mine');
-  await row.getByRole('button', { name: 'Listen' }).click();
-  // Back on the spectrum, tuned to it, and it's in the list under the receiver.
-  await expect(page.locator('#listen-freq')).toHaveValue('145.5000');
-  await openDrawer(page, /^Bookmarks$/);
-  await page.getByRole('button', { name: 'Saved', exact: true }).click();
-  await expect(page.getByRole('list', { name: 'Bookmarks' })).toContainText(name);
-  // Delete it again from the page.
-  await page.getByRole('button', { name: 'Manage bookmarks' }).click();
+  const tile = drawer.locator('.tile-cell').filter({ hasText: name });
+  await expect(tile).toContainText('mine');
+  // Put it on F8 from the front panel: right-click the key, pick a bookmark.
+  await page.keyboard.press('Escape');
+  const keys = page.getByRole('group', { name: 'Function keys' });
+  await keys.getByRole('button', { name: /^F8:/ }).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Pick a bookmark…' }).click();
+  drawer = page.getByRole('complementary', { name: 'Bookmarks' });
+  await expect(drawer.getByRole('status')).toContainText('F8');
+  await drawer.locator('.tile').filter({ hasText: name }).click();
+  await expect(drawer).toBeHidden();
+  await expect(keys.getByRole('button', { name: /^F8:/ })).toHaveAccessibleName(new RegExp(`F8: ${name}`));
+  // Tune away, then recall it with F8.
+  await page.getByRole('button', { name: /^VFO [AB] .*Click to type/ }).click();
+  await page.locator('#listen-freq').fill('146.0');
+  await page.locator('#listen-freq').press('Enter');
+  await keys.getByRole('button', { name: /^F8:/ }).click();
+  await expect(page.getByRole('slider', { name: /^Tuning/ })).toHaveAttribute('aria-valuenow', '145500000');
+  // Delete the bookmark; the key keeps its own copy until cleared.
+  drawer = await openBookmarks(page);
+  await drawer.getByRole('button', { name: 'Manage' }).click();
   page.once('dialog', (d) => d.accept());
-  await page.getByLabel(`Select ${name}`).check();
-  await page.getByRole('toolbar', { name: 'Selected bookmarks' }).getByRole('button', { name: 'Delete' }).click();
-  await expect(page.locator('tbody tr').filter({ hasText: name })).toHaveCount(0);
+  await drawer.locator('.tile').filter({ hasText: name }).click();
+  await drawer.getByRole('toolbar', { name: 'Selected bookmarks' }).getByRole('button', { name: 'Delete' }).click();
+  await expect(drawer.locator('.tile').filter({ hasText: name })).toHaveCount(0);
+  // Put F8 back how it was.
+  if (f8) await page.request.put('/api/fkeys/8', { data: f8, headers: await csrf(page) });
+  else await page.request.delete('/api/fkeys/8', { headers: await csrf(page) });
+});
+
+test('the receiver has three sizes and fits the screen at each', async ({ page }) => {
+  await openTab(page, 'Spectrum');
+  const knob = page.getByRole('slider', { name: /^Tuning/ });
+  const fkeys = page.getByRole('group', { name: 'Function keys' });
+  await receiverSize(page, 'Compact');
+  await expect(knob).toBeHidden();
+  expect(await overflow(page)).toBeLessThanOrEqual(0);
+  await receiverSize(page, 'Medium');
+  await expect(knob).toBeVisible();
+  await expect(fkeys).toBeVisible();
+  await expect(page.getByRole('meter', { name: 'Audio level' })).toBeVisible();
+  await expect(page.getByRole('group', { name: 'Mode' })).toHaveCount(0);
+  expect(await overflow(page)).toBeLessThanOrEqual(0);
+  await receiverSize(page, 'Large');
+  await expect(page.getByRole('group', { name: 'Mode' })).toBeVisible();
+  await expect(page.getByRole('slider', { name: /^Gain/ })).toBeVisible();
+  await expect(page.getByRole('slider', { name: 'Rate' })).toBeVisible();
+  expect(await overflow(page)).toBeLessThanOrEqual(0);
+  // Remembered across a reload.
+  await receiverSize(page, 'Medium');
+  await page.reload();
+  await expect(page.getByRole('group', { name: 'Receiver size' }).getByRole('button', { name: 'Medium' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await receiverSize(page, 'Large');
+});
+
+test('the gain knob pushes in for AGC and turns through the gains', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop-1920', 'state-changing test runs once');
+  const radio = await (await page.request.get('/api/radio')).json();
+  test.skip(!radio.can_tune || radio.gains_db.length < 2, 'receiver has no gain steps to set');
+  const gain = async () => (await (await page.request.get('/api/radio')).json()).settings.gain_db as number | null;
+  const before = radio.settings.gain_db as number | null;
+  await openTab(page, 'Spectrum');
+  await receiverSize(page, 'Large');
+  const knob = page.getByRole('slider', { name: /^Gain/ });
+  // Into AGC first, so the test starts the same way each time.
+  if (before !== null) {
+    await knob.press('Enter');
+    await expect.poll(gain).toBeNull();
+  }
+  await expect(knob).toHaveAttribute('aria-valuetext', 'AGC');
+  await knob.press('Enter'); // pull out: a manual gain
+  await expect.poll(gain).not.toBeNull();
+  const manual = (await gain())!;
+  await knob.press(manual === Math.max(...radio.gains_db) ? 'ArrowDown' : 'ArrowUp');
+  await expect.poll(gain, { timeout: 5000 }).not.toBe(manual);
+  // Put it back.
+  if (before === null) await knob.press('Enter');
+  else await page.request.post('/api/radio', { data: { gain_db: before }, headers: await csrf(page) });
+  await expect.poll(gain).toBe(before);
+});
+
+test('A/B swaps the VFO being heard and A=B copies it', async ({ page }) => {
+  await openTab(page, 'Spectrum');
+  await receiverSize(page, 'Large');
+  const knob = page.getByRole('slider', { name: /^Tuning/ });
+  const a = await knob.getAttribute('aria-valuenow');
+  await page.getByRole('button', { name: /^[AB]=[AB]$/ }).click();
+  await page.getByRole('button', { name: 'A / B' }).click();
+  await expect(knob).toHaveAttribute('aria-valuenow', a!);
+  // Step the knob on this VFO, swap back: the first VFO is unchanged.
+  await knob.focus();
+  await page.keyboard.press('ArrowUp');
+  await expect(knob).not.toHaveAttribute('aria-valuenow', a!);
+  await page.getByRole('button', { name: 'A / B' }).click();
+  await expect(knob).toHaveAttribute('aria-valuenow', a!);
+  expect(await overflow(page)).toBeLessThanOrEqual(0);
 });
 
 test('arrow keys on the spectrum retune the radio', async ({ page }, info) => {
@@ -343,7 +457,8 @@ test('the sampled window and the mini map move the radio', async ({ page }, info
   await map.click({ position: { x: mx - m.x, y: 8 } });
   await expect.poll(async () => Math.abs((await centre()) - before), { timeout: 5000 }).toBeLessThan(before * 0.01);
 
-  // Put it back exactly.
+  // Put it back exactly (the centre box is under Centre & presets).
+  await openDrawer(page, /^Centre/);
   await page.locator('#freq').fill(String(before / 1e6));
   await page.getByRole('button', { name: 'Tune', exact: true }).click();
   await expect.poll(centre, { timeout: 5000 }).toBe(before);

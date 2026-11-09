@@ -1,10 +1,24 @@
 # sdr-web-gui
 
+[![CI](https://github.com/swooningfish/sdr-web-gui/actions/workflows/ci.yml/badge.svg)](https://github.com/swooningfish/sdr-web-gui/actions/workflows/ci.yml)
+
 A self-hosted, browser-controlled RTL-SDR monitor for a Raspberry Pi, packaged in Docker.
 It's inspired by [OnAir](https://github.com/adswill/OnAir) but focuses on unattended
-monitoring: TPMS/ISM sensors (rtl_433), APRS, and SSTV, including automatic ISS/ARISS pass recording.
+monitoring: TPMS/ISM sensors (rtl_433), APRS, ADS-B and SSTV, including automatic ISS/ARISS
+pass recording, with live audio in the browser.
 
 See [SPEC.md](SPEC.md) for the full design and roadmap.
+
+![The receiver front panel above the live spectrum and waterfall](docs/screenshots/spectrum.png)
+
+| APRS map | Aircraft (ADS-B) | SSTV |
+|---|---|---|
+| [![APRS](docs/screenshots/aprs.png)](#aprs-direwolf) | [![Aircraft](docs/screenshots/aircraft.png)](#aircraft-ads-b) | [![SSTV](docs/screenshots/sstv.png)](#sstv) |
+| **Sensors (rtl_433, TPMS)** | **ISS passes** | **Settings** |
+| [![Sensors](docs/screenshots/sensors.png)](#sensors-rtl_433-tpms) | [![Passes](docs/screenshots/passes.png)](#passes-and-scheduling) | [![Settings](docs/screenshots/settings.png)](#settings) |
+
+All screenshots are of the simulated receiver in the dev stack, so you can see the same thing
+without a dongle.
 
 ## TL;DR
 
@@ -54,7 +68,7 @@ Details in [Deploying on a Raspberry Pi 5](#deploying-on-a-raspberry-pi-5).
   trails, range rings and range stats, aircraft database, Home Assistant sensors
 - [ ] M9: signal classifier (voice / data / broadcast labels on the spectrum)
 
-Also still to do: testing on real hardware, CI, a licence. Details in
+Also still to do: testing on real hardware, a licence. Details in
 [SPEC.md](SPEC.md#left-to-do-besides-m7m9).
 
 ## Prerequisites
@@ -125,8 +139,9 @@ takes seconds.
 
 ### Test signals
 
-The simulated receiver puts test signals on 96.1, 144.470, 144.800, 145.375, 145.7125,
-145.800, 145.825, 433.920 and 437.550 MHz (Doppler-drifting carrier). Use the presets to see them.
+The simulated receiver puts test signals on 88.6, 96.1, 101.3, 104.9, 144.470, 144.800,
+145.375, 145.7125, 145.800, 145.825, 433.920 and 437.550 MHz (Doppler-drifting carrier), and
+DAB on 11D and 12B. Use the presets to see them.
 They are real, decodable transmissions:
 
 - **144.800 / 145.825 (VHF block, the default):** APRS packets that Direwolf decodes: a car
@@ -143,6 +158,10 @@ They are real, decodable transmissions:
   tone. Listen in **NFM** with **Decode CW** on.
 - **96.1 MHz (tune to ~96.25):** an FM broadcast station with RDS ("SIM FM", radio text).
   Listen in **WFM**.
+- **FM band:** three more stations for the band scan: 88.6 ("SIM TWO") and 101.3
+  ("SIMROCK") with RDS, 104.9 without.
+- **DAB 11D (222.064 MHz) and 12B (225.648 MHz):** two multiplexes, "SIM DAB" with five
+  stations and "SIM LOCAL" with three, named in their FIC for the DAB band scan. No audio.
 - **1090 MHz:** ten aircraft around London sending ADS-B. Choose a simulated dongle as the
   ADS-B receiver in **Settings → Receiver** (or start with `SDRD_ADSB_DEVICE=sim-v4`), or tune
   the main receiver to 1090 MHz at 2.4 MS/s, and open the **Aircraft** tab. Set the station
@@ -206,15 +225,40 @@ show up instantly without rebuilding the image.
 
 ### Tests
 
+Unit tests (DSP, decoders, SSTV encode → decode, ADS-B, auth, …) and the UI type check need
+no running stack:
+
+```bash
+cargo test                          # needs Rust; or in Docker, see below
+cd web && npm ci && npm run check   # svelte-check
+```
+
+No Rust installed? Run the Rust tests in the official image instead:
+`docker run --rm -v "${PWD}:/src" -w /src rust:1-bookworm cargo test` (bash or PowerShell).
+
 With the dev stack running:
 
-- `./scripts/smoke-test.sh` checks the API: health, login, auth and CSRF rules.
+- `./scripts/smoke-test.sh` checks the API: health, login, auth and CSRF rules, and each
+  feature's endpoints.
 - `./scripts/ui-test.sh` runs Playwright (in its official Docker image, nothing to install) at
-  1920, 1366, 820 and 375 px wide. It checks that no page scrolls sideways, that the spectrum
-  toolbar doesn't move on hover, and checks the settings tabs, the profile page and
-  remembered waterfall colours.
+  1920, 1366, 820 and 375 px wide. It checks that no page scrolls sideways and exercises the
+  receiver front panel, spectrum zoom and tuning, bookmarks and F-keys, settings tabs, maps,
+  lists and galleries. Pass Playwright options through, e.g.
+  `./scripts/ui-test.sh --project=phone-375`. Some tests only run at one width, or skip
+  themselves when the stack can't support them (e.g. no ADS-B receiver), so a run shows some
+  as skipped.
+- `./scripts/screenshots.sh` regenerates the screenshots in this README
+  (`docs/screenshots/`). It borrows a simulated ADS-B receiver for the Aircraft shot and puts
+  your setting back afterwards.
 
-Both are bash scripts: on Windows run them from Git Bash or WSL.
+These are bash scripts: on Windows run them from Git Bash or WSL.
+
+**Continuous integration.** [GitHub Actions](.github/workflows/ci.yml) runs all of the above
+on every push to `main` and every pull request: `cargo test`, `svelte-check` and the
+production UI build, then it builds the Docker image, starts the dev stack and runs the
+smoke and Playwright tests against it. The badge at the top shows the result for `main`;
+click it for the logs. A run can also be started by hand from the repository's **Actions**
+tab (**CI → Run workflow**).
 
 ## Deploying on a Raspberry Pi 5
 
@@ -325,21 +369,22 @@ Every line's sync pulse is tracked, so slant from clock differences is corrected
 
 ## Live audio
 
-Press **Play** in the *Listen* panel on the Spectrum tab, then click the waterfall (or type a
-frequency) to listen anywhere inside the tuned band. The channel is shaded on the spectrum.
+Press **Play** on the receiver's front panel, then click the waterfall, turn the tuning knob or
+click the big frequency on the display to type one, to listen anywhere inside the tuned band.
+The channel is shaded on the spectrum.
 
 - Modes: **NFM**, **AM**, **WFM** (broadcast, 50 µs de-emphasis, RDS), **USB**, **LSB**,
   **CW** (a carrier on the dial frequency is heard as a 700 Hz note).
-- **Decode CW** shows Morse as text under the Listen panel (5–40 WPM, speed found
+- **CW dec** shows Morse as text under the spectrum (5–40 WPM, speed found
   automatically). It also reads the Morse ident an FM repeater sends after an over (NFM).
-- **Decode digital** (NFM) identifies and decodes digital voice: DMR, D-STAR, System Fusion
-  (YSF), NXDN, P25, dPMR and M17, detected automatically. The panel shows who is on air
+- **Digital** (NFM) identifies and decodes digital voice: DMR, D-STAR, System Fusion
+  (YSF), NXDN, P25, dPMR and M17, detected automatically. The strip under the spectrum shows who is on air
   (callsign or radio ID, talkgroup or destination, colour code / NAC / RAN / CAN, talker alias
   and text messages), a log of recent calls, and optionally DSD-neo's console. It uses
   [DSD-neo](https://github.com/arancormonk/dsd-neo), one process per listener, fed the raw FM
   discriminator. Decoded voice is not played (the AMBE/IMBE vocoders are patent-encumbered);
   you hear the FM audio as usual.
-- **RDS:** in WFM the panel shows the station name, programme type and radio text.
+- **RDS:** in WFM the strip under the spectrum shows the station name, programme type and radio text.
 - **Squelch**, **noise reduction** (spectral; removes steady hiss), **volume** and **mute**.
   Settings are remembered per browser; clicks snap to the mode's channel raster.
 - Audio is demodulated per listener in sdrd and streamed over the existing WebSocket as
@@ -350,10 +395,15 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
 
 ## Spectrum tools
 
+<img src="docs/screenshots/phone.png" alt="The spectrum page on a phone, with the receiver folded to one line" width="260" align="right">
+
+Everything works on a phone or tablet too: the tab bar scrolls, the front panel folds to
+one line (**Compact**), and you drag and pinch-zoom the spectrum with your fingers.
+
 - **Band plan:** the strip above the spectrum shows UK amateur bands with their RSGB
   sub-bands, plus broadcast, aviation, marine, CB/PMR446, ISM/SRD and satellite bands.
-  Choose groups under **Band plan**; hover to name the band. With *Pick the mode from the
-  band plan* (Listen panel), clicking airband picks AM, broadcast FM picks WFM, and so on.
+  Choose groups under **Band plan**; hover to name the band. With **Auto mode** on the
+  front panel, clicking airband picks AM, broadcast FM picks WFM, and so on.
 - **Moving along the band (admins):** drag the spectrum, swipe sideways on a trackpad,
   scroll the mouse wheel once the spectrum has focus (click it first), or use the
   Left/Right arrow keys (Shift for bigger steps). Up/Down step the listening frequency.
@@ -374,24 +424,61 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
   marker to move the radio) and click the level (e.g. **×8**) to fit the whole range
   again. An arrow at the edge points to the radio when it's off the part shown. Hide it
   under **Band plan**.
-- **Receiver bar:** at the top of every page, under the tabs: the device, centre frequency
-  and nudges, and an analogue **S-meter** for the channel you're listening to (read from the
-  spectrum, so it works without audio; dBm is estimated from the gain, with a per-browser
-  trim and an optional IARU VHF scale under *Gain & settings*). **Presets & rotation**,
-  **Bookmarks** and **Gain & settings** fold out below it; **Hide** folds the whole bar to
-  one line. Each browser remembers what's open.
-- **Presets & rotation:** the built-in presets plus every rotation profile as a quick-tune
-  button, and the rotation switch.
-- **Bookmarks:** flags above the spectrum and a list in the receiver bar; click one to
-  listen (admins also retune if it's outside the band). **★ Save** keeps the current
-  frequency. The **station list** is shared with everyone (admins edit it); **mine** are
-  yours alone. **Calling** lists standard calling frequencies (IARU Region 1 / UK band
-  plans) and **Repeaters** lists repeaters near the station from RepeaterBook (see
-  [Settings](#settings)); ☆ saves one as a bookmark. **Manage** opens Settings →
-  Bookmarks: edit, delete several, export CSV, or import a CSV (our own export, CHIRP or
-  gqrx `bookmarks.csv`).
+- **Receiver front panel:** at the top of every page, laid out like a transceiver. The
+  display shows **VFO A** and **VFO B** (the one you hear is the big one), annunciators
+  (BUSY when the squelch is open, SQL, NR, AFC, CW-DEC, DIG with the sync found, MUTE, OUT
+  when the channel is outside the sampled band) and the centre frequency, rate, gain and
+  device. Beside it are an analogue **S-meter** for the channel you're listening to (read
+  from the spectrum, so it works without audio; dBm is estimated from the gain, with a
+  per-browser trim and an optional IARU VHF scale under *Gain & settings*), with an
+  **audio meter** under it (what you hear, after the volume: LED segments for the level and
+  a peak-hold segment, −54 to 0 dBFS), and the **tuning knob**: drag it round, scroll over
+  it, or focus it and use the arrow keys (Page Up/Down for ten steps), with the **step**
+  below it. Click the big frequency to type one. Keys below: the **RF** knobs, **Play/Stop**,
+  **Mute**, AF volume, squelch; the mode keys and **Auto mode**; **A / B** swaps which VFO
+  you hear and **A=B** copies it to the other (VFO B is a dashed orange marker on the
+  spectrum); **NR**, **AFC**, **CW dec** and **Digital**. **Centre & presets** (centre
+  frequency and nudges, presets, rotation profiles and the rotation switch) and **Gain &
+  settings** fold out below.
+- **RF knobs (admins):** **Gain** pushes in for AGC (a click, or Enter, with the ring lit);
+  pulled out, turn it (drag up/right, scroll or arrow keys) through the dongle's gain steps.
+  It comes out at the last manual gain. **Rate** turns through the sample rates. Both apply
+  once the knob stops, so turning past several values retunes once.
+- **Sizes:** **Compact** is one line (Play, the frequency, a bar meter), **Medium** the
+  display, meters, tuning knob and function keys, **Large** the whole panel. Each browser
+  remembers the size and what's open.
+- **Function keys F1–F8:** each recalls a frequency and mode, usually a bookmark. Click an
+  empty key to pick a bookmark for it; right-click (or long-press on a touch screen) a key,
+  or turn on **F-Set** and click it, to pick another, store what you're hearing, or clear
+  it. Keys are saved per user on the server, so they follow you to any browser. A key keeps
+  its own copy, so it still works if its bookmark is deleted; while the bookmark exists the
+  key follows its edits. The lit key is the one you're on.
+- **Bookmarks:** flags above the spectrum, and a manager that slides out from the right
+  (**Bookmarks** on the front panel; Escape closes it). Bookmarks are tiles, grouped by
+  group (or band, or repeater mode); click one to listen (admins also switch to its sample
+  rate, and retune if it's outside the band). **★ Save** keeps the current frequency, mode
+  and sample rate. Tuned to a bookmark you can edit but on a different mode or sample rate,
+  **↻ Update** saves them into it. The **station list** is shared
+  with everyone (admins edit it); **mine** are yours alone. **Calling** lists standard
+  calling frequencies (IARU Region 1 / UK band plans) and **Repeaters** lists repeaters near
+  the station from RepeaterBook (see [Settings](#settings)); ☆ saves one as a bookmark.
+  **Manage**: click tiles to select several and delete them, ✎ to edit, ↻ to update one to
+  what's tuned now (frequency, mode and sample rate), **F** to put one
+  on a function key, and export CSV or import a CSV (our own export, CHIRP or gqrx
+  `bookmarks.csv`).
+
+  **Scan for stations** (in Manage) finds broadcast stations to add: an admin runs
+  **Scan FM** (87.5–108 MHz: carriers clear of the noise floor, named from their RDS) or
+  **Scan DAB** (Band III 5A–13F: each multiplex's station list, read from its FIC). The
+  receiver retunes for about a minute, rotation waits, a satellite pass stops the scan, and
+  then it goes back to where it was. Anyone can tick stations in the results and add them to
+  their bookmarks (admins also to the station list); ones already there are marked. DAB
+  stations are saved on their multiplex's frequency at 2.048 MS/s: sdrd shows the
+  multiplex but can't play DAB audio.
+
+  ![The bookmark manager open on the Calling list](docs/screenshots/bookmarks.png)
 - **Harmonics check (admins):** click a short-range device's signal (a key fob, sensor or
-  telemetry link) so you're listening to it, then **Check harmonics** in the side column.
+  telemetry link) so you're listening to it, then **Check harmonics** under the spectrum.
   It measures the carrier, retunes to the 2nd–5th harmonics (as far as the dongle reaches),
   watches each for a few seconds and rates each one **Good**, **Medium** or **Bad** against
   **Ofcom** (UK SRD bands, ETSI EN 300 220-1 spurious limits) and **FCC** Part 15
@@ -410,8 +497,8 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
 
 Admins get **Settings**, split into tabs: Receiver (SDR devices), Decoders (rtl_433, APRS,
 SSTV), Rotation (profiles), Passes (location, satellites, auto-switch, TLEs, test pass),
-Bookmarks, Integrations (MQTT / Home Assistant, RepeaterBook), Users and System (read-only
-server settings). Viewers get Settings with just the Bookmarks tab, to manage their own.
+Integrations (MQTT / Home Assistant, RepeaterBook), Users and System (read-only server
+settings). Everyone manages their bookmarks and function keys from the receiver.
 
 **RepeaterBook** (Integrations) fills *Bookmarks → Repeaters* with repeaters within a radius
 (default 1 mile) of the station location. RepeaterBook only serves approved clients:

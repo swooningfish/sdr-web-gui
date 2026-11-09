@@ -1,4 +1,6 @@
 import type { Bookmark, BookmarkInput, ImportResult } from './bookmarks.svelte';
+import type { AudioMode } from './audio';
+import type { FKey, FKeyInput } from './fkeys.svelte';
 
 export type Role = 'admin' | 'viewer';
 
@@ -345,6 +347,42 @@ export interface Repeater {
   distance_mi: number;
 }
 
+export type ScanBand = 'fm' | 'dab';
+
+/** A station the band scan found. */
+export interface ScanFound {
+  id: string;
+  band: ScanBand;
+  name: string;
+  freq_hz: number;
+  mode: AudioMode;
+  sample_rate: number | null;
+  group: string;
+  notes: string;
+  /** Above the noise floor (FM) or signal-to-noise (DAB), dB. */
+  level_db: number;
+  /** RDS PI (FM) or service id (DAB), hex. */
+  ident: string | null;
+  ensemble: string | null;
+  channel: string | null;
+  /** Already among your bookmarks (same frequency and name). */
+  saved: boolean;
+}
+
+export interface ScanStatus {
+  running: boolean;
+  band: ScanBand | null;
+  step: string;
+  progress: number;
+  started_ms: number | null;
+  finished_ms: number | null;
+  by: string | null;
+  stopped: boolean;
+  error: string | null;
+  notes: string[];
+  found: ScanFound[];
+}
+
 export interface RepeaterList {
   enabled: boolean;
   radius_miles?: number;
@@ -556,6 +594,14 @@ export const api = {
   updateBookmark: (id: number, b: BookmarkInput) => req<{ ok: boolean }>('PUT', `/bookmarks/${id}`, b),
   deleteBookmarks: (ids: number[]) => req<{ deleted: number; skipped: number }>('POST', '/bookmarks/delete', { ids }),
   importBookmarks: (csv: string, shared: boolean) => req<ImportResult>('POST', '/bookmarks/import', { csv, shared }),
+  scan: () => req<ScanStatus>('GET', '/scan'),
+  startScan: (band: ScanBand) => req<{ ok: boolean }>('POST', '/scan', { band }),
+  stopScan: () => req<{ ok: boolean }>('POST', '/scan/stop'),
+  saveScan: (ids: string[], shared: boolean) =>
+    req<{ added: number; duplicates: number; missing: number }>('POST', '/scan/save', { ids, shared }),
+  fkeys: () => req<FKey[]>('GET', '/fkeys'),
+  setFkey: (slot: number, k: FKeyInput) => req<{ ok: boolean }>('PUT', `/fkeys/${slot}`, k),
+  clearFkey: (slot: number) => req<{ ok: boolean }>('DELETE', `/fkeys/${slot}`),
   geocode: (q: string) =>
     req<{ places: { name: string; lat_deg: number; lon_deg: number }[] }>(
       'GET',

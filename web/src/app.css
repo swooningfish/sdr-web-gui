@@ -12,6 +12,19 @@
   --warn: #f59e0b;
   /* Map tiles are drawn for light backgrounds; dim and invert them in dark mode. */
   --tile-filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9);
+  /* Receiver front panel: bezel, hardware keys and the LCD (always dark). */
+  --face: linear-gradient(180deg, #1a1d23, #121418);
+  --face-edge: #2c313b;
+  --face-label: #9aa3b2;
+  --key: linear-gradient(180deg, #343841, #24272d);
+  --key-edge: #0c0d10;
+  --key-text: #e5e7eb;
+  --led: #f59e0b;
+  --led-off: #3a3d44;
+  --lcd: radial-gradient(120% 140% at 30% 0%, #0f2a33, #071419 70%);
+  --lcd-text: #c8f3ff;
+  --lcd-dim: #4f7f8c;
+  --lcd-sub: #ffb454;
   color-scheme: dark;
 }
 
@@ -28,6 +41,13 @@
     --ok: #15803d;
     --bad: #b91c1c;
     --tile-filter: none;
+    --face: linear-gradient(180deg, #e7eaef, #d5d9e0);
+    --face-edge: #b8bec9;
+    --face-label: #475569;
+    --key: linear-gradient(180deg, #fbfcfd, #e3e6eb);
+    --key-edge: #9aa2ae;
+    --key-text: #111827;
+    --led-off: #c4c9d1;
     color-scheme: light;
   }
 }

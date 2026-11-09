@@ -1,0 +1,91 @@
+# Tests for every push to main and every pull request.
+#
+#   rust  – cargo test (DSP, decoders, auth, ...) without the librtlsdr feature
+#   web   – svelte-check and a production build of the UI
+#   stack – builds the Docker image, starts the dev stack (simulated receiver)
+#           and runs scripts/smoke-test.sh and scripts/ui-test.sh against it,
+#           exactly as you would locally
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
+
+  web:
+    name: Web UI check and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run check
+      - run: npm run build
+
+  stack:
+    name: API and browser tests (dev stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # ui-test.sh runs Playwright in its own container, which reaches sdrd
+      # through the host, so the port must not be bound to 127.0.0.1 only.
+      SDRD_DEV_BIND: 0.0.0.0
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      # Build with the GitHub Actions layer cache so librtlsdr, rtl_433 and
+      # dsd-neo aren't recompiled on every run.
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: sdr-web-gui:dev
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Start dev stack
+        run: docker compose -f docker-compose.dev.yml up -d --no-build
+      - name: Wait for sdrd
+        run: |
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8080/api/health && exit 0
+            sleep 2
+          done
+          echo "sdrd did not become healthy"; exit 1
+      - name: API smoke test
+        run: ./scripts/smoke-test.sh
+      - name: Browser layout tests (Playwright)
+        run: ./scripts/ui-test.sh
+        env:
+          SDR_URL: http://host.docker.internal:8080
+      - name: sdrd logs
+        if: failure()
+        run: docker compose -f docker-compose.dev.yml logs --no-color sdrd | tail -300
+      - name: Stop dev stack
+        if: always()
+        run: docker compose -f docker-compose.dev.yml down -v
