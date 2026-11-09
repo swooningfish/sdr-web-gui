@@ -113,7 +113,9 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
    - CW mode (700 Hz beat note, band-pass, AGC) and a Morse decoder (optional, any mode
      but WFM): tone lock, adaptive speed (5–40 WPM), word-by-word output with junk
      filtering; reads FM repeater idents in NFM.
-   - RDS on WFM: station name, programme type, radio text and PI, in the Listen panel.
+   - RDS on WFM: station name, programme type, radio text and PI, in the Listen panel and
+     on the receiver's display (an RDS annunciator, the station name, and radio text
+     that scrolls when it's wider than the display); the compact bar shows the name.
    - Simulator additions: CW beacon on 144.470, repeater with a Morse ident on 145.7125,
      FM station with RDS on 96.1 MHz.
    - Added after: spectrum zoom (×64 in to about 100 MHz out, buttons, Ctrl + wheel,

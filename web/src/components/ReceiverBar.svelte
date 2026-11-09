@@ -11,7 +11,7 @@
   import { describeRanges, unsupported } from '../lib/coverage';
   import { fkeys, SLOTS } from '../lib/fkeys.svelte';
   import { formatMHz, formatRate, parseFrequency, PRESETS } from '../lib/format';
-  import type { Listener, VfoName } from '../lib/listener.svelte';
+  import { PTY, type Listener, type VfoName } from '../lib/listener.svelte';
   import { schedule } from '../lib/schedule.svelte';
   import { channelDbfs, s9Dbm, sReading, toDbm } from '../lib/smeter';
   import type { WaterfallFrame } from '../lib/stream';
@@ -315,6 +315,19 @@
   );
   const busySig = $derived(listen.on && rx.open && rx.level !== null);
 
+  // ---- RDS (broadcast FM): station name, programme type and radiotext on the LCD
+  const showRds = $derived(listen.mode === 'wfm' && listen.on);
+  const rdsPs = $derived(rx.rds?.ps?.trim() ?? '');
+  const rdsPty = $derived(rx.rds?.pty ? (PTY[rx.rds.pty] ?? `PTY ${rx.rds.pty}`) : '');
+  const rdsRt = $derived(rx.rds?.rt?.trim() ?? '');
+  // Radiotext wider than the display scrolls across it, like a car radio.
+  // Each copy carries RT_GAP px of trailing space so the loop joins up.
+  const RT_GAP = 48;
+  let rtBoxW = $state(0);
+  let rtTextW = $state(0);
+  const rtScroll = $derived(!!rdsRt && rtTextW - RT_GAP > rtBoxW + 1);
+  const rtSeconds = $derived(Math.max(6, rtTextW / 45));
+
   // ---- function keys
   let fset = $state(false);
   let menu = $state<number | null>(null);
@@ -393,6 +406,7 @@
           ><span class="hide-xs">{rx.active} </span>{(listen.hz / 1e6).toFixed(4)}<span class="hide-xs"> MHz</span></strong
         >
         <span class="muted small-text hide-xs">{modeLabel(listen.mode)}</span>
+        {#if showRds && rdsPs}<strong class="rds-mini hide-xs" title={rdsRt || rdsPty || 'RDS'}>{rdsPs}</strong>{/if}
         <span class="bar-meter"><SMeter bar {dbm} {s9} label={formatMHz(listen.hz, 4)} /></span>
         {#if dbm !== null}<span class="s-mini small-text hide-xs">{sReading(dbm, s9)}</span>{/if}
       </span>
@@ -431,6 +445,7 @@
             <span class:lit={rx.afcActive} class:ok={rx.afcActive && rx.afcLocked}>AFC</span>
             <span class:lit={rx.cwActive}>CW-DEC</span>
             <span class:lit={rx.digitalActive} class:ok={rx.syncFresh}>DIG{rx.syncFresh && rx.sync ? ` ${rx.sync.mode}` : ''}</span>
+            <span class:lit={showRds} class:ok={showRds && !!rdsPs}>RDS</span>
             <span class:lit={rx.muted} class="warn">MUTE</span>
             <span class:lit={outside} class="bad">OUT</span>
             <span class="spacer"></span>
@@ -481,6 +496,26 @@
               <span class="afc-read" title="AFC correction">AFC {listen.afc >= 0 ? '+' : '−'}{(Math.abs(listen.afc) / 1000).toFixed(2)}k</span>
             {/if}
           </div>
+
+          {#if showRds}
+            <div class="rds-row" aria-label="RDS">
+              <span class="rds-ps" class:waiting={!rdsPs}>{rdsPs || '········'}</span>
+              {#if rdsPty}<span class="rds-pty">{rdsPty}</span>{/if}
+              {#if rx.rds?.pi}<span class="rds-pi" title="Programme identification">PI {rx.rds.pi}</span>{/if}
+              <div class="rds-rt" bind:clientWidth={rtBoxW} title={rdsRt || undefined}>
+                {#if rdsRt}
+                  <span class="rt-track" class:scroll={rtScroll} style:--rt-dur="{rtSeconds}s" style:--rt-gap="{RT_GAP}px">
+                    <span class="rt-copy" bind:clientWidth={rtTextW}>{rdsRt}</span>{#if rtScroll}<span
+                        class="rt-copy"
+                        aria-hidden="true">{rdsRt}</span
+                      >{/if}
+                  </span>
+                {:else}
+                  <span class="rt-wait">{rx.rds?.groups ? 'Decoding…' : 'Looking for station data…'}</span>
+                {/if}
+              </div>
+            </div>
+          {/if}
 
           <div class="lcd-foot">
             <span class="dot" class:ok={radio.connected} class:bad={!radio.connected}></span>
@@ -1320,6 +1355,78 @@
     background: rgba(0, 0, 0, 0.35);
     color: var(--lcd-text);
     border-color: var(--lcd-dim);
+  }
+  /* RDS: the station name big, like a car radio, radiotext under it */
+  .rds-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 12px;
+    min-width: 0;
+    padding-top: 4px;
+    border-top: 1px solid rgba(200, 243, 255, 0.12);
+  }
+  .rds-ps {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    white-space: pre;
+    text-shadow: 0 0 6px rgba(200, 243, 255, 0.35);
+  }
+  .rds-ps.waiting {
+    opacity: 0.2;
+    text-shadow: none;
+  }
+  .rds-pty {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--lcd-sub);
+  }
+  .rds-pi {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--lcd-dim);
+  }
+  .rds-rt {
+    flex: 1 1 100%;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    font-size: 13px;
+  }
+  .rt-track {
+    display: inline-flex;
+  }
+  .rt-copy {
+    display: inline-block;
+    padding-right: var(--rt-gap);
+  }
+  .rt-track.scroll {
+    animation: rt-scroll var(--rt-dur) linear infinite;
+  }
+  .rds-rt:hover .rt-track.scroll {
+    animation-play-state: paused;
+  }
+  @keyframes rt-scroll {
+    to {
+      transform: translateX(-50%);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rt-track.scroll {
+      animation: none;
+    }
+    .rds-rt {
+      text-overflow: ellipsis;
+    }
+  }
+  .rt-wait {
+    color: var(--lcd-dim);
+  }
+  .rds-mini {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.08em;
   }
   .lcd-foot {
     display: flex;
