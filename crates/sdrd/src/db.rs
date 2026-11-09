@@ -53,7 +53,21 @@ CREATE TABLE IF NOT EXISTS events (
     data      TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_device_ts ON events(device_id, ts);
-CREATE INDEX IF NOT EXISTS events_ts ON events(ts)
+CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
+CREATE TABLE IF NOT EXISTS bookmarks (
+    id         INTEGER PRIMARY KEY,
+    -- NULL = the station's shared list, otherwise the user's own
+    owner_id   INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    name       TEXT    NOT NULL,
+    freq_hz    INTEGER NOT NULL,
+    mode       TEXT    NOT NULL,
+    grp        TEXT,
+    colour     TEXT,
+    notes      TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS bookmarks_owner ON bookmarks(owner_id, freq_hz)
 "#;
 
 pub async fn open(path: &Path) -> Result<SqlitePool> {

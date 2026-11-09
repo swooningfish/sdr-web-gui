@@ -93,23 +93,28 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
    noise reduction and AGC, streamed as IMA ADPCM over the WebSocket (no Opus/libopus
    dependency) into an AudioWorklet jitter buffer; click-to-listen on the waterfall; tabbed
    admin settings, profile page, system info, waterfall palettes; Playwright layout tests.
-7. **Spectrum tools** (next)
-   - Band-plan overlay on the spectrum/waterfall: UK amateur allocations (HF, 6 m, 4 m,
-     2 m, 70 cm, 23 cm) with their sub-bands (CW, SSB, FM, digital, satellite, beacons),
-     plus airband, marine VHF, PMR446, broadcast FM, ISM/SRD and the ISS frequencies. Shown
-     as a labelled strip above the spectrum; toggle per group.
-   - Move along the spectrum: mouse wheel / trackpad to step the centre frequency, drag the
-     spectrum to pan, keyboard arrows; step size follows the zoom. Admin only (it retunes
-     the radio); viewers can still click to listen anywhere in the tuned band.
-   - Bookmarks: save frequency + mode + name (+ optional group/colour); shown as markers on
-     the spectrum and in a bookmarks list beside the Listen panel; click to tune/listen;
-     import/export as CSV. Proposal for where they live on the page comes first.
-   - CW mode for listening (narrow filter + BFO tone) and a Morse decoder that shows the
-     decoded text under the Listen panel. Also decodes CW idents of FM repeaters (the
-     callsign tone at the end of an over) when listening in NFM.
-   - RDS on broadcast FM: station name (PS), programme type and radio text, shown in the
-     Listen panel and on the spectrum while listening in WFM.
-8. **ADS-B aircraft map**
+7. **Spectrum tools** ✅
+   - Band-plan strip above the spectrum: UK amateur bands 160 m–23 cm with RSGB sub-bands
+     (CW, SSB, digital, beacons, FM simplex, repeaters, satellites), plus broadcast (MW, SW,
+     FM, DAB), aviation, marine VHF/AIS, CB/PMR446, ISM/SRD and satellite bands; groups
+     toggle per browser; hover names the band. Clicking the spectrum can pick the band's
+     usual mode (on by default).
+   - Tuning: drag the spectrum, trackpad sideways, mouse wheel (once the spectrum has focus,
+     so page scrolling doesn't retune), Left/Right arrows (Shift = bigger steps); admins
+     only. Up/Down step the listening frequency for everyone. The waterfall history slides
+     to stay lined up after a retune.
+   - Bookmarks: a shared station list (admins edit) plus each user's own. Flags on the
+     spectrum, a Bookmarks panel under Listen (search, list/group filter, ★ Save), and a
+     Bookmarks page from its cog (sortable table, edit, multi-select delete, CSV export of
+     all/station/mine, CSV import of our own format, CHIRP or gqrx). Picking a bookmark
+     outside the band retunes the radio for admins.
+   - CW mode (700 Hz beat note, band-pass, AGC) and a Morse decoder (optional, any mode
+     but WFM): tone lock, adaptive speed (5–40 WPM), word-by-word output with junk
+     filtering; reads FM repeater idents in NFM.
+   - RDS on WFM: station name, programme type, radio text and PI, in the Listen panel.
+   - Simulator additions: CW beacon on 144.470, repeater with a Morse ident on 145.7125,
+     FM station with RDS on 96.1 MHz.
+8. **ADS-B aircraft map** (next)
    - Receiver: a second dongle with a 1090 MHz antenna running ADS-B all the time (readsb),
      alongside the main dongle; fallback: ADS-B as a rotation profile on a single dongle
      (aircraft drop off between visits). Needs two dongles open at once (device

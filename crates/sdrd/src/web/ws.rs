@@ -3,7 +3,8 @@
 //!
 //! - `{"type":"audio","freq_hz":145800000,"mode":"nfm","squelch_db":-60}`
 //!   starts listening, or retunes the listener (`squelch_db` may be null;
-//!   add `"nr":true` for noise reduction)
+//!   add `"nr":true` for noise reduction, `"cw":true` to decode Morse;
+//!   modes nfm, wfm, am, usb, lsb, cw)
 //! - `{"type":"audio_stop"}`
 
 use std::time::Duration;
@@ -18,7 +19,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use super::{check_origin, ApiError, AppState, AuthUser};
 use crate::audio::demod::{Mode, Params};
-use crate::audio::{self, Listener};
+use crate::audio::{self, Listener, Out};
 use crate::auth::{self, Role};
 use crate::radio::{RadioState, MAX_FREQ_HZ, MIN_FREQ_HZ};
 
@@ -51,6 +52,8 @@ enum ClientMsg {
         squelch_db: Option<f32>,
         #[serde(default)]
         nr: bool,
+        #[serde(default)]
+        cw: bool,
     },
     AudioStop,
 }
@@ -66,7 +69,7 @@ fn handle_audio(state: &AppState, listener: &mut Option<Listener>, can_listen: b
             *listener = None;
             Some(audio_msg("audio_stopped", None))
         }
-        Ok(ClientMsg::Audio { freq_hz, mode, squelch_db, nr }) => {
+        Ok(ClientMsg::Audio { freq_hz, mode, squelch_db, nr, cw }) => {
             if !can_listen {
                 return Some(audio_msg("audio_error", Some("live audio is limited to admins on this server")));
             }
@@ -75,7 +78,7 @@ fn handle_audio(state: &AppState, listener: &mut Option<Listener>, can_listen: b
             {
                 return Some(audio_msg("audio_error", Some("bad frequency or squelch")));
             }
-            let params = Params { freq_hz, mode, squelch_db, nr };
+            let params = Params { freq_hz, mode, squelch_db, nr, cw };
             if let Some(l) = listener.as_ref() {
                 l.params.send_replace(params);
                 return None;
@@ -132,8 +135,11 @@ async fn client(mut socket: WebSocket, state: AppState, token_hash: String, ism:
                 Err(RecvError::Closed) => break,
             },
             f = audio_frame => match f {
-                Some(f) => {
+                Some(Out::Frame(f)) => {
                     if socket.send(Message::Binary(f)).await.is_err() { break; }
+                }
+                Some(Out::Text(t)) => {
+                    if socket.send(Message::Text(t.into())).await.is_err() { break; }
                 }
                 None => listener = None,
             },

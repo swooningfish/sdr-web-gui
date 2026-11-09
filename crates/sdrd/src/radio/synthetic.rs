@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use super::{kind_of, to_cu8, tuner_ranges, DeviceInfo, IqBlock, RadioSettings, SourceCtx};
 use crate::config::SourceKind;
 use crate::aprs::ax25;
+use crate::audio::{cw, rds};
 use crate::sstv::{encode, modes};
 
 const BLOCK_SECS: f64 = 0.05;
@@ -23,7 +24,19 @@ enum Kind {
     Nexus { period: f64, id: u8, channel: u8, base_c: f64, humidity: u8 },
     /// Unmodulated carrier drifting like a LEO satellite's Doppler.
     Doppler { span_hz: f64, period: f64 },
+    /// CW beacon keying `BEACON_TEXT` every `period` s.
+    Beacon { period: f64, wpm: f64 },
+    /// FM repeater: an over of "speech", then its Morse ident on a 1 kHz
+    /// tone, then the carrier drops; every `period` s.
+    Repeater { period: f64 },
+    /// Broadcast FM: music-like tones, stereo pilot and RDS.
+    Broadcast,
 }
+
+const BEACON_TEXT: &str = "VVV DE GB3SIM IO91 QRV";
+const REPEATER_IDENT: &str = "GB3SR";
+/// Repeater cycle: talk until 6 s, ident from 6.5 s, carrier off after.
+const REPEATER_TALK: f64 = 6.0;
 
 struct Emitter {
     freq_hz: f64,
@@ -42,6 +55,10 @@ struct Emitter {
     /// SSTV: (tone Hz, end time relative to `tx_start`) and the current tone.
     sstv: Vec<(f32, f64)>,
     sstv_idx: usize,
+    /// CW: key-down intervals relative to `tx_start`; RDS: coded bits.
+    keys: Vec<(f64, f64)>,
+    rds: Vec<bool>,
+    phase2: f64,
 }
 
 pub(super) struct SynthGen {
@@ -66,6 +83,9 @@ impl SynthGen {
             pulse_idx: 0,
             sstv: Vec::new(),
             sstv_idx: 0,
+            keys: Vec::new(),
+            rds: Vec::new(),
+            phase2: 0.0,
         };
         let nexus = |id, channel, base_c, humidity, first: f64| {
             let mut em = e(
@@ -88,6 +108,18 @@ impl SynthGen {
                 nexus(0x5a, 1, 19.0, 55, 1.0),
                 nexus(0x21, 2, 6.0, 82, 8.5),
                 e(437_550_000.0, 0.12, Kind::Doppler { span_hz: 10_000.0, period: 120.0 }),
+                e(144_470_000.0, 0.08, Kind::Beacon { period: 20.0, wpm: 16.0 }),
+                e(145_712_500.0, 0.2, Kind::Repeater { period: 30.0 }),
+                {
+                    let mut em = e(96_100_000.0, 0.3, Kind::Broadcast);
+                    em.rds = rds::encode::differential(&rds::encode::groups(
+                        0xC0DE,
+                        10,
+                        "SIM FM",
+                        "You're listening to the simulated receiver",
+                    ));
+                    em
+                },
             ],
             t: 0.0,
             rng: 0x9E37_79B9_7F4A_7C15,
@@ -199,6 +231,66 @@ impl SynthGen {
                     }
                     Kind::Doppler { span_hz, period } => {
                         (offset + span_hz * (TAU * t / period).cos(), true)
+                    }
+                    Kind::Beacon { period, wpm } => {
+                        if t >= em.next {
+                            let late = t - em.next;
+                            em.next += period * ((late / period).floor() + 1.0);
+                            if late < 0.5 {
+                                em.keys = cw::keying(BEACON_TEXT, wpm).0;
+                                em.pulse_idx = 0;
+                                em.tx_start = t;
+                            }
+                        }
+                        let rel = t - em.tx_start;
+                        while em.pulse_idx < em.keys.len() && em.keys[em.pulse_idx].1 < rel {
+                            em.pulse_idx += 1;
+                        }
+                        (offset, em.keys.get(em.pulse_idx).is_some_and(|k| k.0 <= rel))
+                    }
+                    Kind::Repeater { period } => {
+                        if t >= em.next {
+                            let late = t - em.next;
+                            em.next += period * ((late / period).floor() + 1.0);
+                            em.tx_start = t - late;
+                            em.keys = cw::keying(REPEATER_IDENT, 18.0).0;
+                            em.pulse_idx = 0;
+                        }
+                        let rel = t - em.tx_start;
+                        let ident = rel - REPEATER_TALK - 0.5;
+                        let ident_end = em.keys.last().map_or(0.0, |k| k.1) + 0.4;
+                        let audio = if rel < REPEATER_TALK {
+                            // Two gliding tones with a syllable-like envelope.
+                            let f1 = 220.0 + 90.0 * (TAU * 0.6 * rel).sin();
+                            let f2 = 2.7 * f1 + 300.0 * (TAU * 0.23 * rel).sin();
+                            em.tone_phase = (em.tone_phase + TAU * f1 * dt) % TAU;
+                            em.phase2 = (em.phase2 + TAU * f2 * dt) % TAU;
+                            let env = (0.5 + 0.5 * (TAU * 3.1 * rel).sin()).powi(2);
+                            env * (0.7 * em.tone_phase.sin() + 0.3 * em.phase2.sin())
+                        } else if ident >= 0.0 && ident < ident_end {
+                            while em.pulse_idx < em.keys.len() && em.keys[em.pulse_idx].1 < ident {
+                                em.pulse_idx += 1;
+                            }
+                            em.tone_phase = (em.tone_phase + TAU * 1000.0 * dt) % TAU;
+                            let on = em.keys.get(em.pulse_idx).is_some_and(|k| k.0 <= ident);
+                            if on { 0.5 * em.tone_phase.sin() } else { 0.0 }
+                        } else {
+                            0.0
+                        };
+                        let on_air = ident < ident_end;
+                        (offset + 5_000.0 * audio, on_air)
+                    }
+                    Kind::Broadcast => {
+                        // Music: a slow chord progression; 19 kHz pilot; RDS on 57 kHz.
+                        let root = [220.0, 174.6, 196.0, 261.6][((t / 2.0) as usize) % 4];
+                        em.tone_phase = (em.tone_phase + TAU * root * dt) % TAU;
+                        em.phase2 = (em.phase2 + TAU * root * 1.5 * dt) % TAU;
+                        let music = 0.3 * em.tone_phase.sin() + 0.2 * em.phase2.sin();
+                        let pilot = 0.09 * (TAU * 19_000.0 * t).sin();
+                        let data = 0.05
+                            * rds::encode::baseband(&em.rds, t, rds::BIT_RATE)
+                            * (TAU * rds::SUBCARRIER_HZ * t).sin();
+                        (offset + 75_000.0 * (music + pilot + data), true)
                     }
                 };
                 em.phase = (em.phase + TAU * inst_hz * dt) % TAU;

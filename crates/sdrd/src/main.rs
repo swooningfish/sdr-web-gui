@@ -20,6 +20,7 @@ mod aprs;
 mod audio;
 mod sstv;
 mod auth;
+mod bookmarks;
 mod config;
 mod db;
 mod decoders;

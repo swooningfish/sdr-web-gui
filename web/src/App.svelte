@@ -9,7 +9,11 @@
   import Waterfall from './components/Waterfall.svelte';
   import RadioPanel from './components/RadioPanel.svelte';
   import ListenPanel from './components/ListenPanel.svelte';
-  import { snap, type Listen } from './lib/audio';
+  import { MODES, snap, type Listen } from './lib/audio';
+  import { ALL_GROUPS, modeAt } from './lib/bandplan';
+  import { bookmarks, type Bookmark } from './lib/bookmarks.svelte';
+  import BookmarksPanel from './components/BookmarksPanel.svelte';
+  import BookmarksPage from './components/BookmarksPage.svelte';
   import Sensors from './components/Sensors.svelte';
   import Dashboard from './components/Dashboard.svelte';
   import Aprs from './components/Aprs.svelte';
@@ -20,13 +24,15 @@
   let checking = $state(true);
   let radio = $state<RadioState | null>(null);
   let wsUp = $state(false);
-  let view = $state<'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'sstv' | 'passes' | 'settings' | 'profile'>(
-    'spectrum',
-  );
+  let view = $state<
+    'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'sstv' | 'passes' | 'settings' | 'profile' | 'bookmarks'
+  >('spectrum');
   let settingsTab = $state<SettingsTab>('receiver');
   let waterfall = $state<ReturnType<typeof Waterfall> | undefined>();
   let listenPanel = $state<ReturnType<typeof ListenPanel> | undefined>();
   let listen = $state<Listen>({ on: false, hz: 145_800_000, mode: 'nfm' });
+  let autoMode = $state(true);
+  const ALL_BANDS = new Set(ALL_GROUPS);
   let stream: Stream | null = null;
   let sensors = $state<ReturnType<typeof Sensors> | undefined>();
   let dashboard = $state<ReturnType<typeof Dashboard> | undefined>();
@@ -43,6 +49,12 @@
       user = null;
     }
     checking = false;
+  });
+
+  // Bookmarks follow whoever is signed in.
+  $effect(() => {
+    if (user) bookmarks.load();
+    else bookmarks.clear();
   });
 
   // One WebSocket per signed-in session.
@@ -65,6 +77,7 @@
       onSstvRows: (r) => sstv?.rows(r),
       onAudio: (f) => listenPanel?.feed(f),
       onAudioStatus: (kind, message) => listenPanel?.status(kind, message),
+      onDecoded: (m) => listenPanel?.decoded(m),
       onConnection: (c) => {
         wsUp = c;
         if (c) listenPanel?.reconnected();
@@ -95,6 +108,28 @@
   function openSensor(id: number) {
     view = 'sensors';
     sensors?.open(id);
+  }
+
+  /** Listen at `hz` (clicked on the spectrum), in the band plan's mode if wanted. */
+  function pick(hz: number) {
+    if (autoMode) {
+      const m = modeAt(hz, ALL_BANDS);
+      if (m) listen.mode = m;
+    }
+    listen.hz = snap(hz, listen.mode);
+  }
+
+  /** Listen to a bookmark; admins also retune when it's outside the band. */
+  function selectBookmark(b: Bookmark) {
+    listen.hz = b.freq_hz;
+    listen.mode = b.mode;
+    if (!radio || !isAdmin || !radio.can_tune) return;
+    const { center_hz, sample_rate } = radio.settings;
+    const bw = MODES.find((m) => m.value === b.mode)?.bw ?? 12_500;
+    if (Math.abs(b.freq_hz - center_hz) + bw / 2 <= sample_rate * 0.45) return;
+    // Keep the channel off the dongle's DC spike in the middle.
+    const offset = Math.min(150_000, sample_rate * 0.1);
+    tuneTo(Math.round((b.freq_hz + offset) / 1000) * 1000);
   }
 
   async function tuneTo(hz: number) {
@@ -166,11 +201,14 @@
           canTune={isAdmin && !!radio?.can_tune}
           ontune={tuneTo}
           {listen}
-          onpick={(hz) => (listen.hz = snap(hz, listen.mode))}
+          onpick={pick}
+          bookmarks={bookmarks.list}
+          onbookmark={selectBookmark}
         />
       </div>
       <div class="side">
-        <ListenPanel bind:this={listenPanel} {radio} bind:listen send={(m) => stream?.send(m)} />
+        <ListenPanel bind:this={listenPanel} {radio} bind:listen bind:autoMode send={(m) => stream?.send(m)} />
+        <BookmarksPanel {listen} {isAdmin} onselect={selectBookmark} onmanage={() => (view = 'bookmarks')} />
         <RadioPanel {radio} {isAdmin} />
       </div>
     </div>
@@ -197,6 +235,16 @@
       <Settings {radio} me={user} bind:tab={settingsTab} />
     {:else if view === 'profile'}
       <Profile {user} onlogout={logout} />
+    {:else if view === 'bookmarks'}
+      <BookmarksPage
+        {isAdmin}
+        current={{ hz: listen.hz, mode: listen.mode }}
+        onlisten={(b) => {
+          selectBookmark(b);
+          view = 'spectrum';
+        }}
+        onback={() => (view = 'spectrum')}
+      />
     {/if}
   </main>
 {/if}
@@ -283,6 +331,9 @@
   }
   .side {
     display: grid;
+    /* One column no wider than the space: long lists and forms wrap or
+       scroll inside their panels instead of widening the page. */
+    grid-template-columns: minmax(0, 1fr);
     gap: 16px;
     min-width: 0;
   }

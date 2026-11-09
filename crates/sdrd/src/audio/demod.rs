@@ -6,14 +6,20 @@
 //! | NFM  | ±8 kHz         | ~16 kHz    | DC-blocked, 3.8 kHz low-pass |
 //! | AM   | ±5 kHz         | ~16 kHz    | envelope, carrier removed, AGC |
 //! | USB/LSB | 3 kHz side | ~16 kHz    | AGC |
-//! | WFM  | ±100 kHz       | ~34 kHz    | 50 µs de-emphasis (UK/EU), 13 kHz low-pass |
+//! | CW   | ±600 Hz        | ~16 kHz    | 700 Hz beat note (dial = carrier), 700 Hz band-pass, AGC |
+//! | WFM  | ±100 kHz       | ~34 kHz    | 50 µs de-emphasis (UK/EU), 13 kHz low-pass, RDS |
+//!
+//! Optional Morse decoding (`Params::cw`) runs on the audio before AGC,
+//! noise reduction and squelch, so it also reads FM repeater idents in NFM.
 
 use num_complex::{Complex, Complex32};
 use serde::{Deserialize, Serialize};
 
 use crate::dsp::ddc::{audio_decimation, decimation_for, fits, lowpass, Ddc};
 use crate::dsp::fm::FmDemod;
+use super::cw::{CwDecoder, CwText};
 use super::nr::NoiseReducer;
+use super::rds::{RdsDecoder, RdsInfo};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -23,7 +29,11 @@ pub enum Mode {
     Am,
     Usb,
     Lsb,
+    Cw,
 }
+
+/// Beat note for CW: a carrier at the dial frequency is heard at this pitch.
+pub const CW_PITCH_HZ: f64 = 700.0;
 
 impl Mode {
     /// Occupied bandwidth (also drawn on the waterfall).
@@ -33,6 +43,7 @@ impl Mode {
             Mode::Wfm => 200_000.0,
             Mode::Am => 10_000.0,
             Mode::Usb | Mode::Lsb => 3_000.0,
+            Mode::Cw => 500.0,
         }
     }
 
@@ -45,12 +56,21 @@ impl Mode {
         }
     }
 
+    /// Product detector: how far the channel centre is moved up in the audio.
+    fn bfo_hz(self) -> f64 {
+        match self {
+            Mode::Cw => CW_PITCH_HZ,
+            m => m.shift_hz(),
+        }
+    }
+
     fn cutoff_hz(self) -> f64 {
         match self {
             Mode::Nfm => 8_000.0,
             Mode::Wfm => 100_000.0,
             Mode::Am => 5_000.0,
             Mode::Usb | Mode::Lsb => 1_500.0,
+            Mode::Cw => 600.0,
         }
     }
 
@@ -61,6 +81,7 @@ impl Mode {
             Mode::Am => 2,
             Mode::Usb => 3,
             Mode::Lsb => 4,
+            Mode::Cw => 5,
         }
     }
 }
@@ -73,6 +94,8 @@ pub struct Params {
     pub squelch_db: Option<f32>,
     /// Spectral noise reduction.
     pub nr: bool,
+    /// Decode Morse from the audio.
+    pub cw: bool,
 }
 
 impl Params {
@@ -113,6 +136,40 @@ impl RealDecim {
     }
 }
 
+/// Two-pole band-pass (RBJ cookbook, constant 0 dB peak gain).
+#[derive(Clone)]
+struct Biquad {
+    b: [f32; 3],
+    a: [f32; 2],
+    x: [f32; 2],
+    y: [f32; 2],
+}
+
+impl Biquad {
+    fn bandpass(rate: f64, hz: f64, q: f64) -> Self {
+        let w = std::f64::consts::TAU * hz / rate;
+        let alpha = w.sin() / (2.0 * q);
+        let a0 = 1.0 + alpha;
+        Biquad {
+            b: [(alpha / a0) as f32, 0.0, (-alpha / a0) as f32],
+            a: [(-2.0 * w.cos() / a0) as f32, ((1.0 - alpha) / a0) as f32],
+            x: [0.0; 2],
+            y: [0.0; 2],
+        }
+    }
+
+    fn process(&mut self, v: &mut [f32]) {
+        for s in v.iter_mut() {
+            let y = self.b[0] * *s + self.b[1] * self.x[0] + self.b[2] * self.x[1]
+                - self.a[0] * self.y[0]
+                - self.a[1] * self.y[1];
+            self.x = [*s, self.x[0]];
+            self.y = [y, self.y[0]];
+            *s = y;
+        }
+    }
+}
+
 pub struct Demod {
     mode: Mode,
     squelch_db: Option<f32>,
@@ -125,6 +182,10 @@ pub struct Demod {
     agc: Option<(f32, f32)>,
     lp: RealDecim,
     nr: Option<NoiseReducer>,
+    bandpass: Vec<Biquad>,
+    /// Morse: its own low-pass/decimator on the audio before AGC, and the decoder.
+    cw: Option<(RealDecim, Vec<f32>, CwDecoder)>,
+    rds: Option<RdsDecoder>,
     iq: Vec<Complex32>,
     mid: Vec<f32>,
     post: Vec<f32>,
@@ -148,11 +209,15 @@ impl Demod {
             let d = (mid_rate / 34_000.0).round().max(1.0) as usize;
             (d, RealDecim::new(255, 13_000.0 / mid_rate, d))
         } else {
-            let cut = if matches!(m, Mode::Usb | Mode::Lsb) { 2_800.0 } else { 3_800.0 };
+            let cut = match m {
+                Mode::Usb | Mode::Lsb => 2_800.0,
+                Mode::Cw => 1_200.0,
+                _ => 3_800.0,
+            };
             (3, RealDecim::new(95, cut / mid_rate, 3))
         };
-        let ssb = matches!(m, Mode::Usb | Mode::Lsb).then(|| {
-            let w = std::f64::consts::TAU * m.shift_hz() / mid_rate;
+        let ssb = matches!(m, Mode::Usb | Mode::Lsb | Mode::Cw).then(|| {
+            let w = std::f64::consts::TAU * m.bfo_hz() / mid_rate;
             (Complex::new(1.0, 0.0), Complex::new(w.cos(), w.sin()))
         });
         Demod {
@@ -169,8 +234,21 @@ impl Demod {
             // 50 µs de-emphasis as a one-pole low-pass.
             deemph: (m == Mode::Wfm).then(|| (1.0 - (-1.0 / (50e-6 * mid_rate)).exp() as f32, 0.0)),
             dc: (0.0, 0.0),
-            agc: matches!(m, Mode::Am | Mode::Usb | Mode::Lsb).then(|| ((-1.0 / (0.4 * mid_rate)).exp() as f32, 1e-3)),
+            agc: matches!(m, Mode::Am | Mode::Usb | Mode::Lsb | Mode::Cw)
+                .then(|| ((-1.0 / (0.4 * mid_rate)).exp() as f32, 1e-3)),
             nr: p.nr.then(|| NoiseReducer::new(mid_rate / final_decim as f64)),
+            bandpass: if m == Mode::Cw {
+                // Two in a row: about 250 Hz wide, steep enough to drop neighbours.
+                vec![Biquad::bandpass(mid_rate / final_decim as f64, CW_PITCH_HZ, 4.0); 2]
+            } else {
+                Vec::new()
+            },
+            cw: (p.cw && m != Mode::Wfm).then(|| {
+                // Flat to ~1.8 kHz, so the noise the decoder sees has no slope.
+                let lp = RealDecim::new(191, 2_400.0 / mid_rate, final_decim);
+                (lp, Vec::new(), CwDecoder::new(mid_rate / final_decim as f64))
+            }),
+            rds: (m == Mode::Wfm && mid_rate >= 150_000.0).then(|| RdsDecoder::new(mid_rate)),
             lp,
             iq: Vec::new(),
             mid: Vec::new(),
@@ -189,7 +267,7 @@ impl Demod {
         match self.mode {
             Mode::Nfm | Mode::Wfm => self.fm.as_mut().unwrap().process_f32(&self.iq, &mut self.mid),
             Mode::Am => self.mid.extend(self.iq.iter().map(|z| z.norm())),
-            Mode::Usb | Mode::Lsb => {
+            Mode::Usb | Mode::Lsb | Mode::Cw => {
                 let (p, step) = self.ssb.as_mut().unwrap();
                 for z in &self.iq {
                     self.mid.push(z.re * p.re as f32 - z.im * p.im as f32);
@@ -197,6 +275,9 @@ impl Demod {
                 }
                 *p /= p.norm();
             }
+        }
+        if let Some(rds) = self.rds.as_mut() {
+            rds.process(&self.mid); // the multiplex, before de-emphasis
         }
         if let Some((a, y)) = self.deemph.as_mut() {
             for v in self.mid.iter_mut() {
@@ -212,6 +293,13 @@ impl Demod {
             *y1 = y;
             *v = y;
         }
+        // Morse is read before the AGC, which would pump the hiss up between
+        // letters, and before the CW band-pass, whose peak looks like a tone.
+        if let Some((lp, buf, cw)) = self.cw.as_mut() {
+            buf.clear();
+            lp.process(&self.mid, buf);
+            cw.process(buf);
+        }
         if let Some((decay, env)) = self.agc.as_mut() {
             for v in self.mid.iter_mut() {
                 *env = v.abs().max(*env * *decay).max(1e-5);
@@ -219,13 +307,14 @@ impl Demod {
             }
         }
         let start = out.len();
+        self.post.clear();
+        self.lp.process(&self.mid, &mut self.post);
+        for bp in self.bandpass.iter_mut() {
+            bp.process(&mut self.post);
+        }
         match self.nr.as_mut() {
-            Some(nr) => {
-                self.post.clear();
-                self.lp.process(&self.mid, &mut self.post);
-                nr.process(&self.post, out);
-            }
-            None => self.lp.process(&self.mid, out),
+            Some(nr) => nr.process(&self.post, out),
+            None => out.extend_from_slice(&self.post),
         }
         let open = match (self.mode, self.squelch_db) {
             (Mode::Wfm, _) | (_, None) => true,
@@ -235,6 +324,16 @@ impl Demod {
             out[start..].iter_mut().for_each(|v| *v = 0.0);
         }
         (level, open)
+    }
+
+    /// Morse decoded since the last call.
+    pub fn take_cw(&mut self) -> Option<CwText> {
+        self.cw.as_mut()?.2.take()
+    }
+
+    /// RDS, when something new has been decoded.
+    pub fn take_rds(&mut self) -> Option<RdsInfo> {
+        self.rds.as_mut()?.take()
     }
 }
 
@@ -265,7 +364,7 @@ mod tests {
 
     fn run(mode: Mode, carrier_off: f64, rate: u32, sig: impl Fn(f64) -> (f64, f64)) -> (Vec<f32>, f64, f32) {
         let center = 100_000_000u64;
-        let p = Params { freq_hz: (center as f64 + carrier_off) as u64, mode, squelch_db: None, nr: false };
+        let p = Params { freq_hz: (center as f64 + carrier_off) as u64, mode, squelch_db: None, nr: false, cw: false };
         let mut d = Demod::new(&p, center, rate);
         let data = iq(rate, 1.0, sig);
         let mut out = Vec::new();
@@ -331,7 +430,7 @@ mod tests {
     #[test]
     fn squelch_mutes_noise() {
         let center = 100_000_000u64;
-        let p = Params { freq_hz: center + 50_000, mode: Mode::Nfm, squelch_db: Some(-30.0), nr: true };
+        let p = Params { freq_hz: center + 50_000, mode: Mode::Nfm, squelch_db: Some(-30.0), nr: true, cw: false };
         let mut d = Demod::new(&p, center, 1_024_000);
         assert!((d.out_rate - 51_200.0 / 3.0).abs() < 1e-6);
         let quiet = iq(1_024_000, 0.2, |_| (0.0, 0.0));
@@ -339,5 +438,137 @@ mod tests {
         let (level, open) = d.process(&quiet, &mut out);
         assert!(!open && level < -30.0);
         assert!(out.iter().all(|&v| v == 0.0));
+    }
+    /// cu8 from a phase function evaluated sample by sample (stateful).
+    fn iq_fm(rate: u32, secs: f64, mut inst_hz: impl FnMut(f64) -> f64) -> Vec<u8> {
+        let n = (rate as f64 * secs) as usize;
+        let mut v = Vec::with_capacity(n * 2);
+        let mut ph = 0.0f64;
+        for i in 0..n {
+            ph = (ph + TAU * inst_hz(i as f64 / rate as f64) / rate as f64) % TAU;
+            v.push(to_cu8((0.4 * ph.cos()) as f32));
+            v.push(to_cu8((0.4 * ph.sin()) as f32));
+        }
+        v
+    }
+
+    #[test]
+    fn cw_mode_gives_a_700_hz_note() {
+        let off = 30_000.0;
+        let (out, r, _) = run(Mode::Cw, off, 1_024_000, |t| {
+            let ph = TAU * off * t;
+            (0.3 * ph.cos(), 0.3 * ph.sin())
+        });
+        assert!((tone_hz(&out, r) - CW_PITCH_HZ).abs() < 15.0, "{}", tone_hz(&out, r));
+    }
+
+    #[test]
+    fn reads_a_beacon_in_cw_mode_after_a_long_gap() {
+        // Like the simulated beacon: hard-keyed carrier, the message twice
+        // with six seconds of hiss between.
+        let rate = 1_024_000u32;
+        let center = 144_000_000u64;
+        let off = 470_000.0 - 400_000.0;
+        let (keys, total) = crate::audio::cw::keying("VVV DE GB3SIM IO91", 16.0);
+        let period = total + 6.0;
+        let n = (rate as f64 * (2.0 * period + 0.5)) as usize;
+        let mut rng = 0x2545_F491_4F6C_DD1Du64;
+        let mut noise = || {
+            let mut s = 0.0;
+            for _ in 0..4 {
+                rng ^= rng >> 12;
+                rng ^= rng << 25;
+                rng ^= rng >> 27;
+                s += (rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64;
+            }
+            (s - 2.0) * 1.732 * 0.02
+        };
+        let mut data = Vec::with_capacity(2 * n);
+        let mut k = 0;
+        for i in 0..n {
+            let t = i as f64 / rate as f64;
+            let rel = (t - 0.3).rem_euclid(period);
+            if rel < 0.001 {
+                k = 0;
+            }
+            while k < keys.len() && keys[k].1 < rel {
+                k += 1;
+            }
+            let on = keys.get(k).is_some_and(|&(a, b)| rel >= a && rel < b);
+            let ph = TAU * off * t;
+            let a = if on { 0.08 } else { 0.0 };
+            data.push(to_cu8((a * ph.cos() + noise()) as f32));
+            data.push(to_cu8((a * ph.sin() + noise()) as f32));
+        }
+        let p = Params { freq_hz: center + off as u64, mode: Mode::Cw, squelch_db: None, nr: false, cw: true };
+        let mut d = Demod::new(&p, center, rate);
+        let (mut out, mut text) = (Vec::new(), String::new());
+        for chunk in data.chunks(2 * 51_200) {
+            d.process(chunk, &mut out);
+            if let Some(t) = d.take_cw() {
+                text.push_str(&t.text);
+            }
+        }
+        assert_eq!(text, "VVV DE GB3SIM IO91 VVV DE GB3SIM IO91");
+    }
+
+    #[test]
+    fn reads_a_repeater_ident_in_nfm() {
+        let rate = 1_024_000;
+        let center = 145_000_000u64;
+        let off = 125_000.0;
+        let (keys, total) = crate::audio::cw::keying("GB3XX QRV", 18.0);
+        let mut k = 0;
+        let mut tone_ph = 0.0f64;
+        // Carrier on throughout; a 1 kHz tone at 2.5 kHz deviation keyed with the ident.
+        let data = iq_fm(rate, total + 0.6, |t| {
+            let t0 = t - 0.3;
+            while k < keys.len() && keys[k].1 < t0 {
+                k += 1;
+            }
+            let on = keys.get(k).is_some_and(|&(a, b)| t0 >= a && t0 < b);
+            tone_ph = (tone_ph + TAU * 1000.0 / rate as f64) % TAU;
+            off + if on { 2_500.0 * tone_ph.sin() } else { 0.0 }
+        });
+        let p = Params { freq_hz: center + off as u64, mode: Mode::Nfm, squelch_db: None, nr: false, cw: true };
+        let mut d = Demod::new(&p, center, rate);
+        let (mut out, mut text) = (Vec::new(), String::new());
+        for chunk in data.chunks(2 * 51_200) {
+            d.process(chunk, &mut out);
+            if let Some(t) = d.take_cw() {
+                text.push_str(&t.text);
+            }
+        }
+        assert!(text.contains("GB3XX QRV"), "{text:?}");
+    }
+
+    #[test]
+    fn wfm_decodes_rds() {
+        use crate::audio::rds::{encode, BIT_RATE, SUBCARRIER_HZ};
+        let rate = 2_048_000;
+        let center = 98_000_000u64;
+        let off = 300_000.0;
+        let coded = encode::differential(&encode::groups(0xC5A1, 4, "SIM FM", "Hello from the test"));
+        let data = iq_fm(rate, 3.5, |t| {
+            let mpx = 0.45 * (TAU * 1000.0 * t).sin()
+                + 0.09 * (TAU * 19_000.0 * t).sin()
+                + 0.04 * encode::baseband(&coded, t, BIT_RATE) * (TAU * SUBCARRIER_HZ * t).sin();
+            off + 75_000.0 * mpx
+        });
+        let p = Params { freq_hz: center + off as u64, mode: Mode::Wfm, squelch_db: None, nr: false, cw: false };
+        let mut d = Demod::new(&p, center, rate);
+        let mut out = Vec::new();
+        let mut last = None;
+        for chunk in data.chunks(2 * 102_400) {
+            d.process(chunk, &mut out);
+            if let Some(r) = d.take_rds() {
+                last = Some(r);
+            }
+        }
+        let r = last.expect("no RDS decoded");
+        assert_eq!(r.pi.as_deref(), Some("C5A1"));
+        assert_eq!(r.ps.as_deref(), Some("SIM FM  "));
+        assert_eq!(r.pty, Some(4));
+        assert_eq!(r.rt.as_deref(), Some("Hello from the test"));
     }
 }

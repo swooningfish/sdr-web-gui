@@ -3,13 +3,17 @@
   import type { WaterfallFrame } from '../lib/stream';
   import { PALETTES } from '../lib/colormap';
   import { formatMHz, MARKERS } from '../lib/format';
-  import { channelEdges, type Listen } from '../lib/audio';
+  import { channelEdges, CHANNEL_STEP, type Listen } from '../lib/audio';
+  import { ALL_GROUPS, GROUPS, STRIP_H, drawStrip, type BandGroup } from '../lib/bandplan';
+  import { colourOf, type Bookmark } from '../lib/bookmarks.svelte';
 
   let {
     canTune = false,
     ontune,
     listen = null,
     onpick,
+    bookmarks = [],
+    onbookmark,
   }: {
     canTune?: boolean;
     ontune?: (hz: number) => void;
@@ -17,15 +21,22 @@
     listen?: Listen | null;
     /** Single click: pick a frequency to listen to. */
     onpick?: (hz: number) => void;
+    /** Bookmarks, flagged above the spectrum. */
+    bookmarks?: Bookmark[];
+    onbookmark?: (b: Bookmark) => void;
   } = $props();
 
   const SPEC_CSS_H = 200;
   const WF_ROWS = 400;
+  const FLAGS_H = 20;
   const TICK_STEPS = [1e3, 2e3, 5e3, 10e3, 25e3, 50e3, 100e3, 200e3, 250e3, 500e3, 1e6, 2e6];
+  const NICE_STEPS = [1e3, 5e3, 10e3, 25e3, 50e3, 100e3, 250e3, 500e3, 1e6, 2e6, 5e6];
 
   let container: HTMLDivElement;
+  let plots: HTMLDivElement;
   let specCanvas: HTMLCanvasElement;
   let wfCanvas: HTMLCanvasElement;
+  let bandCanvas = $state<HTMLCanvasElement | undefined>();
 
   let floorDb = $state(-100);
   let ceilDb = $state(-20);
@@ -33,8 +44,25 @@
   let hover = $state<{ frac: number; hz: number; db: number } | null>(null);
   let info = $state<{ centerHz: number; sampleRate: number; bins: number } | null>(null);
   let fps = $state(0);
+  let width = $state(800);
 
-  // Colour scheme, remembered per browser.
+  function load<T>(key: string, fallback: T): T {
+    try {
+      const v = localStorage.getItem(key);
+      return v === null ? fallback : (JSON.parse(v) as T);
+    } catch {
+      return fallback;
+    }
+  }
+  function save(key: string, v: unknown) {
+    try {
+      localStorage.setItem(key, JSON.stringify(v));
+    } catch {
+      /* not available */
+    }
+  }
+
+  // Colour scheme, remembered per browser (stored as a bare string).
   let palette = $state<string>(
     (() => {
       try {
@@ -44,6 +72,19 @@
       }
     })(),
   );
+  // Band plan groups shown, remembered per browser.
+  let bandGroups = $state<BandGroup[]>(load('sdr.bands', ALL_GROUPS));
+  const enabledBands = $derived(new Set(bandGroups));
+  const showBands = $derived(bandGroups.length > 0);
+
+  // Retuning by wheel / drag / keys: where we're heading, and how far the
+  // picture is shifted meanwhile (CSS px).
+  let target = $state<number | null>(null);
+  let commitTimer: ReturnType<typeof setTimeout> | null = null;
+  let resetTimer: ReturnType<typeof setTimeout> | null = null;
+  let drag = $state<{ x0: number; centre: number; moved: boolean; id: number } | null>(null);
+  let justDragged = false;
+
   let cmap = PALETTES[0].make();
   let cmapId = '';
   const lut = new Uint8ClampedArray(256 * 4);
@@ -56,6 +97,9 @@
   let framesSeen = 0;
   let fpsCount = 0;
   let fpsT0 = performance.now();
+
+  const hzPerPx = $derived(info ? info.sampleRate / Math.max(1, width) : 1);
+  const panPx = $derived(info && target !== null ? (info.centerHz - target) / hzPerPx : 0);
 
   function ensureLut(minDb: number, maxDb: number) {
     if (cmapId !== palette) {
@@ -86,10 +130,18 @@
         wfCanvas.width = n;
         wfCanvas.height = WF_ROWS;
         row = new ImageData(n, 1);
+      } else if (info.sampleRate === f.sampleRate) {
+        // Retuned: slide the history so it stays lined up with the new axis.
+        const shift = Math.round(((f.centerHz - info.centerHz) / f.sampleRate) * n);
+        const ctx = wfCanvas.getContext('2d')!;
+        ctx.globalCompositeOperation = 'copy';
+        ctx.drawImage(wfCanvas, -shift, 0);
+        ctx.globalCompositeOperation = 'source-over';
       }
       avg = null;
       peak = null;
       info = { centerHz: f.centerHz, sampleRate: f.sampleRate, bins: n };
+      if (target !== null && commitTimer === null && drag === null) endPan();
     }
     // Spectrum: light exponential smoothing in dB.
     const step = (f.maxDb - f.minDb) / 255;
@@ -148,6 +200,7 @@
     requestAnimationFrame(() => {
       drawQueued = false;
       drawSpectrum();
+      drawBands();
     });
   }
 
@@ -158,6 +211,12 @@
       if (Math.abs(Math.round(v) - v) < 1e-6) return d;
     }
     return 6;
+  }
+
+  function drawBands() {
+    if (!bandCanvas || !info) return;
+    const ctx = bandCanvas.getContext('2d')!;
+    drawStrip(ctx, info.centerHz - info.sampleRate / 2, info.sampleRate, dpr, enabledBands, hover?.hz ?? null);
   }
 
   function drawSpectrum() {
@@ -206,6 +265,17 @@
       ctx.stroke();
       ctx.fillStyle = 'rgba(148,163,184,0.9)';
       ctx.fillText((hz / 1e6).toFixed(dec), xx, H - 4 * dpr);
+    }
+
+    // Bookmarks: faint lines in their colour (the flags above say what they are).
+    for (const b of bookmarks) {
+      if (b.freq_hz < start || b.freq_hz > start + info.sampleRate) continue;
+      const xx = Math.round(xOf(b.freq_hz)) + 0.5;
+      ctx.strokeStyle = colourOf(b) + '66';
+      ctx.beginPath();
+      ctx.moveTo(xx, 0);
+      ctx.lineTo(xx, plotH);
+      ctx.stroke();
     }
 
     // Known-channel markers; labels that would overlap drop to the next line.
@@ -283,9 +353,105 @@
     }
   }
 
+  // ---------------------------------------------------------------- tuning
+
+  /** Step for keyboard panning: a round number near a tenth of the span. */
+  function panStep(big: boolean): number {
+    if (!info) return 100e3;
+    const want = info.sampleRate / (big ? 2 : 10);
+    return [...NICE_STEPS].reverse().find((s) => s <= want) ?? NICE_STEPS[0];
+  }
+
+  function moveTarget(deltaHz: number, delayMs: number) {
+    if (!info || !canTune) return;
+    const half = info.sampleRate / 2;
+    const next = (target ?? info.centerHz) + deltaHz;
+    target = Math.min(2_200_000_000 - half, Math.max(half, next));
+    scheduleCommit(delayMs);
+  }
+
+  function scheduleCommit(delayMs: number) {
+    if (commitTimer) clearTimeout(commitTimer);
+    commitTimer = setTimeout(commit, delayMs);
+  }
+
+  function commit() {
+    commitTimer = null;
+    if (target === null || !info) return;
+    const hz = Math.round(target / 1000) * 1000;
+    target = hz;
+    if (Math.abs(hz - info.centerHz) < 500) {
+      endPan();
+      return;
+    }
+    ontune?.(hz);
+    // If the radio doesn't follow (error, or rotation took it), put the picture back.
+    if (resetTimer) clearTimeout(resetTimer);
+    resetTimer = setTimeout(endPan, 4000);
+  }
+
+  function endPan() {
+    target = null;
+    if (resetTimer) clearTimeout(resetTimer);
+    resetTimer = null;
+  }
+
+  function onWheel(e: WheelEvent) {
+    if (!canTune || !info) return;
+    const horizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+    // Vertical scrolling tunes only once the spectrum has focus (click it
+    // first), so scrolling the page past it doesn't retune the radio.
+    if (!horizontal && document.activeElement !== plots) return;
+    e.preventDefault();
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? width : 1;
+    const px = horizontal ? e.deltaX * unit : -e.deltaY * unit;
+    moveTarget(px * hzPerPx, 350);
+  }
+
+  function onPointerDown(e: PointerEvent) {
+    if (!canTune || !info || e.button !== 0) return;
+    drag = { x0: e.clientX, centre: target ?? info.centerHz, moved: false, id: e.pointerId };
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    if (!drag || e.pointerId !== drag.id || !info) return;
+    const dx = e.clientX - drag.x0;
+    if (!drag.moved && Math.abs(dx) < 5) return;
+    if (!drag.moved) {
+      drag.moved = true;
+      plots.setPointerCapture(e.pointerId);
+      if (commitTimer) clearTimeout(commitTimer);
+      commitTimer = null;
+    }
+    const half = info.sampleRate / 2;
+    target = Math.min(2_200_000_000 - half, Math.max(half, drag.centre - dx * hzPerPx));
+  }
+
+  function onPointerUp(e: PointerEvent) {
+    if (!drag || e.pointerId !== drag.id) return;
+    const moved = drag.moved;
+    drag = null;
+    if (moved) {
+      justDragged = true;
+      commit();
+    }
+  }
+
+  function onKey(e: KeyboardEvent) {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && canTune) {
+      e.preventDefault();
+      moveTarget((e.key === 'ArrowLeft' ? -1 : 1) * panStep(e.shiftKey), 400);
+    } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && listen && onpick) {
+      e.preventDefault();
+      const step = CHANNEL_STEP[listen.mode] * (e.shiftKey ? 10 : 1);
+      onpick(listen.hz + (e.key === 'ArrowUp' ? step : -step));
+    }
+  }
+
   function onMove(e: MouseEvent) {
-    if (!info) return;
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    if (!info || drag?.moved) return;
+    const rect = plots.getBoundingClientRect();
     const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
     const hz = info.centerHz - info.sampleRate / 2 + frac * info.sampleRate;
     const bin = Math.min(info.bins - 1, Math.floor(frac * info.bins));
@@ -293,11 +459,49 @@
   }
 
   function onClick() {
+    if (justDragged) {
+      justDragged = false;
+      return;
+    }
     if (onpick && hover) onpick(Math.round(hover.hz / 100) * 100);
   }
 
   function onDblClick() {
     if (canTune && hover && ontune) ontune(Math.round(hover.hz / 1000) * 1000);
+  }
+
+  // ------------------------------------------------------------- bookmarks
+
+  /** Flags in view; ones too close to the previous show as a dot only. */
+  const flags = $derived.by(() => {
+    if (!info) return [];
+    const start = info.centerHz - info.sampleRate / 2;
+    let lastEnd = -Infinity;
+    return bookmarks
+      .filter((b) => b.freq_hz >= start && b.freq_hz <= start + info!.sampleRate)
+      .map((b) => {
+        const frac = (b.freq_hz - start) / info!.sampleRate;
+        const x = frac * width;
+        const w = Math.min(140, b.name.length * 6.3 + 14);
+        const full = x >= lastEnd && x + w <= width + 4;
+        lastEnd = full ? x + w + 4 : Math.max(lastEnd, x + 8);
+        return { b, frac, full };
+      });
+  });
+
+  // Open the band plan menu towards whichever side has room.
+  let menuOpen = $state(false);
+  let menuEl = $state<HTMLDetailsElement | undefined>();
+  let menuLeft = $state(false);
+  $effect(() => {
+    if (!menuOpen || !menuEl) return;
+    const r = menuEl.getBoundingClientRect();
+    menuLeft = r.right - 240 < 8;
+  });
+
+  function toggleGroup(g: BandGroup, on: boolean) {
+    bandGroups = on ? [...new Set([...bandGroups, g])] : bandGroups.filter((x) => x !== g);
+    save('sdr.bands', bandGroups);
   }
 
   $effect(() => {
@@ -309,21 +513,43 @@
     void listen?.hz;
     void listen?.mode;
     void listen?.on;
+    void bookmarks;
+    void bandGroups;
     if (!peakHold) peak = null;
+    queueDraw();
+  });
+
+  // Size the band strip whenever it appears.
+  $effect(() => {
+    if (!bandCanvas) return;
+    bandCanvas.width = Math.max(1, Math.floor(width * dpr));
+    bandCanvas.height = Math.floor(STRIP_H * dpr);
     queueDraw();
   });
 
   onMount(() => {
     const resize = () => {
       dpr = window.devicePixelRatio || 1;
+      width = container.clientWidth;
       specCanvas.width = Math.max(1, Math.floor(container.clientWidth * dpr));
       specCanvas.height = Math.floor(SPEC_CSS_H * dpr);
+      if (bandCanvas) {
+        bandCanvas.width = specCanvas.width;
+        bandCanvas.height = Math.floor(STRIP_H * dpr);
+      }
       queueDraw();
     };
     const ro = new ResizeObserver(resize);
     ro.observe(container);
     resize();
-    return () => ro.disconnect();
+    // Non-passive, so the wheel can tune instead of scrolling the page.
+    plots.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      ro.disconnect();
+      plots.removeEventListener('wheel', onWheel);
+      if (commitTimer) clearTimeout(commitTimer);
+      if (resetTimer) clearTimeout(resetTimer);
+    };
   });
 </script>
 
@@ -331,7 +557,9 @@
   <div class="toolbar">
     <div class="readout">
       {#if info}
-        <span><strong>{formatMHz(info.centerHz)}</strong></span>
+        <span
+          ><strong>{formatMHz(target ?? info.centerHz)}</strong>{#if target !== null}<span class="muted"> (tuning…)</span>{/if}</span
+        >
         <span class="muted">span {(info.sampleRate / 1e6).toFixed(3)} MHz · {info.bins} bins · {fps} fps</span>
       {:else}
         <span class="muted">Waiting for data…</span>
@@ -363,21 +591,79 @@
       >
         {#each PALETTES as p (p.id)}<option value={p.id}>{p.label}</option>{/each}
       </select>
+      <details class="bands-menu" bind:open={menuOpen} bind:this={menuEl}>
+        <summary>Band plan</summary>
+        <div class="menu" class:left={menuLeft} role="group" aria-label="Band plan groups">
+          {#each GROUPS as g (g.id)}
+            <label
+              ><input
+                type="checkbox"
+                checked={bandGroups.includes(g.id)}
+                onchange={(e) => toggleGroup(g.id, e.currentTarget.checked)}
+              /><span class="swatch" style:background={g.colour}></span>{g.label}</label
+            >
+          {/each}
+          <p class="muted small-text">UK plans, simplified: check the RSGB band plan before transmitting.</p>
+        </div>
+      </details>
     </div>
   </div>
-  <!-- Pointer shortcuts only: the same actions are available as form fields in the
-       Listen and Receiver panels for keyboard users. -->
-  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+  <!-- Pointer and keyboard shortcuts; the same actions are available as form
+       fields in the Listen and Receiver panels. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events -->
   <div
     class="plots"
+    class:tunable={canTune}
+    class:dragging={drag?.moved}
+    bind:this={plots}
+    tabindex="0"
+    role="group"
+    aria-label={canTune
+      ? 'Spectrum. Click to listen; drag, scroll or use the left and right arrow keys to move along the band; up and down arrows step the listening frequency.'
+      : 'Spectrum. Click to listen; up and down arrows step the listening frequency.'}
     onmousemove={onMove}
     onmouseleave={() => (hover = null)}
     onclick={onClick}
     ondblclick={onDblClick}
-    title={[onpick ? 'Click to listen here' : '', canTune ? 'double-click to centre here' : ''].filter(Boolean).join(' · ')}
+    onkeydown={onKey}
+    onpointerdown={onPointerDown}
+    onpointermove={onPointerMove}
+    onpointerup={onPointerUp}
+    onpointercancel={onPointerUp}
+    title={[
+      onpick ? 'Click to listen here' : '',
+      canTune ? 'drag or scroll to move along the band (click first to scroll)' : '',
+      canTune ? 'double-click to centre here' : '',
+    ]
+      .filter(Boolean)
+      .join(' · ')}
   >
-    <canvas class="spectrum" bind:this={specCanvas} style:height="{SPEC_CSS_H}px"></canvas>
-    <canvas class="waterfall" bind:this={wfCanvas} width="1024" height={WF_ROWS}></canvas>
+    <div class="pan" style:transform={panPx ? `translateX(${panPx}px)` : null}>
+      {#if showBands}
+        <canvas class="bands" bind:this={bandCanvas} style:height="{STRIP_H}px"></canvas>
+      {/if}
+      {#if bookmarks.length}
+        <div class="flags" style:height="{FLAGS_H}px">
+          {#each flags as f (f.b.id)}
+            <button
+              type="button"
+              class="flag"
+              class:dot-only={!f.full}
+              style:left="{f.frac * 100}%"
+              style:--c={colourOf(f.b)}
+              title="{f.b.name} · {formatMHz(f.b.freq_hz, 4)} {f.b.mode.toUpperCase()}{f.b.shared ? '' : ' (yours)'}"
+              onpointerdown={(e) => e.stopPropagation()}
+              onclick={(e) => {
+                e.stopPropagation();
+                onbookmark?.(f.b);
+              }}>{f.full ? f.b.name : ''}</button
+            >
+          {/each}
+        </div>
+      {/if}
+      <canvas class="spectrum" bind:this={specCanvas} style:height="{SPEC_CSS_H}px"></canvas>
+      <canvas class="waterfall" bind:this={wfCanvas} width="1024" height={WF_ROWS}></canvas>
+    </div>
   </div>
 </div>
 
@@ -432,6 +718,55 @@
     font-variant-numeric: tabular-nums;
     color: var(--text);
   }
+  .bands-menu {
+    position: relative;
+  }
+  .bands-menu summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface-2);
+  }
+  .bands-menu summary::-webkit-details-marker {
+    display: none;
+  }
+  .bands-menu summary::after {
+    content: ' ▾';
+    color: var(--muted);
+  }
+  .menu {
+    position: absolute;
+    z-index: 4;
+    right: 0;
+    top: calc(100% + 4px);
+    width: 230px;
+    max-width: calc(100vw - 32px);
+    display: grid;
+    gap: 6px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+  .menu.left {
+    right: auto;
+    left: 0;
+  }
+  .menu label {
+    color: var(--text);
+  }
+  .menu p {
+    margin: 4px 0 0;
+  }
+  .swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    flex: none;
+  }
   .plots {
     display: flex;
     flex-direction: column;
@@ -441,6 +776,20 @@
     overflow: hidden;
     cursor: crosshair;
   }
+  .plots.tunable {
+    /* Horizontal drags pan the spectrum; vertical ones still scroll the page. */
+    touch-action: pan-y;
+  }
+  .plots.dragging {
+    cursor: grabbing;
+  }
+  .plots:focus-visible {
+    outline-offset: -2px;
+  }
+  .pan {
+    display: flex;
+    flex-direction: column;
+  }
   canvas {
     display: block;
     width: 100%;
@@ -448,5 +797,37 @@
   .waterfall {
     height: clamp(220px, 45vh, 520px);
     image-rendering: auto;
+  }
+  .flags {
+    position: relative;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  }
+  .flag {
+    position: absolute;
+    top: 2px;
+    max-width: 140px;
+    height: 16px;
+    padding: 0 5px 0 6px;
+    border: none;
+    border-left: 2px solid var(--c);
+    border-radius: 0 3px 3px 0;
+    background: color-mix(in srgb, var(--c) 28%, transparent);
+    color: #f8fafc;
+    font-size: 11px;
+    line-height: 16px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+  .flag:hover,
+  .flag:focus-visible {
+    background: color-mix(in srgb, var(--c) 55%, transparent);
+    z-index: 1;
+  }
+  .flag.dot-only {
+    width: 6px;
+    padding: 0;
+    border-radius: 0;
   }
 </style>

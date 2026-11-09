@@ -9,7 +9,7 @@
 //! | 0   | u8   | frame type = 3                                     |
 //! | 1   | u8   | version = 0                                        |
 //! | 2   | u8   | flags: bit 0 in band, bit 1 squelch open           |
-//! | 3   | u8   | mode (0 NFM, 1 WFM, 2 AM, 3 USB, 4 LSB)            |
+//! | 3   | u8   | mode (0 NFM, 1 WFM, 2 AM, 3 USB, 4 LSB, 5 CW)      |
 //! | 4   | u32  | sample rate (Hz)                                   |
 //! | 8   | f32  | channel level (dBFS)                               |
 //! | 12  | u32  | sequence number                                    |
@@ -21,15 +21,23 @@
 //!
 //! Every frame carries its own ADPCM state, so a dropped frame costs only
 //! its own 50 ms.
+//!
+//! Decoded text goes out as JSON messages on the same socket:
+//! `{"type":"cw","text":"CQ DE ","wpm":18.5}` (new characters only) and
+//! `{"type":"rds","pi":"C204","ps":"BBC R2  ","pty":10,"rt":"…","groups":42}`
+//! (whenever something changes).
 
 pub mod adpcm;
+pub mod cw;
 pub mod demod;
 pub mod nr;
+pub mod rds;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use bytes::{BufMut, Bytes, BytesMut};
+use serde_json::json;
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::radio::IqBlock;
@@ -50,9 +58,17 @@ impl Drop for ListenerGuard {
     }
 }
 
+/// What a listener sends its client.
+pub enum Out {
+    /// Binary audio frame.
+    Frame(Bytes),
+    /// JSON message (decoded Morse or RDS).
+    Text(String),
+}
+
 pub struct Listener {
     pub params: watch::Sender<Params>,
-    pub frames: mpsc::Receiver<Bytes>,
+    pub frames: mpsc::Receiver<Out>,
     _guard: ListenerGuard,
 }
 
@@ -105,7 +121,7 @@ fn frame(flags: u8, mode: u8, rate: u32, level: f32, seq: u32, st: adpcm::State,
 fn run(
     mut iq_rx: broadcast::Receiver<Arc<IqBlock>>,
     params_rx: watch::Receiver<Params>,
-    out: mpsc::Sender<Bytes>,
+    out: mpsc::Sender<Out>,
     stop: Arc<AtomicBool>,
 ) {
     let mut demod: Option<(Params, (u64, u32), Demod)> = None;
@@ -122,7 +138,7 @@ fn run(
         seq = seq.wrapping_add(1);
         if !p.in_band(block.center_hz, block.sample_rate) {
             demod = None;
-            let _ = out.try_send(frame(0, p.mode.id(), 0, f32::NAN, seq, st, 0, &[]));
+            let _ = out.try_send(Out::Frame(frame(0, p.mode.id(), 0, f32::NAN, seq, st, 0, &[])));
             continue;
         }
         let key = (block.center_hz, block.sample_rate);
@@ -140,6 +156,15 @@ fn run(
         let flags = 1 | if open { 2 } else { 0 };
         let f = frame(flags, p.mode.id(), d.out_rate.round() as u32, level, seq, start, pcm.len(), &enc);
         // A slow client just loses frames; the player rides them out.
-        let _ = out.try_send(f);
+        let _ = out.try_send(Out::Frame(f));
+        if let Some(t) = d.take_cw() {
+            let msg = json!({ "type": "cw", "text": t.text, "wpm": (t.wpm * 10.0).round() / 10.0 });
+            let _ = out.try_send(Out::Text(msg.to_string()));
+        }
+        if let Some(r) = d.take_rds() {
+            let mut msg = json!(r);
+            msg["type"] = json!("rds");
+            let _ = out.try_send(Out::Text(msg.to_string()));
+        }
     }
 }

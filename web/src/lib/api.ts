@@ -1,3 +1,5 @@
+import type { Bookmark, BookmarkInput, ImportResult } from './bookmarks.svelte';
+
 export type Role = 'admin' | 'viewer';
 
 export interface User {
@@ -403,6 +405,11 @@ export const api = {
   testPass: (seconds: number) => req('POST', '/schedule/test', { seconds }),
   stopPass: () => req('POST', '/schedule/stop'),
   setRotation: (enabled: boolean) => req<{ rotation: boolean }>('PUT', '/schedule/rotation', { enabled }),
+  bookmarks: () => req<Bookmark[]>('GET', '/bookmarks'),
+  addBookmark: (b: BookmarkInput) => req<{ id: number }>('POST', '/bookmarks', b),
+  updateBookmark: (id: number, b: BookmarkInput) => req<{ ok: boolean }>('PUT', `/bookmarks/${id}`, b),
+  deleteBookmarks: (ids: number[]) => req<{ deleted: number; skipped: number }>('POST', '/bookmarks/delete', { ids }),
+  importBookmarks: (csv: string, shared: boolean) => req<ImportResult>('POST', '/bookmarks/import', { csv, shared }),
   geocode: (q: string) =>
     req<{ places: { name: string; lat_deg: number; lon_deg: number }[] }>(
       'GET',

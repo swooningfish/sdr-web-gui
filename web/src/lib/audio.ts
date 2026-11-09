@@ -1,7 +1,7 @@
 /** Live audio: frame parsing (layout in crates/sdrd/src/audio/mod.rs),
  * IMA ADPCM decoding, resampling and playback through an AudioWorklet. */
 
-export type AudioMode = 'nfm' | 'wfm' | 'am' | 'usb' | 'lsb';
+export type AudioMode = 'nfm' | 'wfm' | 'am' | 'usb' | 'lsb' | 'cw';
 
 /** What the user is listening to (shared by the Listen panel and the waterfall). */
 export interface Listen {
@@ -16,11 +16,18 @@ export const MODES: { value: AudioMode; label: string; bw: number }[] = [
   { value: 'wfm', label: 'WFM', bw: 200_000 },
   { value: 'usb', label: 'USB', bw: 3_000 },
   { value: 'lsb', label: 'LSB', bw: 3_000 },
+  { value: 'cw', label: 'CW', bw: 500 },
 ];
+
+/** Beat note for CW: a carrier on the dial frequency is heard at this pitch. */
+export const CW_PITCH_HZ = 700;
+
+/** Usual channel raster per mode (Hz). */
+export const CHANNEL_STEP: Record<AudioMode, number> = { nfm: 6_250, am: 1_000, wfm: 100_000, usb: 100, lsb: 100, cw: 50 };
 
 /** Snap a clicked frequency to the usual channel raster for the mode. */
 export function snap(hz: number, mode: AudioMode): number {
-  const step = { nfm: 6_250, am: 1_000, wfm: 100_000, usb: 100, lsb: 100 }[mode];
+  const step = CHANNEL_STEP[mode];
   return Math.round(hz / step) * step;
 }
 

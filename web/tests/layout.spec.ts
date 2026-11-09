@@ -113,7 +113,10 @@ test('sensor and APRS lists can select several items', async ({ page }) => {
   }
   if (aprs.length) {
     await openTab(page, 'APRS');
-    await page.locator('.list-head').getByText('Select all').click();
+    // The list shows recently heard stations only; there may be none.
+    const all = page.locator('.list-head').getByText('Select all');
+    if (!(await all.count())) return;
+    await all.click();
     await expect(page.getByRole('toolbar', { name: 'Selected stations' })).toContainText('selected');
     expect(await overflow(page)).toBeLessThanOrEqual(0);
   }
@@ -176,4 +179,77 @@ test('rotation can be switched on and off from the Receiver panel', async ({ pag
   await page.locator('.rotation-row').getByRole('switch').click(); // put it back
   await expect(page.locator('.rotation-row').getByRole('switch')).toHaveAttribute('aria-checked', String(before));
   expect(await overflow(page)).toBeLessThanOrEqual(0);
+});
+
+test('band plan strip shows and its groups are remembered', async ({ page }) => {
+  await openTab(page, 'Spectrum');
+  await expect(page.locator('.wf canvas.bands')).toBeVisible();
+  const menu = page.locator('.bands-menu');
+  await menu.locator('summary').click();
+  const amateur = menu.getByRole('checkbox', { name: 'Amateur' });
+  await expect(amateur).toBeChecked();
+  await amateur.uncheck();
+  await page.reload();
+  await page.locator('.bands-menu summary').click();
+  await expect(page.locator('.bands-menu').getByRole('checkbox', { name: 'Amateur' })).not.toBeChecked();
+  await page.locator('.bands-menu').getByRole('checkbox', { name: 'Amateur' }).check();
+  expect(await overflow(page)).toBeLessThanOrEqual(0);
+});
+
+test('bookmarks panel opens the bookmarks page, which fits the screen', async ({ page }) => {
+  await openTab(page, 'Spectrum');
+  await expect(page.getByRole('heading', { name: 'Bookmarks' })).toBeVisible();
+  await page.getByRole('button', { name: '★ Save' }).click();
+  await expect(page.getByRole('form', { name: /Bookmark/ })).toBeVisible();
+  expect(await overflow(page), 'add form is wider than the window').toBeLessThanOrEqual(0);
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await page.getByRole('button', { name: 'Manage bookmarks' }).click();
+  await expect(page.getByRole('heading', { name: 'Import and export' })).toBeVisible();
+  expect(await overflow(page), 'bookmarks page is wider than the window').toBeLessThanOrEqual(0);
+  await page.getByRole('button', { name: '← Spectrum' }).click();
+  await expect(page.locator('.wf')).toBeVisible();
+});
+
+test('a bookmark can be added, listened to and deleted', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop-1920', 'state-changing test runs once');
+  const name = `Test ${Date.now()}`;
+  await openTab(page, 'Spectrum');
+  await page.getByRole('button', { name: 'Manage bookmarks' }).click();
+  await page.getByRole('button', { name: 'Add bookmark' }).click();
+  const form = page.getByRole('form', { name: 'New bookmark' });
+  await form.getByLabel('Name').fill(name);
+  await form.getByLabel('Frequency (MHz)').fill('145.5');
+  await form.getByLabel('Mode').selectOption('nfm');
+  await form.getByLabel('My bookmarks').check();
+  await form.getByRole('button', { name: 'Save' }).click();
+  const row = page.locator('tbody tr').filter({ hasText: name });
+  await expect(row).toContainText('mine');
+  await row.getByRole('button', { name: 'Listen' }).click();
+  // Back on the spectrum, tuned to it, and it's in the side list.
+  await expect(page.locator('#listen-freq')).toHaveValue('145.5000');
+  await expect(page.getByRole('list', { name: 'Bookmarks' })).toContainText(name);
+  // Delete it again from the page.
+  await page.getByRole('button', { name: 'Manage bookmarks' }).click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByLabel(`Select ${name}`).check();
+  await page.getByRole('toolbar', { name: 'Selected bookmarks' }).getByRole('button', { name: 'Delete' }).click();
+  await expect(page.locator('tbody tr').filter({ hasText: name })).toHaveCount(0);
+});
+
+test('arrow keys on the spectrum retune the radio', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop-1920', 'state-changing test runs once');
+  const radio = await (await page.request.get('/api/radio')).json();
+  test.skip(!radio.connected || !radio.can_tune, 'receiver not connected or not tunable');
+  const before: number = radio.settings.center_hz;
+  await openTab(page, 'Spectrum');
+  const plots = page.locator('.wf .plots');
+  await plots.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect
+    .poll(async () => (await (await page.request.get('/api/radio')).json()).settings.center_hz, { timeout: 5000 })
+    .toBeGreaterThan(before);
+  await page.keyboard.press('ArrowLeft');
+  await expect
+    .poll(async () => (await (await page.request.get('/api/radio')).json()).settings.center_hz, { timeout: 5000 })
+    .toBe(before);
 });

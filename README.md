@@ -33,7 +33,7 @@ docker compose up -d --build
 
 Details in [Deploying on a Raspberry Pi 5](#deploying-on-a-raspberry-pi-5).
 
-## Status: milestone 6 done, milestone 7 next
+## Status: milestone 7 done, milestone 8 next
 
 - [x] Rust core (`sdrd`) owns the dongle via librtlsdr (rtl-sdr-blog fork: V4, V3, generic)
 - [x] Live spectrum and waterfall in the browser over WebSocket
@@ -48,8 +48,8 @@ Details in [Deploying on a Raspberry Pi 5](#deploying-on-a-raspberry-pi-5).
 - [x] M6: live audio in the browser (NFM/AM/WFM/USB/LSB, squelch, noise reduction), tabbed settings, profile page, browser layout tests
 - [x] Since M6: device selection and tuner coverage, rtl_tcp source, sensor dashboard, multi-select
   delete / ZIP download, sortable sensors, APRS home marker, rotation switch
-- [ ] M7: spectrum tools: band plans, scroll/drag tuning, bookmarks, CW decoder (incl. repeater
-  idents), RDS station names
+- [x] M7: spectrum tools: band plans, drag/scroll/keyboard tuning, bookmarks (station list +
+  your own, CSV import/export), CW mode and Morse decoder (incl. repeater idents), RDS
 - [ ] M8: ADS-B aircraft map (second dongle), type icons, altitude-coloured trails
 - [ ] M9: signal classifier (voice / data / broadcast labels on the spectrum)
 
@@ -124,9 +124,9 @@ takes seconds.
 
 ### Test signals
 
-The simulated receiver puts test signals on 144.800, 145.800, 145.825, 433.920 and
-437.550 MHz (Doppler-drifting carrier). Use the presets to see them. They are real,
-decodable transmissions:
+The simulated receiver puts test signals on 96.1, 144.470, 144.800, 145.7125, 145.800,
+145.825, 433.920 and 437.550 MHz (Doppler-drifting carrier). Use the presets to see them.
+They are real, decodable transmissions:
 
 - **144.800 / 145.825 (VHF block, the default):** APRS packets that Direwolf decodes: a car
   driving a loop around central London, a weather station, a status beacon, and an "ISS" on
@@ -135,6 +135,11 @@ decodable transmissions:
   Scottie S2 and PD 90, with 20 s gaps. Open the SSTV tab to watch them arrive line by line.
 - **433.92 (ISM preset, or *Tune* on the Sensors page):** two Nexus temperature/humidity
   sensors that rtl_433 decodes within ~15 s.
+- **144.470 (VHF block):** a CW beacon every 20 s. Listen in **CW** with **Decode CW** on.
+- **145.7125 (VHF block):** a repeater: an over of "speech", then its Morse ident on a 1 kHz
+  tone. Listen in **NFM** with **Decode CW** on.
+- **96.1 MHz (tune to ~96.25):** an FM broadcast station with RDS ("SIM FM", radio text).
+  Listen in **WFM**.
 
 To watch what sdrd publishes to the dev MQTT broker:
 
@@ -291,7 +296,11 @@ Every line's sync pulse is tracked, so slant from clock differences is corrected
 Press **Play** in the *Listen* panel on the Spectrum tab, then click the waterfall (or type a
 frequency) to listen anywhere inside the tuned band. The channel is shaded on the spectrum.
 
-- Modes: **NFM**, **AM**, **WFM** (broadcast, 50 µs de-emphasis), **USB**, **LSB**.
+- Modes: **NFM**, **AM**, **WFM** (broadcast, 50 µs de-emphasis, RDS), **USB**, **LSB**,
+  **CW** (a carrier on the dial frequency is heard as a 700 Hz note).
+- **Decode CW** shows Morse as text under the Listen panel (5–40 WPM, speed found
+  automatically). It also reads the Morse ident an FM repeater sends after an over (NFM).
+- **RDS:** in WFM the panel shows the station name, programme type and radio text.
 - **Squelch**, **noise reduction** (spectral; removes steady hiss), **volume** and **mute**.
   Settings are remembered per browser; clicks snap to the mode's channel raster.
 - Audio is demodulated per listener in sdrd and streamed over the existing WebSocket as
@@ -299,6 +308,22 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
   250 ms jitter buffer. No codec libraries are needed on the Pi.
 - Up to 4 listeners at once (`SDRD_AUDIO_MAX_LISTENERS`); admins only unless
   `SDRD_AUDIO_VIEWERS=true`.
+
+## Spectrum tools
+
+- **Band plan:** the strip above the spectrum shows UK amateur bands with their RSGB
+  sub-bands, plus broadcast, aviation, marine, CB/PMR446, ISM/SRD and satellite bands.
+  Choose groups under **Band plan**; hover to name the band. With *Pick the mode from the
+  band plan* (Listen panel), clicking airband picks AM, broadcast FM picks WFM, and so on.
+- **Moving along the band (admins):** drag the spectrum, swipe sideways on a trackpad,
+  scroll the mouse wheel once the spectrum has focus (click it first), or use the
+  Left/Right arrow keys (Shift for bigger steps). Up/Down step the listening frequency.
+  Double-click centres on a signal.
+- **Bookmarks:** flags above the spectrum and a list under *Listen*; click one to listen
+  (admins also retune if it's outside the band). **★ Save** keeps the current frequency.
+  The **station list** is shared with everyone (admins edit it); **mine** are yours
+  alone. The cog opens the Bookmarks page: edit, delete several, export CSV, or import a
+  CSV (our own export, CHIRP or gqrx `bookmarks.csv`).
 
 ## Settings
 

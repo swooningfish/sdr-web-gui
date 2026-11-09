@@ -3,12 +3,28 @@
   import type { RadioState } from '../lib/api';
   import { AudioPlayer, MODES, type AudioFrame, type Listen, type PlayerStats } from '../lib/audio';
   import { formatMHz, parseFrequency } from '../lib/format';
+  import type { DecodedMsg, RdsMsg } from '../lib/stream';
 
   let {
     radio,
     listen = $bindable(),
     send,
-  }: { radio: RadioState | null; listen: Listen; send: (msg: unknown) => void } = $props();
+    autoMode = $bindable(true),
+  }: {
+    radio: RadioState | null;
+    listen: Listen;
+    send: (msg: unknown) => void;
+    /** Clicking the spectrum picks the mode the band plan suggests. */
+    autoMode?: boolean;
+  } = $props();
+
+  /** RDS programme types (European list). */
+  const PTY = [
+    'No programme type', 'News', 'Current affairs', 'Information', 'Sport', 'Education', 'Drama', 'Culture',
+    'Science', 'Varied', 'Pop music', 'Rock music', 'Easy listening', 'Light classical', 'Serious classical',
+    'Other music', 'Weather', 'Finance', "Children's", 'Social affairs', 'Religion', 'Phone-in', 'Travel',
+    'Leisure', 'Jazz', 'Country', 'National music', 'Oldies', 'Folk', 'Documentary', 'Alarm test', 'Alarm',
+  ];
 
   // Per-browser preferences (kept in localStorage; harmless if unavailable).
   const PREFS = 'sdr.listen';
@@ -24,11 +40,18 @@
   let volume = $state<number>(saved.volume ?? 0.8);
   let muted = $state(false);
   let nr = $state<boolean>(saved.nr ?? false);
+  let cwOn = $state<boolean>(saved.cw ?? false);
   if (typeof saved.hz === 'number') listen.hz = saved.hz;
   if (typeof saved.mode === 'string') listen.mode = saved.mode;
+  if (typeof saved.autoMode === 'boolean') autoMode = saved.autoMode;
+
+  let cwText = $state('');
+  let cwWpm = $state<number | null>(null);
+  let cwBox = $state<HTMLElement | undefined>();
+  let rds = $state<RdsMsg | null>(null);
 
   $effect(() => {
-    const prefs = { squelchOn, squelch, volume, nr, hz: listen.hz, mode: listen.mode };
+    const prefs = { squelchOn, squelch, volume, nr, cw: cwOn, autoMode, hz: listen.hz, mode: listen.mode };
     try {
       localStorage.setItem(PREFS, JSON.stringify(prefs));
     } catch {
@@ -63,8 +86,38 @@
   $effect(() => player.setVolume(muted ? 0 : volume));
 
   function params() {
-    return { type: 'audio', freq_hz: Math.round(listen.hz), mode: listen.mode, squelch_db: squelchOn ? squelch : null, nr };
+    return {
+      type: 'audio',
+      freq_hz: Math.round(listen.hz),
+      mode: listen.mode,
+      squelch_db: squelchOn ? squelch : null,
+      nr,
+      cw: cwOn && listen.mode !== 'wfm',
+    };
   }
+
+  /** Morse and RDS decoded by the server for this listener. */
+  export function decoded(m: DecodedMsg) {
+    if (m.type === 'cw') {
+      cwText = (cwText + m.text).slice(-800);
+      cwWpm = m.wpm;
+    } else {
+      rds = m;
+    }
+  }
+
+  // A new station: forget the old one's RDS.
+  $effect(() => {
+    void listen.hz;
+    void listen.mode;
+    rds = null;
+  });
+
+  // Keep the newest Morse in view.
+  $effect(() => {
+    void cwText;
+    if (cwBox) cwBox.scrollTop = cwBox.scrollHeight;
+  });
 
   /** Audio frames from the WebSocket. */
   export function feed(f: AudioFrame) {
@@ -174,6 +227,9 @@
       >
     {/each}
   </div>
+  <label class="auto small-text muted"
+    ><input type="checkbox" bind:checked={autoMode} /> Pick the mode from the band plan when I click the spectrum</label
+  >
 
   <div class="meter" aria-label="Signal level" title={level === null ? '' : `${level.toFixed(1)} dBFS`}>
     <div class="fill" class:closed={!open} style:width="{meter * 100}%"></div>
@@ -207,7 +263,45 @@
       title="Spectral noise reduction: removes steady background hiss"
       onclick={() => (nr = !nr)}>Noise reduction</button
     >
+    <button
+      type="button"
+      class="small"
+      class:active={cwOn && listen.mode !== 'wfm'}
+      aria-pressed={cwOn && listen.mode !== 'wfm'}
+      disabled={listen.mode === 'wfm'}
+      title="Decode Morse: CW signals, beacons and FM repeater idents"
+      onclick={() => (cwOn = !cwOn)}>Decode CW</button
+    >
   </div>
+
+  {#if cwOn && listen.mode !== 'wfm'}
+    <div class="decoder">
+      <div class="dec-head small-text">
+        <span class="muted">Morse{cwWpm ? ` · ${Math.round(cwWpm)} WPM` : ''}</span>
+        {#if cwText}<button type="button" class="small" onclick={() => (cwText = '')}>Clear</button>{/if}
+      </div>
+      <div class="cw-text" bind:this={cwBox} role="log" aria-label="Decoded Morse">
+        {#if cwText}{cwText}{:else}<span class="muted"
+            >{listen.on ? 'Listening for Morse…' : 'Press Play to decode Morse.'}</span
+          >{/if}
+      </div>
+    </div>
+  {/if}
+
+  {#if listen.mode === 'wfm' && listen.on}
+    <div class="rds" aria-label="RDS">
+      {#if rds?.ps || rds?.rt}
+        <div class="ps-row">
+          <strong class="ps">{rds.ps?.trim() || '········'}</strong>
+          {#if rds.pty}<span class="pty small-text">{PTY[rds.pty] ?? `PTY ${rds.pty}`}</span>{/if}
+        </div>
+        {#if rds.rt}<p class="rt small-text">{rds.rt}</p>{/if}
+        {#if rds.pi}<p class="small-text muted pi">RDS · PI {rds.pi}</p>{/if}
+      {:else}
+        <p class="small-text muted pi">RDS: {rds?.groups ? 'decoding…' : 'looking for station data…'}</p>
+      {/if}
+    </div>
+  {/if}
 
   {#if listen.on && (!inBand || outside)}
     <p class="warn small-text">
@@ -302,5 +396,55 @@
   }
   .warn {
     color: var(--warn);
+  }
+  .auto {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: -4px 0 10px;
+  }
+  .decoder,
+  .rds {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-2);
+  }
+  .dec-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    min-height: 26px;
+  }
+  .cw-text {
+    max-height: 5.6em;
+    overflow-y: auto;
+    font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.04em;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+  .ps-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
+  }
+  .ps {
+    font: 600 18px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre;
+  }
+  .pty {
+    padding: 1px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+  }
+  .rt {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+  }
+  .pi {
+    margin: 4px 0 0;
   }
 </style>

@@ -18,9 +18,29 @@ export interface StreamHandlers {
   onAudio: (f: AudioFrame) => void;
   /** audio_started / audio_stopped / audio_error replies. */
   onAudioStatus: (kind: string, message: string | null) => void;
+  /** Decoded Morse (`cw`) or RDS (`rds`) for our listener. */
+  onDecoded: (msg: DecodedMsg) => void;
   onConnection: (connected: boolean) => void;
   onAuthLost: () => void;
 }
+
+export interface CwMsg {
+  type: 'cw';
+  /** Characters decoded since the last message. */
+  text: string;
+  wpm: number;
+}
+
+export interface RdsMsg {
+  type: 'rds';
+  pi: string | null;
+  ps: string | null;
+  pty: number | null;
+  rt: string | null;
+  groups: number;
+}
+
+export type DecodedMsg = CwMsg | RdsMsg;
 
 /** Live SSTV rows (layout documented in decoders/sstv.rs). */
 export interface SstvRows {
@@ -116,6 +136,7 @@ export class Stream {
           if (m.type === 'radio') this.h.onRadio(m.state as RadioState);
           else if (m.type === 'event') this.h.onEvent(m.device as Device, m.event as EventRow);
           else if (typeof m.type === 'string' && m.type.startsWith('audio_')) this.h.onAudioStatus(m.type, m.message ?? null);
+          else if (m.type === 'cw' || m.type === 'rds') this.h.onDecoded(m as DecodedMsg);
         } catch {
           /* ignore malformed */
         }

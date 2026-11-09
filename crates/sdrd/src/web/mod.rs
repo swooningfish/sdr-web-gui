@@ -29,6 +29,7 @@ use crate::scheduler::SchedulerHandle;
 
 mod aprs_routes;
 mod auth_routes;
+mod bookmark_routes;
 mod radio_routes;
 mod schedule_routes;
 mod sensors;
@@ -120,6 +121,14 @@ pub fn router(state: AppState) -> Router {
         .route("/sstv/images/delete", post(sstv_routes::delete_images))
         .route("/sstv/images.zip", get(sstv_routes::zip))
         .route("/devices/delete", post(sensors::delete_devices))
+        .route("/bookmarks", get(bookmark_routes::list).post(bookmark_routes::create))
+        .route(
+            "/bookmarks/{id}",
+            axum::routing::put(bookmark_routes::update).delete(bookmark_routes::remove),
+        )
+        .route("/bookmarks/delete", post(bookmark_routes::remove_many))
+        .route("/bookmarks/export.csv", get(bookmark_routes::export))
+        .route("/bookmarks/import", post(bookmark_routes::import))
         .route("/ws", get(ws::handler))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "not found") })
         .layer(SetResponseHeaderLayer::if_not_present(
