@@ -75,7 +75,7 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
 - Build natively on the Pi (or GitHub Actions arm64 runner) — QEMU cross-builds of Rust are slow.
 
 ## Milestones
-1. **Skeleton** — Cargo workspace, device open/tune, live waterfall to browser, auth, Docker.
+1. **Skeleton** ✅ — Cargo workspace, device open/tune, live waterfall to browser, auth, Docker.
 2. **ISM/TPMS** ✅ — rtl_433 pipe, flex-decoder editor, events table, MQTT + HA discovery,
    per-device history charts. HA discovery only for devices an admin marks as tracked.
 3. **APRS** ✅ — channelizer + FM demod, Direwolf (one per channel, KISS over TCP), APRS parser
@@ -93,8 +93,73 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
    noise reduction and AGC, streamed as IMA ADPCM over the WebSocket (no Opus/libopus
    dependency) into an AudioWorklet jitter buffer; click-to-listen on the waterfall; tabbed
    admin settings, profile page, system info, waterfall palettes; Playwright layout tests.
+7. **Spectrum tools** (next)
+   - Band-plan overlay on the spectrum/waterfall: UK amateur allocations (HF, 6 m, 4 m,
+     2 m, 70 cm, 23 cm) with their sub-bands (CW, SSB, FM, digital, satellite, beacons),
+     plus airband, marine VHF, PMR446, broadcast FM, ISM/SRD and the ISS frequencies. Shown
+     as a labelled strip above the spectrum; toggle per group.
+   - Move along the spectrum: mouse wheel / trackpad to step the centre frequency, drag the
+     spectrum to pan, keyboard arrows; step size follows the zoom. Admin only (it retunes
+     the radio); viewers can still click to listen anywhere in the tuned band.
+   - Bookmarks: save frequency + mode + name (+ optional group/colour); shown as markers on
+     the spectrum and in a bookmarks list beside the Listen panel; click to tune/listen;
+     import/export as CSV. Proposal for where they live on the page comes first.
+   - CW mode for listening (narrow filter + BFO tone) and a Morse decoder that shows the
+     decoded text under the Listen panel. Also decodes CW idents of FM repeaters (the
+     callsign tone at the end of an over) when listening in NFM.
+   - RDS on broadcast FM: station name (PS), programme type and radio text, shown in the
+     Listen panel and on the spectrum while listening in WFM.
+8. **ADS-B aircraft map**
+   - Receiver: a second dongle with a 1090 MHz antenna running ADS-B all the time (readsb),
+     alongside the main dongle; fallback: ADS-B as a rotation profile on a single dongle
+     (aircraft drop off between visits). Needs two dongles open at once (device
+     selection currently opens one).
+   - Map (same Leaflet style as APRS): live aircraft with icons by type (airliner, light,
+     helicopter, glider, balloon, drone… from the broadcast emitter category; our own icons),
+     trails coloured by altitude with a legend, details on click (callsign, altitude, speed,
+     heading, climb rate, squawk, registration/model from the open aircraft database),
+     aircraft list, max-range rings / range stats for antenna placement.
+   - Optional MQTT/HA: aircraft count, closest aircraft.
+9. **Signal classifier** — label signals on the spectrum as voice / data / broadcast /
+   carrier / CW / digital mode etc. using a small on-device model (CPU on the Pi 5); labels
+   on the waterfall and a "what's this?" readout on hover. Uses bookmarks and band plans
+   (M7) as context and for training/validation data.
 
-## Open items
-- Observer location (lat/lon/alt) for pass prediction — set in UI/env at deploy time.
-- Dev loop: no Rust toolchain on this Windows PC; build via Docker here, run with a
-  dongle on the Pi. A file-replay source (recorded IQ / WAV) will allow testing without hardware.
+## Added beyond the original plan
+Along the way (from requests during the build, and Greg's own commits):
+- **Receivers:** choose between several RTL-SDR dongles, with each tuner's frequency
+  coverage (R820T/R828D, Blog V4 with HF, E4000, FC0012/13, FC2580); features outside
+  the selected device's range are shown as unavailable. Selectable source: USB, rtl_tcp or
+  simulated, plus Docker USB passthrough.
+- **Sensors:** dashboard of pinned sensors (live cards with sparklines), visible
+  transmitter IDs with copy, sortable list (name, signal, last heard, count), multi-select
+  delete.
+- **APRS:** home (station location) marker and "centre on home"; multi-select delete.
+- **SSTV:** multi-select gallery with ZIP download and bulk delete.
+- **Passes:** stop a test or real pass; station location by place/postcode search
+  (Nominatim) or Maidenhead locator, with a clear hint when geolocation needs HTTPS;
+  rotation on/off switch in the Receiver panel and Passes tab.
+- **UI:** settings in tabs, profile page (password), system info, waterfall palettes,
+  spectrum toolbar that doesn't move on hover, phone-friendly tab bar.
+- **Tests:** API smoke test (`scripts/smoke-test.sh`) and Playwright layout tests at four
+  screen sizes (`scripts/ui-test.sh`).
+
+## Left to do (besides M7–M9)
+- **Test on the real hardware:** nothing has run against a physical dongle on the Pi 5
+  yet. Check device open/retune, gain, USB passthrough, rtl_433/TPMS, APRS, an ARISS SSTV
+  event and a live ISS pass, and CPU headroom (waterfall + decoders + audio listeners).
+- **CI:** no GitHub Actions yet. Add `cargo test` + clippy, `svelte-check`, the arm64
+  image build, and (optionally) the Playwright tests against the synthetic source.
+- **Licence:** the repository is public with no licence (all rights reserved by default).
+  Pick one (e.g. MIT, Apache-2.0 or GPL-3.0).
+- **ARISS on 437.550 MHz:** the default ISS profile tunes the VHF block; ARISS events on
+  70 cm need the profile switched to 437.6 MHz (maybe per-event presets).
+- **Small clean-ups:** two clippy simplifications in `radio/rtltcp.rs`; Direwolf comes
+  from Debian (1.6), 1.7 could be built from source if needed.
+- **Dev stack:** the saved receiver choice overrides `SDRD_SOURCE`; with an unplugged USB
+  dongle selected, the spectrum is empty (pick *Simulated* in Settings → Receiver).
+
+## Notes
+- Dev loop: no Rust toolchain on the Windows dev PC; build and test in Docker, run with a
+  dongle on the Pi. Without hardware, use the simulated receiver (real APRS, SSTV and
+  Nexus sensor transmissions) or the replay source (`SDRD_SOURCE=replay`, recorded cu8 IQ).

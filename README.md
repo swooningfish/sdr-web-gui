@@ -33,7 +33,7 @@ docker compose up -d --build
 
 Details in [Deploying on a Raspberry Pi 5](#deploying-on-a-raspberry-pi-5).
 
-## Status: milestone 6 (live audio)
+## Status: milestone 6 done, milestone 7 next
 
 - [x] Rust core (`sdrd`) owns the dongle via librtlsdr (rtl-sdr-blog fork: V4, V3, generic)
 - [x] Live spectrum and waterfall in the browser over WebSocket
@@ -46,6 +46,15 @@ Details in [Deploying on a Raspberry Pi 5](#deploying-on-a-raspberry-pi-5).
 - [x] M4: native SSTV decoder (13 modes, slant correction) with live view and image gallery
 - [x] M5: ISS pass prediction (SGP4, CelesTrak TLEs), automatic pass tuning, Doppler tracking, pass recordings, profile rotation
 - [x] M6: live audio in the browser (NFM/AM/WFM/USB/LSB, squelch, noise reduction), tabbed settings, profile page, browser layout tests
+- [x] Since M6: device selection and tuner coverage, rtl_tcp source, sensor dashboard, multi-select
+  delete / ZIP download, sortable sensors, APRS home marker, rotation switch
+- [ ] M7: spectrum tools: band plans, scroll/drag tuning, bookmarks, CW decoder (incl. repeater
+  idents), RDS station names
+- [ ] M8: ADS-B aircraft map (second dongle), type icons, altitude-coloured trails
+- [ ] M9: signal classifier (voice / data / broadcast labels on the spectrum)
+
+Also still to do: testing on real hardware, CI, a licence. Details in
+[SPEC.md](SPEC.md#left-to-do-besides-m7m9).
 
 ## Prerequisites
 
