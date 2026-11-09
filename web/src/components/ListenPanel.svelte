@@ -73,9 +73,29 @@
   const player = new AudioPlayer();
   player.onstats = (s) => (stats = s);
 
+  // Follow the listening frequency when it changes, but never over
+  // something typed and not yet submitted (clicking Set blurs the box before
+  // the click lands). Typed text is dropped once the box has been left for a
+  // moment without submitting.
+  let dirty = $state(false);
+  let shownHz: number | null = null;
+  let blurTimer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
-    if (!editing) freqInput = (listen.hz / 1e6).toFixed(4);
+    const hz = listen.hz;
+    if (editing || dirty || hz === shownHz) return;
+    shownHz = hz;
+    freqInput = (hz / 1e6).toFixed(4);
   });
+  function leaveFreq() {
+    editing = false;
+    if (blurTimer) clearTimeout(blurTimer);
+    blurTimer = setTimeout(() => {
+      if (!editing && dirty) {
+        dirty = false;
+        shownHz = null;
+      }
+    }, 400);
+  }
 
   // Keep the server's listener in step with the controls.
   $effect(() => {
@@ -183,7 +203,10 @@
       return;
     }
     err = null;
+    dirty = false;
+    shownHz = hz;
     listen.hz = hz;
+    freqInput = (hz / 1e6).toFixed(4);
   }
 
   // Meter from -110 to -10 dBFS.
@@ -212,8 +235,9 @@
         id="listen-freq"
         bind:value={freqInput}
         inputmode="decimal"
+        oninput={() => (dirty = true)}
         onfocus={() => (editing = true)}
-        onblur={() => (editing = false)}
+        onblur={leaveFreq}
       />
       <button type="submit" class="small">Set</button>
     </div>

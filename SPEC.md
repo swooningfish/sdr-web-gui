@@ -114,6 +114,11 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
    - RDS on WFM: station name, programme type, radio text and PI, in the Listen panel.
    - Simulator additions: CW beacon on 144.470, repeater with a Morse ident on 145.7125,
      FM station with RDS on 96.1 MHz.
+   - Added after: spectrum zoom (×64 in to about 100 MHz out, buttons, Ctrl + wheel,
+     pinch, keys). Zoomed in, panning past the sampled band retunes; zoomed out, the
+     sampled band is outlined and dragged to retune, with a *Widen* to the top sample rate.
+     A log-scale mini map of the receiver's whole range above the spectrum shows the band
+     plan, bookmarks, the sampled band and the view, and moves the radio on click or drag.
 8. **ADS-B aircraft map** (next)
    - Receiver: a second dongle with a 1090 MHz antenna running ADS-B all the time (readsb),
      alongside the main dongle; fallback: ADS-B as a rotation profile on a single dongle

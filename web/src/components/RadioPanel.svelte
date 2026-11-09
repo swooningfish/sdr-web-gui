@@ -42,9 +42,29 @@
     }
   }
 
+  // Show the radio's frequency when it changes, but never over something
+  // typed and not yet submitted: clicking Tune blurs the box before the
+  // click lands, so blur alone mustn't reset it. Typed text is dropped only
+  // once the box has been left for a moment without submitting.
+  let dirty = $state(false);
+  let shownHz: number | null = null;
+  let blurTimer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
-    if (radio && !editing) freqInput = (radio.settings.center_hz / 1e6).toFixed(4);
+    const hz = radio?.settings.center_hz;
+    if (hz === undefined || editing || dirty || hz === shownHz) return;
+    shownHz = hz;
+    freqInput = (hz / 1e6).toFixed(4);
   });
+  function leaveFreq() {
+    editing = false;
+    if (blurTimer) clearTimeout(blurTimer);
+    blurTimer = setTimeout(() => {
+      if (!editing && dirty) {
+        dirty = false;
+        shownHz = null;
+      }
+    }, 400);
+  }
 
   const locked = $derived(!isAdmin || !radio?.can_tune || busy);
   const gainValue = $derived(radio ? (radio.settings.gain_db === null ? 'auto' : String(radio.settings.gain_db)) : 'auto');
@@ -76,6 +96,9 @@
       return;
     }
     editing = false;
+    dirty = false;
+    shownHz = hz;
+    freqInput = (hz / 1e6).toFixed(4);
     apply({ center_hz: hz });
   }
 
@@ -139,8 +162,9 @@
           inputmode="decimal"
           autocomplete="off"
           bind:value={freqInput}
+          oninput={() => (dirty = true)}
           onfocus={() => (editing = true)}
-          onblur={() => (editing = false)}
+          onblur={leaveFreq}
           disabled={locked}
         />
         <button type="submit" disabled={locked}>Tune</button>

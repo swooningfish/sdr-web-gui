@@ -1,11 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { WaterfallFrame } from '../lib/stream';
+  import type { FreqRange } from '../lib/api';
   import { PALETTES } from '../lib/colormap';
-  import { formatMHz, MARKERS } from '../lib/format';
+  import { formatMHz, formatSpan, MARKERS } from '../lib/format';
   import { channelEdges, CHANNEL_STEP, type Listen } from '../lib/audio';
   import { ALL_GROUPS, GROUPS, STRIP_H, drawStrip, type BandGroup } from '../lib/bandplan';
   import { colourOf, type Bookmark } from '../lib/bookmarks.svelte';
+  import { fullRange, zoomLabel, zoomLimits } from '../lib/zoom';
+  import MiniMap from './MiniMap.svelte';
 
   let {
     canTune = false,
@@ -14,6 +17,10 @@
     onpick,
     bookmarks = [],
     onbookmark,
+    ranges = [],
+    directSampling = 0,
+    sampleRates = [],
+    onrate,
   }: {
     canTune?: boolean;
     ontune?: (hz: number) => void;
@@ -24,13 +31,22 @@
     /** Bookmarks, flagged above the spectrum. */
     bookmarks?: Bookmark[];
     onbookmark?: (b: Bookmark) => void;
+    /** What the receiver can tune (for the mini map); empty = unknown. */
+    ranges?: FreqRange[];
+    directSampling?: number;
+    /** Sample rates the receiver offers, and a way to change it. */
+    sampleRates?: number[];
+    onrate?: (rate: number) => void;
   } = $props();
 
   const SPEC_CSS_H = 200;
   const WF_ROWS = 400;
   const FLAGS_H = 20;
-  const TICK_STEPS = [1e3, 2e3, 5e3, 10e3, 25e3, 50e3, 100e3, 200e3, 250e3, 500e3, 1e6, 2e6];
-  const NICE_STEPS = [1e3, 5e3, 10e3, 25e3, 50e3, 100e3, 250e3, 500e3, 1e6, 2e6, 5e6];
+  const TICK_STEPS = [
+    100, 200, 500, 1e3, 2e3, 5e3, 10e3, 25e3, 50e3, 100e3, 200e3, 250e3, 500e3, 1e6, 2e6, 5e6, 10e6, 20e6, 50e6,
+  ];
+  const NICE_STEPS = [100, 500, 1e3, 5e3, 10e3, 25e3, 50e3, 100e3, 250e3, 500e3, 1e6, 2e6, 5e6, 10e6, 20e6];
+  const MAX_HZ = 2_200_000_000;
 
   let container: HTMLDivElement;
   let plots: HTMLDivElement;
@@ -72,18 +88,54 @@
       }
     })(),
   );
-  // Band plan groups shown, remembered per browser.
+  // Band plan groups shown, and the mini map, remembered per browser.
   let bandGroups = $state<BandGroup[]>(load('sdr.bands', ALL_GROUPS));
   const enabledBands = $derived(new Set(bandGroups));
   const showBands = $derived(bandGroups.length > 0);
+  let showMap = $state<boolean>(load('sdr.minimap', true));
 
-  // Retuning by wheel / drag / keys: where we're heading, and how far the
-  // picture is shifted meanwhile (CSS px).
+  // ------------------------------------------------------------- the view
+  //
+  // The radio samples a window (centre ± rate/2). The view is what's drawn:
+  // `zoom` > 1 shows part of the window, < 1 shows more than it. `viewC` is
+  // the view's centre, or null to stay centred on the window. Moving the
+  // view past the window's edge retunes the radio (admins, zoom ≥ 1);
+  // zoomed out, the window is outlined and admins drag it to retune.
+  let zoom = $state(1);
+  let viewC = $state<number | null>(null);
+  /** Radio centre we've asked for and are waiting to see. */
   let target = $state<number | null>(null);
+  /** Window being dragged (zoomed out): where it would go. */
+  let winDrag = $state<number | null>(null);
   let commitTimer: ReturnType<typeof setTimeout> | null = null;
   let resetTimer: ReturnType<typeof setTimeout> | null = null;
-  let drag = $state<{ x0: number; centre: number; moved: boolean; id: number } | null>(null);
+  let drag = $state<{ x0: number; c0: number; moved: boolean; id: number; kind: 'view' | 'window' } | null>(null);
   let justDragged = false;
+  const pointers = new Map<number, number>();
+  let pinch: { d: number } | null = null;
+
+  const span = $derived(info ? info.sampleRate / zoom : 1);
+  const centre = $derived(info ? (viewC ?? info.centerHz) : 0);
+  const vStart = $derived(centre - span / 2);
+  const hzPerPx = $derived(span / Math.max(1, width));
+  const winLo = $derived(info ? info.centerHz - info.sampleRate / 2 : 0);
+  const winHi = $derived(info ? info.centerHz + info.sampleRate / 2 : 0);
+  const limits = $derived(info ? zoomLimits(info.sampleRate, info.bins) : ([1, 1] as [number, number]));
+  const full = $derived(fullRange(ranges, directSampling, winLo, winHi));
+  /** Part of the view isn't sampled. */
+  const overhang = $derived(!!info && (vStart < winLo - hzPerPx || vStart + span > winHi + hzPerPx));
+  /** None of the view is sampled. */
+  const offWindow = $derived(!!info && (vStart + span < winLo || vStart > winHi));
+  const widest = $derived(sampleRates.length ? Math.max(...sampleRates) : 0);
+
+  /** The waterfall image is the window; stretch and slide it into the view. */
+  const wfTransform = $derived.by(() => {
+    if (!info) return null;
+    const k = info.sampleRate / span;
+    const off = ((winLo - vStart) / span) * width;
+    if (Math.abs(k - 1) < 1e-9 && Math.abs(off) < 0.01) return null;
+    return `translateX(${off}px) scaleX(${k})`;
+  });
 
   let cmap = PALETTES[0].make();
   let cmapId = '';
@@ -97,9 +149,8 @@
   let framesSeen = 0;
   let fpsCount = 0;
   let fpsT0 = performance.now();
-
-  const hzPerPx = $derived(info ? info.sampleRate / Math.max(1, width) : 1);
-  const panPx = $derived(info && target !== null ? (info.centerHz - target) / hzPerPx : 0);
+  let hatch: CanvasPattern | null = null;
+  let hatchDpr = 0;
 
   function ensureLut(minDb: number, maxDb: number) {
     if (cmapId !== palette) {
@@ -126,6 +177,7 @@
   export function push(f: WaterfallFrame) {
     const n = f.bins.length;
     if (!info || info.bins !== n || info.centerHz !== f.centerHz || info.sampleRate !== f.sampleRate) {
+      const moved = !!info && info.centerHz !== f.centerHz;
       if (!info || info.bins !== n) {
         wfCanvas.width = n;
         wfCanvas.height = WF_ROWS;
@@ -141,7 +193,8 @@
       avg = null;
       peak = null;
       info = { centerHz: f.centerHz, sampleRate: f.sampleRate, bins: n };
-      if (target !== null && commitTimer === null && drag === null) endPan();
+      if (zoom < limits[0] || zoom > limits[1]) zoom = Math.min(limits[1], Math.max(limits[0], zoom));
+      if (moved) retuned(f.centerHz);
     }
     // Spectrum: light exponential smoothing in dB.
     const step = (f.maxDb - f.minDb) / 255;
@@ -185,6 +238,32 @@
     queueDraw();
   }
 
+  /** The radio's centre changed: ours arriving, or someone else's retune. */
+  function retuned(hz: number) {
+    if (!info) return;
+    if (target !== null && Math.abs(hz - target) < 1000) {
+      target = null;
+      if (resetTimer) clearTimeout(resetTimer);
+      resetTimer = null;
+    } else if (viewC !== null && !drag) {
+      // Retuned elsewhere (Receiver panel, a bookmark, rotation). Keep the
+      // view if it still overlaps the window; otherwise follow the radio.
+      const sr = info.sampleRate;
+      if (offWindow) {
+        const l = listen?.hz;
+        viewC = zoom > 1 && l !== undefined && Math.abs(l - hz) < sr / 2 ? l : hz;
+      }
+      if (zoom >= 1) viewC = containView(viewC!);
+    }
+    settle();
+  }
+
+  /** At ×1 with the view back on the window, stop tracking a separate view. */
+  function settle() {
+    if (!info || viewC === null || drag || commitTimer) return;
+    if (zoom === 1 && target === null && Math.abs(viewC - info.centerHz) < Math.max(1000, hzPerPx)) viewC = null;
+  }
+
   export function autoLevel() {
     if (!avg) return;
     const sorted = Float32Array.from(avg).sort();
@@ -216,7 +295,26 @@
   function drawBands() {
     if (!bandCanvas || !info) return;
     const ctx = bandCanvas.getContext('2d')!;
-    drawStrip(ctx, info.centerHz - info.sampleRate / 2, info.sampleRate, dpr, enabledBands, hover?.hz ?? null);
+    drawStrip(ctx, vStart, span, dpr, enabledBands, hover?.hz ?? null);
+  }
+
+  /** Diagonal hatching for parts of the view the radio isn't sampling. */
+  function hatchPattern(ctx: CanvasRenderingContext2D): CanvasPattern | null {
+    if (hatch && hatchDpr === dpr) return hatch;
+    const s = Math.round(8 * dpr);
+    const c = document.createElement('canvas');
+    c.width = s;
+    c.height = s;
+    const g = c.getContext('2d')!;
+    g.strokeStyle = 'rgba(148,163,184,0.16)';
+    g.lineWidth = dpr;
+    g.beginPath();
+    g.moveTo(0, s);
+    g.lineTo(s, 0);
+    g.stroke();
+    hatch = ctx.createPattern(c, 'repeat');
+    hatchDpr = dpr;
+    return hatch;
   }
 
   function drawSpectrum() {
@@ -228,13 +326,34 @@
     const plotH = H - axisH;
     ctx.clearRect(0, 0, W, H);
 
-    const span = Math.max(1, ceilDb - floorDb);
-    const y = (db: number) => Math.min(plotH, Math.max(0, plotH - ((db - floorDb) / span) * plotH));
-    const start = info.centerHz - info.sampleRate / 2;
-    const xOf = (hz: number) => ((hz - start) / info!.sampleRate) * W;
+    const dbSpan = Math.max(1, ceilDb - floorDb);
+    const y = (db: number) => Math.min(plotH, Math.max(0, plotH - ((db - floorDb) / dbSpan) * plotH));
+    const start = vStart;
+    const end = vStart + span;
+    const xOf = (hz: number) => ((hz - start) / span) * W;
+    const inView = (hz: number) => hz >= start && hz <= end;
+    const sr = info.sampleRate;
+    const wx0 = xOf(winLo);
+    const wx1 = xOf(winHi);
 
     ctx.font = `${11 * dpr}px ui-sans-serif, system-ui, sans-serif`;
     ctx.lineWidth = 1;
+
+    // Not sampled: hatch either side of the window.
+    if (overhang) {
+      ctx.fillStyle = hatchPattern(ctx) ?? 'rgba(148,163,184,0.06)';
+      if (wx0 > 0) ctx.fillRect(0, 0, Math.min(W, wx0), plotH);
+      if (wx1 < W) ctx.fillRect(Math.max(0, wx1), 0, W - Math.max(0, wx1), plotH);
+      ctx.fillStyle = 'rgba(148,163,184,0.55)';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (const [a, b] of [
+        [0, Math.min(W, wx0)],
+        [Math.max(0, wx1), W],
+      ]) {
+        if (b - a > 110 * dpr) ctx.fillText('not sampled', (a + b) / 2, plotH * 0.62);
+      }
+    }
 
     // dB grid
     ctx.strokeStyle = 'rgba(148,163,184,0.15)';
@@ -252,11 +371,11 @@
 
     // Frequency grid + axis labels
     const maxTicks = W / (95 * dpr);
-    const tick = TICK_STEPS.find((s) => info!.sampleRate / s <= maxTicks) ?? 5e6;
+    const tick = TICK_STEPS.find((s) => span / s <= maxTicks) ?? 100e6;
     const dec = decimalsFor(tick);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
-    for (let hz = Math.ceil(start / tick) * tick; hz <= start + info.sampleRate; hz += tick) {
+    for (let hz = Math.ceil(start / tick) * tick; hz <= end; hz += tick) {
       const xx = Math.round(xOf(hz)) + 0.5;
       ctx.strokeStyle = 'rgba(148,163,184,0.15)';
       ctx.beginPath();
@@ -269,7 +388,7 @@
 
     // Bookmarks: faint lines in their colour (the flags above say what they are).
     for (const b of bookmarks) {
-      if (b.freq_hz < start || b.freq_hz > start + info.sampleRate) continue;
+      if (!inView(b.freq_hz)) continue;
       const xx = Math.round(xOf(b.freq_hz)) + 0.5;
       ctx.strokeStyle = colourOf(b) + '66';
       ctx.beginPath();
@@ -282,7 +401,7 @@
     ctx.textAlign = 'left';
     const lineEnds: number[] = [];
     for (const m of MARKERS) {
-      if (m.hz < start || m.hz > start + info.sampleRate) continue;
+      if (!inView(m.hz)) continue;
       const xx = Math.round(xOf(m.hz)) + 0.5;
       const w = ctx.measureText(m.label).width;
       let line = lineEnds.findIndex((end) => xx + 3 * dpr > end + 6 * dpr);
@@ -300,24 +419,46 @@
       ctx.fillText(m.label, xx + 3 * dpr, labelY);
     }
 
+    // Trace in view coordinates: the highest bin under each pixel, or
+    // interpolated between bins when zoomed in past one bin per pixel.
     const trace = (data: Float32Array, stroke: string, fill: string | null) => {
       const n = data.length;
+      const binAt = (x: number) => ((start + (x / W) * span - winLo) / sr) * n;
+      let first = -1;
+      let last = -1;
       ctx.beginPath();
       for (let x = 0; x < W; x++) {
-        const b0 = Math.floor((x * n) / W);
-        const b1 = Math.max(b0 + 1, Math.floor(((x + 1) * n) / W));
-        let m = -Infinity;
-        for (let b = b0; b < b1 && b < n; b++) m = Math.max(m, data[b]);
+        const f0 = binAt(x);
+        const f1 = binAt(x + 1);
+        if (f1 <= 0 || f0 >= n) continue;
+        let m: number;
+        if (f1 - f0 >= 1) {
+          const b0 = Math.max(0, Math.floor(f0));
+          const b1 = Math.min(n, Math.max(b0 + 1, Math.floor(f1)));
+          m = -Infinity;
+          for (let b = b0; b < b1; b++) m = Math.max(m, data[b]);
+        } else {
+          const fc = (f0 + f1) / 2 - 0.5;
+          const i = Math.floor(fc);
+          const t = fc - i;
+          const a = data[Math.min(n - 1, Math.max(0, i))];
+          const b = data[Math.min(n - 1, Math.max(0, i + 1))];
+          m = a + (b - a) * t;
+        }
         const yy = y(m);
-        if (x === 0) ctx.moveTo(x, yy);
-        else ctx.lineTo(x, yy);
+        if (first < 0) {
+          ctx.moveTo(x, yy);
+          first = x;
+        } else ctx.lineTo(x, yy);
+        last = x;
       }
+      if (first < 0) return;
       ctx.strokeStyle = stroke;
       ctx.lineWidth = 1.25 * dpr;
       ctx.stroke();
       if (fill) {
-        ctx.lineTo(W, plotH);
-        ctx.lineTo(0, plotH);
+        ctx.lineTo(last, plotH);
+        ctx.lineTo(first, plotH);
         ctx.closePath();
         ctx.fillStyle = fill;
         ctx.fill();
@@ -342,6 +483,38 @@
     if (peakHold && peak) trace(peak, 'rgba(244,114,182,0.7)', null);
     if (avg) trace(avg, '#38bdf8', 'rgba(56,189,248,0.12)');
 
+    // The sampled window, outlined when the view shows more than it.
+    if (overhang && !offWindow) {
+      ctx.strokeStyle = 'rgba(56,189,248,0.9)';
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.strokeRect(wx0, 0.75 * dpr, wx1 - wx0, plotH - 1.5 * dpr);
+      if (zoom < 1) {
+        const text = `Sampled ${formatSpan(sr)}${canTune ? ' · drag to move' : ''}`;
+        ctx.font = `${10.5 * dpr}px ui-sans-serif, system-ui, sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        const w = ctx.measureText(text).width + 8 * dpr;
+        const left = Math.min(W - w, Math.max(0, (wx0 + wx1) / 2 - w / 2));
+        ctx.fillStyle = 'rgba(14,116,144,0.92)';
+        ctx.fillRect(left, plotH - 16 * dpr, w, 14 * dpr);
+        ctx.fillStyle = '#f0f9ff';
+        ctx.fillText(text, left + 4 * dpr, plotH - 9 * dpr);
+      }
+      ctx.lineWidth = 1;
+    }
+    // Where the window is heading (being dragged, or waiting for the radio).
+    const next = winDrag ?? (zoom < 1 ? target : null);
+    if (next !== null) {
+      const p0 = xOf(next - sr / 2);
+      const p1 = xOf(next + sr / 2);
+      ctx.strokeStyle = 'rgba(248,250,252,0.9)';
+      ctx.setLineDash([4 * dpr, 3 * dpr]);
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.strokeRect(p0, 0.75 * dpr, p1 - p0, plotH - 1.5 * dpr);
+      ctx.setLineDash([]);
+      ctx.lineWidth = 1;
+    }
+
     // Hover cursor
     if (hover) {
       const xx = Math.round(hover.frac * W) + 0.5;
@@ -353,20 +526,33 @@
     }
   }
 
-  // ---------------------------------------------------------------- tuning
+  // ---------------------------------------------------------------- moving
 
-  /** Step for keyboard panning: a round number near a tenth of the span. */
+  /** Where the view's centre may go. Viewers who can't retune stay inside
+   * the window unless zoomed out. */
+  function clampView(c: number): number {
+    if (!info) return c;
+    if (zoom >= 1 && !canTune) return containView(c);
+    return Math.min(full.hi, Math.max(full.lo, c));
+  }
+
+  /** Centre that keeps a view no wider than the window inside it. */
+  function containView(c: number): number {
+    if (!info) return c;
+    const half = info.sampleRate / 2 - info.sampleRate / zoom / 2;
+    if (half < 0) return c;
+    return Math.min(info.centerHz + half, Math.max(info.centerHz - half, c));
+  }
+
+  /** Step for keyboard panning: a round number near a tenth of the view. */
   function panStep(big: boolean): number {
-    if (!info) return 100e3;
-    const want = info.sampleRate / (big ? 2 : 10);
+    const want = span / (big ? 2 : 10);
     return [...NICE_STEPS].reverse().find((s) => s <= want) ?? NICE_STEPS[0];
   }
 
-  function moveTarget(deltaHz: number, delayMs: number) {
-    if (!info || !canTune) return;
-    const half = info.sampleRate / 2;
-    const next = (target ?? info.centerHz) + deltaHz;
-    target = Math.min(2_200_000_000 - half, Math.max(half, next));
+  function moveView(deltaHz: number, delayMs: number) {
+    if (!info) return;
+    viewC = clampView(centre + deltaHz);
     scheduleCommit(delayMs);
   }
 
@@ -375,45 +561,130 @@
     commitTimer = setTimeout(commit, delayMs);
   }
 
+  /** After moving the view: retune if it has left the window (zoom ≥ 1). */
   function commit() {
     commitTimer = null;
-    if (target === null || !info) return;
-    const hz = Math.round(target / 1000) * 1000;
-    target = hz;
-    if (Math.abs(hz - info.centerHz) < 500) {
-      endPan();
-      return;
-    }
-    ontune?.(hz);
-    // If the radio doesn't follow (error, or rotation took it), put the picture back.
-    if (resetTimer) clearTimeout(resetTimer);
-    resetTimer = setTimeout(endPan, 4000);
+    if (!info || viewC === null) return;
+    if (canTune && zoom >= 1 && (vStart < winLo - hzPerPx || vStart + span > winHi + hzPerPx)) tuneRadio(viewC);
+    settle();
   }
 
-  function endPan() {
-    target = null;
+  /** Ask for a new radio centre. The view stays put meanwhile. */
+  function tuneRadio(hz: number) {
+    if (!info || !canTune) return;
+    const half = info.sampleRate / 2;
+    const want = Math.round(Math.min(MAX_HZ - half, Math.max(half, hz)) / 1000) * 1000;
+    if (Math.abs(want - info.centerHz) < 500) {
+      target = null;
+      settle();
+      return;
+    }
+    target = want;
+    ontune?.(want);
+    // If the radio doesn't follow (error, or rotation took it), give up.
     if (resetTimer) clearTimeout(resetTimer);
-    resetTimer = null;
+    resetTimer = setTimeout(() => {
+      resetTimer = null;
+      target = null;
+      if (zoom === 1) viewC = null;
+      else if (zoom > 1 && viewC !== null) viewC = containView(viewC);
+    }, 4000);
+  }
+
+  /** Mini map: move the radio (and the view) there, or just look there. */
+  function go(hz: number) {
+    if (!info) return;
+    if (canTune) {
+      viewC = zoom === 1 ? hz : clampView(hz);
+      tuneRadio(hz);
+    } else if (zoom < 1) viewC = clampView(hz);
+  }
+
+  // ---------------------------------------------------------------- zoom
+
+  /** Zoom by `f` about `anchor` (Hz), which stays where it is on screen. */
+  function zoomBy(f: number, anchor?: number) {
+    if (!info) return;
+    const [zMin, zMax] = limits;
+    let z = Math.min(zMax, Math.max(zMin, zoom * f));
+    if (Math.abs(Math.log(z)) < 0.04) z = 1;
+    if (z === zoom) return;
+    const a = anchor ?? (listen && listen.hz >= vStart && listen.hz <= vStart + span ? listen.hz : centre);
+    const frac = (a - vStart) / span;
+    const newSpan = info.sampleRate / z;
+    const c = a - frac * newSpan + newSpan / 2;
+    zoom = z;
+    viewC = clampView(c);
+    // Back to ×1 near the window: snap onto it.
+    if (z === 1 && viewC - newSpan / 2 < winHi && viewC + newSpan / 2 > winLo) viewC = null;
+  }
+
+  /** ×1, on the window. */
+  function fit() {
+    zoom = 1;
+    viewC = null;
+  }
+
+  // -------------------------------------------------------------- pointer
+
+  function hzAtClient(clientX: number): number {
+    const rect = plots.getBoundingClientRect();
+    return vStart + ((clientX - rect.left) / rect.width) * span;
   }
 
   function onWheel(e: WheelEvent) {
-    if (!canTune || !info) return;
-    const horizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY);
-    // Vertical scrolling tunes only once the spectrum has focus (click it
-    // first), so scrolling the page past it doesn't retune the radio.
-    if (!horizontal && document.activeElement !== plots) return;
-    e.preventDefault();
+    if (!info) return;
     const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? width : 1;
+    // Ctrl + wheel, or a trackpad pinch: zoom about the cursor.
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const f = Math.exp(-Math.max(-200, Math.min(200, e.deltaY * unit)) * 0.0025);
+      zoomBy(f, hzAtClient(e.clientX));
+      return;
+    }
+    const horizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+    // Vertical scrolling moves along the band only once the spectrum has
+    // focus (click it first), so scrolling the page past it doesn't.
+    if (!horizontal && document.activeElement !== plots) return;
+    // Nothing to move for a viewer at ×1: let the page scroll.
+    if (!canTune && zoom === 1) return;
+    e.preventDefault();
     const px = horizontal ? e.deltaX * unit : -e.deltaY * unit;
-    moveTarget(px * hzPerPx, 350);
+    moveView(px * hzPerPx, 350);
   }
 
   function onPointerDown(e: PointerEvent) {
-    if (!canTune || !info || e.button !== 0) return;
-    drag = { x0: e.clientX, centre: target ?? info.centerHz, moved: false, id: e.pointerId };
+    if (!info || e.button !== 0) return;
+    pointers.set(e.pointerId, e.clientX);
+    if (pointers.size === 2) {
+      // Two fingers: pinch to zoom.
+      const [a, b] = [...pointers.values()];
+      pinch = { d: Math.abs(a - b) };
+      drag = null;
+      winDrag = null;
+      return;
+    }
+    const hz = hzAtClient(e.clientX);
+    const onWin = zoom < 1 && canTune && hz >= winLo && hz <= winHi;
+    if (!onWin && zoom === 1 && !canTune) return;
+    drag = {
+      x0: e.clientX,
+      c0: onWin ? info.centerHz : centre,
+      moved: false,
+      id: e.pointerId,
+      kind: onWin ? 'window' : 'view',
+    };
   }
 
   function onPointerMove(e: PointerEvent) {
+    if (pointers.has(e.pointerId)) pointers.set(e.pointerId, e.clientX);
+    if (pinch && pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      const d = Math.abs(a - b);
+      if (pinch.d > 20 && d > 20) zoomBy(d / pinch.d, hzAtClient((a + b) / 2));
+      pinch.d = d;
+      return;
+    }
     if (!drag || e.pointerId !== drag.id || !info) return;
     const dx = e.clientX - drag.x0;
     if (!drag.moved && Math.abs(dx) < 5) return;
@@ -423,29 +694,54 @@
       if (commitTimer) clearTimeout(commitTimer);
       commitTimer = null;
     }
-    const half = info.sampleRate / 2;
-    target = Math.min(2_200_000_000 - half, Math.max(half, drag.centre - dx * hzPerPx));
+    if (drag.kind === 'window') {
+      const half = info.sampleRate / 2;
+      winDrag = Math.min(MAX_HZ - half, Math.max(half, drag.c0 + dx * hzPerPx));
+    } else {
+      viewC = clampView(drag.c0 - dx * hzPerPx);
+    }
   }
 
   function onPointerUp(e: PointerEvent) {
-    if (!drag || e.pointerId !== drag.id) return;
-    const moved = drag.moved;
-    drag = null;
-    if (moved) {
-      justDragged = true;
-      commit();
+    pointers.delete(e.pointerId);
+    if (pinch) {
+      if (pointers.size < 2) {
+        pinch = null;
+        justDragged = true;
+      }
+      return;
     }
+    if (!drag || e.pointerId !== drag.id) return;
+    const { moved, kind } = drag;
+    drag = null;
+    if (!moved) return;
+    justDragged = true;
+    if (kind === 'window') {
+      const hz = winDrag;
+      winDrag = null;
+      if (hz !== null) tuneRadio(hz);
+    } else commit();
   }
 
   function onKey(e: KeyboardEvent) {
     if (e.altKey || e.ctrlKey || e.metaKey) return;
-    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && canTune) {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      if (!canTune && zoom === 1) return;
       e.preventDefault();
-      moveTarget((e.key === 'ArrowLeft' ? -1 : 1) * panStep(e.shiftKey), 400);
+      moveView((e.key === 'ArrowLeft' ? -1 : 1) * panStep(e.shiftKey), 400);
     } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && listen && onpick) {
       e.preventDefault();
       const step = CHANNEL_STEP[listen.mode] * (e.shiftKey ? 10 : 1);
       onpick(listen.hz + (e.key === 'ArrowUp' ? step : -step));
+    } else if (e.key === '+' || e.key === '=') {
+      e.preventDefault();
+      zoomBy(2);
+    } else if (e.key === '-' || e.key === '_') {
+      e.preventDefault();
+      zoomBy(0.5);
+    } else if (e.key === '0') {
+      e.preventDefault();
+      fit();
     }
   }
 
@@ -453,9 +749,9 @@
     if (!info || drag?.moved) return;
     const rect = plots.getBoundingClientRect();
     const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-    const hz = info.centerHz - info.sampleRate / 2 + frac * info.sampleRate;
-    const bin = Math.min(info.bins - 1, Math.floor(frac * info.bins));
-    hover = { frac, hz, db: avg ? avg[bin] : NaN };
+    const hz = vStart + frac * span;
+    const bin = Math.floor(((hz - winLo) / info.sampleRate) * info.bins);
+    hover = { frac, hz, db: avg && bin >= 0 && bin < info.bins ? avg[bin] : NaN };
   }
 
   function onClick() {
@@ -467,7 +763,10 @@
   }
 
   function onDblClick() {
-    if (canTune && hover && ontune) ontune(Math.round(hover.hz / 1000) * 1000);
+    if (!canTune || !hover) return;
+    const hz = Math.round(hover.hz / 1000) * 1000;
+    if (zoom !== 1) viewC = clampView(hz);
+    tuneRadio(hz);
   }
 
   // ------------------------------------------------------------- bookmarks
@@ -475,12 +774,12 @@
   /** Flags in view; ones too close to the previous show as a dot only. */
   const flags = $derived.by(() => {
     if (!info) return [];
-    const start = info.centerHz - info.sampleRate / 2;
     let lastEnd = -Infinity;
     return bookmarks
-      .filter((b) => b.freq_hz >= start && b.freq_hz <= start + info!.sampleRate)
+      .filter((b) => b.freq_hz >= vStart && b.freq_hz <= vStart + span)
+      .sort((a, b) => a.freq_hz - b.freq_hz)
       .map((b) => {
-        const frac = (b.freq_hz - start) / info!.sampleRate;
+        const frac = (b.freq_hz - vStart) / span;
         const x = frac * width;
         const w = Math.min(140, b.name.length * 6.3 + 14);
         const full = x >= lastEnd && x + w <= width + 4;
@@ -505,7 +804,7 @@
   }
 
   $effect(() => {
-    // Redraw when display settings change.
+    // Redraw when display settings or the view change.
     void floorDb;
     void ceilDb;
     void palette;
@@ -515,6 +814,10 @@
     void listen?.on;
     void bookmarks;
     void bandGroups;
+    void vStart;
+    void span;
+    void winDrag;
+    void target;
     if (!peakHold) peak = null;
     queueDraw();
   });
@@ -542,7 +845,7 @@
     const ro = new ResizeObserver(resize);
     ro.observe(container);
     resize();
-    // Non-passive, so the wheel can tune instead of scrolling the page.
+    // Non-passive, so the wheel can tune or zoom instead of scrolling the page.
     plots.addEventListener('wheel', onWheel, { passive: false });
     return () => {
       ro.disconnect();
@@ -560,7 +863,9 @@
         <span
           ><strong>{formatMHz(target ?? info.centerHz)}</strong>{#if target !== null}<span class="muted"> (tuning…)</span>{/if}</span
         >
-        <span class="muted">span {(info.sampleRate / 1e6).toFixed(3)} MHz · {info.bins} bins · {fps} fps</span>
+        <span class="muted"
+          >{#if zoom !== 1}view {formatSpan(span)} of{' '}{/if}span {(info.sampleRate / 1e6).toFixed(3)} MHz · {info.bins} bins · {fps} fps</span
+        >
       {:else}
         <span class="muted">Waiting for data…</span>
       {/if}
@@ -570,6 +875,32 @@
       >
     </div>
     <div class="controls">
+      <div class="zoom" role="group" aria-label="Zoom">
+        <button
+          type="button"
+          class="small"
+          aria-label="Zoom out"
+          title="Zoom out (−). Past ×1 you see beyond what the radio samples."
+          disabled={!info || zoom <= limits[0]}
+          onclick={() => zoomBy(0.5)}>−</button
+        >
+        <button
+          type="button"
+          class="small level"
+          aria-label="Zoom {zoomLabel(zoom)}: back to the sampled band"
+          title="Back to ×1, the sampled band (0)"
+          disabled={!info}
+          onclick={fit}>{zoomLabel(zoom)}</button
+        >
+        <button
+          type="button"
+          class="small"
+          aria-label="Zoom in"
+          title="Zoom in (+). Ctrl + wheel or pinch zooms about the cursor."
+          disabled={!info || zoom >= limits[1]}
+          onclick={() => zoomBy(2)}>+</button
+        >
+      </div>
       <label title="Noise floor (bottom of the colour scale)">
         Floor <input type="range" min="-140" max="-20" bind:value={floorDb} /> <span class="num">{floorDb}</span>
       </label>
@@ -603,24 +934,72 @@
               /><span class="swatch" style:background={g.colour}></span>{g.label}</label
             >
           {/each}
+          <label class="map-toggle"
+            ><input
+              type="checkbox"
+              bind:checked={showMap}
+              onchange={() => save('sdr.minimap', showMap)}
+            />Mini map of the whole range</label
+          >
           <p class="muted small-text">UK plans, simplified: check the RSGB band plan before transmitting.</p>
         </div>
       </details>
     </div>
   </div>
+
+  {#if info && showMap}
+    <MiniMap
+      lo={full.lo}
+      hi={full.hi}
+      covered={ranges}
+      win={{ c: info.centerHz, span: info.sampleRate }}
+      pending={target}
+      view={{ lo: vStart, hi: vStart + span }}
+      listenHz={listen?.hz ?? null}
+      {bookmarks}
+      enabled={enabledBands}
+      {canTune}
+      ongo={go}
+    />
+  {/if}
+
+  {#if info && (offWindow || zoom < 1)}
+    <div class="notice" role="status">
+      {#if offWindow}
+        <span>The radio isn't sampling this part of the band.</span>
+        {#if canTune}
+          <button type="button" class="small" onclick={() => tuneRadio(centre)}>Move the radio here</button>
+        {/if}
+      {:else}
+        <span
+          >Zoomed out: the radio samples the outlined {formatSpan(info.sampleRate)}.{#if canTune}{' '}Drag it, or
+            click the mini map, to move it.{/if}</span
+        >
+        {#if canTune && onrate && widest > info.sampleRate}
+          <button type="button" class="small" onclick={() => onrate?.(widest)}>Widen to {formatSpan(widest)}</button>
+        {/if}
+      {/if}
+      <button type="button" class="small" onclick={fit}>Back to ×1</button>
+    </div>
+  {/if}
+
   <!-- Pointer and keyboard shortcuts; the same actions are available as form
        fields in the Listen and Receiver panels. -->
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events -->
   <div
     class="plots"
-    class:tunable={canTune}
+    class:tunable={canTune || zoom !== 1}
     class:dragging={drag?.moved}
     bind:this={plots}
+    data-view-lo={Math.round(vStart)}
+    data-view-hi={Math.round(vStart + span)}
+    data-win-lo={Math.round(winLo)}
+    data-win-hi={Math.round(winHi)}
     tabindex="0"
     role="group"
     aria-label={canTune
-      ? 'Spectrum. Click to listen; drag, scroll or use the left and right arrow keys to move along the band; up and down arrows step the listening frequency.'
-      : 'Spectrum. Click to listen; up and down arrows step the listening frequency.'}
+      ? 'Spectrum. Click to listen; drag, scroll or use the left and right arrow keys to move along the band; plus and minus zoom; up and down arrows step the listening frequency.'
+      : 'Spectrum. Click to listen; plus and minus zoom; up and down arrows step the listening frequency.'}
     onmousemove={onMove}
     onmouseleave={() => (hover = null)}
     onclick={onClick}
@@ -633,36 +1012,37 @@
     title={[
       onpick ? 'Click to listen here' : '',
       canTune ? 'drag or scroll to move along the band (click first to scroll)' : '',
+      'Ctrl + wheel to zoom',
       canTune ? 'double-click to centre here' : '',
     ]
       .filter(Boolean)
       .join(' · ')}
   >
-    <div class="pan" style:transform={panPx ? `translateX(${panPx}px)` : null}>
-      {#if showBands}
-        <canvas class="bands" bind:this={bandCanvas} style:height="{STRIP_H}px"></canvas>
-      {/if}
-      {#if bookmarks.length}
-        <div class="flags" style:height="{FLAGS_H}px">
-          {#each flags as f (f.b.id)}
-            <button
-              type="button"
-              class="flag"
-              class:dot-only={!f.full}
-              style:left="{f.frac * 100}%"
-              style:--c={colourOf(f.b)}
-              title="{f.b.name} · {formatMHz(f.b.freq_hz, 4)} {f.b.mode.toUpperCase()}{f.b.shared ? '' : ' (yours)'}"
-              onpointerdown={(e) => e.stopPropagation()}
-              onclick={(e) => {
-                e.stopPropagation();
-                onbookmark?.(f.b);
-              }}>{f.full ? f.b.name : ''}</button
-            >
-          {/each}
-        </div>
-      {/if}
-      <canvas class="spectrum" bind:this={specCanvas} style:height="{SPEC_CSS_H}px"></canvas>
-      <canvas class="waterfall" bind:this={wfCanvas} width="1024" height={WF_ROWS}></canvas>
+    {#if showBands}
+      <canvas class="bands" bind:this={bandCanvas} style:height="{STRIP_H}px"></canvas>
+    {/if}
+    {#if bookmarks.length}
+      <div class="flags" style:height="{FLAGS_H}px">
+        {#each flags as f (f.b.id)}
+          <button
+            type="button"
+            class="flag"
+            class:dot-only={!f.full}
+            style:left="{f.frac * 100}%"
+            style:--c={colourOf(f.b)}
+            title="{f.b.name} · {formatMHz(f.b.freq_hz, 4)} {f.b.mode.toUpperCase()}{f.b.shared ? '' : ' (yours)'}"
+            onpointerdown={(e) => e.stopPropagation()}
+            onclick={(e) => {
+              e.stopPropagation();
+              onbookmark?.(f.b);
+            }}>{f.full ? f.b.name : ''}</button
+          >
+        {/each}
+      </div>
+    {/if}
+    <canvas class="spectrum" bind:this={specCanvas} style:height="{SPEC_CSS_H}px"></canvas>
+    <div class="wfbox" class:sharp={zoom >= 4}>
+      <canvas class="waterfall" bind:this={wfCanvas} width="1024" height={WF_ROWS} style:transform={wfTransform}></canvas>
     </div>
   </div>
 </div>
@@ -712,6 +1092,17 @@
   .controls input[type='range'] {
     width: 110px;
   }
+  .zoom {
+    display: flex;
+    gap: 2px;
+  }
+  .zoom button {
+    min-width: 30px;
+    font-variant-numeric: tabular-nums;
+  }
+  .zoom .level {
+    min-width: 46px;
+  }
   .num {
     width: 3.2em;
     text-align: right;
@@ -758,6 +1149,11 @@
   .menu label {
     color: var(--text);
   }
+  .menu .map-toggle {
+    margin-top: 4px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
   .menu p {
     margin: 4px 0 0;
   }
@@ -766,6 +1162,20 @@
     height: 10px;
     border-radius: 2px;
     flex: none;
+  }
+  .notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+    padding: 6px 10px;
+    font-size: 13px;
+    border: 1px solid color-mix(in srgb, #38bdf8 45%, var(--border));
+    border-radius: 8px;
+    background: color-mix(in srgb, #38bdf8 10%, var(--surface));
+  }
+  .notice span {
+    flex: 1 1 220px;
   }
   .plots {
     display: flex;
@@ -777,7 +1187,7 @@
     cursor: crosshair;
   }
   .plots.tunable {
-    /* Horizontal drags pan the spectrum; vertical ones still scroll the page. */
+    /* Horizontal drags move along the band; vertical ones still scroll the page. */
     touch-action: pan-y;
   }
   .plots.dragging {
@@ -786,17 +1196,29 @@
   .plots:focus-visible {
     outline-offset: -2px;
   }
-  .pan {
-    display: flex;
-    flex-direction: column;
-  }
   canvas {
     display: block;
     width: 100%;
   }
-  .waterfall {
+  .wfbox {
+    position: relative;
     height: clamp(220px, 45vh, 520px);
+    overflow: hidden;
+    background: repeating-linear-gradient(
+      -45deg,
+      transparent 0 6px,
+      rgba(148, 163, 184, 0.08) 6px 7px
+    );
+  }
+  .waterfall {
+    position: absolute;
+    inset: 0;
+    height: 100%;
+    transform-origin: 0 0;
     image-rendering: auto;
+  }
+  .wfbox.sharp .waterfall {
+    image-rendering: pixelated;
   }
   .flags {
     position: relative;

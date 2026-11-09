@@ -319,6 +319,18 @@ frequency) to listen anywhere inside the tuned band. The channel is shaded on th
   scroll the mouse wheel once the spectrum has focus (click it first), or use the
   Left/Right arrow keys (Shift for bigger steps). Up/Down step the listening frequency.
   Double-click centres on a signal.
+- **Zoom:** the **− ×1 +** buttons, Ctrl + mouse wheel or a trackpad/touch pinch (about
+  the cursor), or the + and − keys; the middle button (or 0) goes back to ×1. Zoomed in
+  (up to ×64) you see part of the sampled band and can pan within it; panning past its
+  edge retunes the radio (admins). Zoomed out (to about 65–100 MHz across) you see the
+  band plan beyond what the radio samples: the sampled band is outlined, the rest is
+  hatched *not sampled*. Admins drag the outline to retune, or use **Widen** to pick the
+  highest sample rate. Clicking outside the outline to listen also retunes.
+- **Mini map:** the strip above the spectrum covers the receiver's whole range (log
+  scale, e.g. 24–1766 MHz) with the band plan in colour, bookmarks, the listening
+  frequency, the sampled band (labelled with its frequency) and the zoomed-out view.
+  Hover to name a frequency; click, drag or use the arrow keys to move the radio there
+  (admins). Hide it under **Band plan**.
 - **Bookmarks:** flags above the spectrum and a list under *Listen*; click one to listen
   (admins also retune if it's outside the band). **★ Save** keeps the current frequency.
   The **station list** is shared with everyone (admins edit it); **mine** are yours

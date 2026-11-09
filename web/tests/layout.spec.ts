@@ -253,3 +253,80 @@ test('arrow keys on the spectrum retune the radio', async ({ page }, info) => {
     .poll(async () => (await (await page.request.get('/api/radio')).json()).settings.center_hz, { timeout: 5000 })
     .toBe(before);
 });
+
+/** View and sampled window of the spectrum, in Hz. */
+async function spectrumView(page: Page) {
+  return page.locator('.wf .plots').evaluate((el) => {
+    const d = (el as HTMLElement).dataset;
+    return { viewLo: Number(d.viewLo), viewHi: Number(d.viewHi), winLo: Number(d.winLo), winHi: Number(d.winHi) };
+  });
+}
+
+test('spectrum zooms in and out, outlining the sampled band', async ({ page }) => {
+  const radio = await (await page.request.get('/api/radio')).json();
+  test.skip(!radio.connected, `receiver not connected (${radio.error ?? radio.source})`);
+  await openTab(page, 'Spectrum');
+  const zoom = page.getByRole('group', { name: 'Zoom' });
+  await expect(zoom.getByRole('button', { name: 'Zoom in' })).toBeEnabled();
+  const v0 = await spectrumView(page);
+  expect(v0.viewHi - v0.viewLo).toBeCloseTo(v0.winHi - v0.winLo, -3);
+
+  await zoom.getByRole('button', { name: 'Zoom in' }).click();
+  const v1 = await spectrumView(page);
+  expect((v1.viewHi - v1.viewLo) * 2).toBeCloseTo(v0.winHi - v0.winLo, -3);
+  expect(v1.viewLo).toBeGreaterThanOrEqual(v1.winLo - 1000);
+  expect(v1.viewHi).toBeLessThanOrEqual(v1.winHi + 1000);
+
+  await zoom.getByRole('button', { name: 'Zoom out' }).click();
+  await zoom.getByRole('button', { name: 'Zoom out' }).click();
+  await zoom.getByRole('button', { name: 'Zoom out' }).click();
+  const v2 = await spectrumView(page);
+  expect(v2.viewHi - v2.viewLo).toBeCloseTo((v0.winHi - v0.winLo) * 4, -3);
+  await expect(page.locator('.wf .notice')).toContainText('Zoomed out');
+  await expect(page.getByRole('slider', { name: /Whole receiver range/ })).toBeVisible();
+  expect(await overflow(page), 'zoomed out view is wider than the window').toBeLessThanOrEqual(0);
+
+  await page.locator('.wf .notice').getByRole('button', { name: 'Back to ×1' }).click();
+  await expect(page.locator('.wf .notice')).toHaveCount(0);
+  const v3 = await spectrumView(page);
+  expect(v3.viewLo).toBeCloseTo(v3.winLo, -3);
+});
+
+test('the sampled window and the mini map move the radio', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop-1920', 'state-changing test runs once');
+  const radio = await (await page.request.get('/api/radio')).json();
+  test.skip(!radio.connected || !radio.can_tune, 'receiver not connected or not tunable');
+  const centre = async () => (await (await page.request.get('/api/radio')).json()).settings.center_hz as number;
+  const before: number = radio.settings.center_hz;
+  await openTab(page, 'Spectrum');
+  const zoom = page.getByRole('group', { name: 'Zoom' });
+  await zoom.getByRole('button', { name: 'Zoom out' }).click();
+  await zoom.getByRole('button', { name: 'Zoom out' }).click();
+
+  // Drag the outlined window a tenth of the view to the right.
+  const plots = page.locator('.wf .plots');
+  const box = (await plots.boundingBox())!;
+  const v = await spectrumView(page);
+  const x = box.x + (((v.winLo + v.winHi) / 2 - v.viewLo) / (v.viewHi - v.viewLo)) * box.width;
+  const y = box.y + box.height * 0.3;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + box.width * 0.1, y, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(centre, { timeout: 5000 }).toBeGreaterThan(before + (v.viewHi - v.viewLo) * 0.05);
+
+  // Click the mini map back near where it was (log scale).
+  const map = page.getByRole('slider', { name: /Whole receiver range/ });
+  const lo = Number(await map.getAttribute('aria-valuemin'));
+  const hi = Number(await map.getAttribute('aria-valuemax'));
+  const m = (await map.boundingBox())!;
+  const mx = m.x + ((Math.log(before) - Math.log(lo)) / (Math.log(hi) - Math.log(lo))) * m.width;
+  await map.click({ position: { x: mx - m.x, y: 8 } });
+  await expect.poll(async () => Math.abs((await centre()) - before), { timeout: 5000 }).toBeLessThan(before * 0.01);
+
+  // Put it back exactly.
+  await page.locator('#freq').fill(String(before / 1e6));
+  await page.getByRole('button', { name: 'Tune', exact: true }).click();
+  await expect.poll(centre, { timeout: 5000 }).toBe(before);
+  await zoom.getByRole('button', { name: /^Zoom ÷/ }).click();
+});

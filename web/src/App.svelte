@@ -9,7 +9,7 @@
   import Waterfall from './components/Waterfall.svelte';
   import RadioPanel from './components/RadioPanel.svelte';
   import ListenPanel from './components/ListenPanel.svelte';
-  import { MODES, snap, type Listen } from './lib/audio';
+  import { MODES, snap, type AudioMode, type Listen } from './lib/audio';
   import { ALL_GROUPS, modeAt } from './lib/bandplan';
   import { bookmarks, type Bookmark } from './lib/bookmarks.svelte';
   import BookmarksPanel from './components/BookmarksPanel.svelte';
@@ -117,19 +117,28 @@
       if (m) listen.mode = m;
     }
     listen.hz = snap(hz, listen.mode);
+    // Picked outside the sampled band (zoomed out): admins bring it in.
+    bringIntoBand(listen.hz, listen.mode, 0.5);
   }
 
   /** Listen to a bookmark; admins also retune when it's outside the band. */
   function selectBookmark(b: Bookmark) {
     listen.hz = b.freq_hz;
     listen.mode = b.mode;
+    bringIntoBand(b.freq_hz, b.mode, 0.45);
+  }
+
+  /**
+   * Admins: retune so a channel at `hz` sits within `margin` × the sample
+   * rate of the centre, a little off the dongle's DC spike in the middle.
+   */
+  function bringIntoBand(hz: number, mode: AudioMode, margin: number) {
     if (!radio || !isAdmin || !radio.can_tune) return;
     const { center_hz, sample_rate } = radio.settings;
-    const bw = MODES.find((m) => m.value === b.mode)?.bw ?? 12_500;
-    if (Math.abs(b.freq_hz - center_hz) + bw / 2 <= sample_rate * 0.45) return;
-    // Keep the channel off the dongle's DC spike in the middle.
+    const bw = MODES.find((m) => m.value === mode)?.bw ?? 12_500;
+    if (Math.abs(hz - center_hz) + bw / 2 <= sample_rate * margin) return;
     const offset = Math.min(150_000, sample_rate * 0.1);
-    tuneTo(Math.round((b.freq_hz + offset) / 1000) * 1000);
+    tuneTo(Math.round((hz + offset) / 1000) * 1000);
   }
 
   async function tuneTo(hz: number) {
@@ -204,6 +213,10 @@
           onpick={pick}
           bookmarks={bookmarks.list}
           onbookmark={selectBookmark}
+          ranges={radio?.ranges ?? []}
+          directSampling={radio?.settings.direct_sampling ?? 0}
+          sampleRates={radio?.sample_rates ?? []}
+          onrate={(r) => api.configure({ sample_rate: r }).catch((e) => console.warn('rate change failed', e))}
         />
       </div>
       <div class="side">

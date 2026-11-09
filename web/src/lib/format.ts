@@ -6,6 +6,14 @@ export function formatRate(sps: number): string {
   return sps >= 1e6 ? `${(sps / 1e6).toFixed(3).replace(/\.?0+$/, '')} MS/s` : `${sps / 1e3} kS/s`;
 }
 
+/** A bandwidth: "2.048 MHz", "512 kHz", "800 Hz". */
+export function formatSpan(hz: number): string {
+  const trim = (v: number) => v.toFixed(3).replace(/\.?0+$/, '');
+  if (hz >= 1e6) return `${trim(hz / 1e6)} MHz`;
+  if (hz >= 1e3) return `${trim(hz / 1e3)} kHz`;
+  return `${Math.round(hz)} Hz`;
+}
+
 /** Parse "145.8", "145.800 MHz", "433920k", "433920000" → Hz. */
 export function parseFrequency(input: string): number | null {
   const s = input.trim().toLowerCase().replace(/\s+/g, '').replace(/hz$/, '');
