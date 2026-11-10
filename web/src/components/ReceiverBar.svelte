@@ -1790,9 +1790,15 @@
   }
   .trim {
     display: flex;
+    /* The note drops below the control on a narrow screen. */
+    flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    gap: 2px 6px;
     min-width: 0;
+  }
+  .trim select {
+    min-width: 0;
+    max-width: 100%;
   }
   .trim input[type='number'] {
     width: 5em;
