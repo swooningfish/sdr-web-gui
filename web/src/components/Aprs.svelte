@@ -17,6 +17,7 @@
   import { Selection } from '../lib/selection.svelte';
   import { indeterminate } from '../lib/actions';
   import TimeChart from './TimeChart.svelte';
+  import { confirmAsk } from '../lib/confirm.svelte';
 
   let { isAdmin, radio }: { isAdmin: boolean; radio: RadioState | null } = $props();
   const vhfWhy = $derived(unsupported(radio, 145_300_000));
@@ -150,7 +151,7 @@
   async function removeSelected() {
     const ids = sel.list();
     if (!ids.length) return;
-    if (!confirm(`Delete ${ids.length} station${ids.length === 1 ? '' : 's'} and their packets? This cannot be undone.`)) return;
+    if (!(await confirmAsk(`Delete ${ids.length} station${ids.length === 1 ? '' : 's'} and their packets? This cannot be undone.`, { ok: 'Delete', danger: true }))) return;
     try {
       await api.deleteDevices(ids);
       const gone = new Set(ids);
@@ -165,7 +166,7 @@
   }
 
   async function remove(d: Device) {
-    if (!confirm(`Delete ${stationName(d)} and its ${d.count} packets?`)) return;
+    if (!(await confirmAsk(`Delete ${stationName(d)} and its ${d.count} packets?`, { ok: 'Delete', danger: true }))) return;
     try {
       await api.deleteDevice(d.id);
       stations = stations.filter((x) => x.id !== d.id);

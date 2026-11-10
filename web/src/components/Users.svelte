@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, type Role, type User, type UserRow } from '../lib/api';
+  import { confirmAsk } from '../lib/confirm.svelte';
 
   let { me }: { me: User } = $props();
 
@@ -36,7 +37,7 @@
   }
 
   async function remove(u: UserRow) {
-    if (!confirm(`Delete user "${u.username}"? They will be signed out immediately.`)) return;
+    if (!(await confirmAsk(`Delete user "${u.username}"? They will be signed out immediately.`, { ok: 'Delete', danger: true }))) return;
     err = null;
     try {
       await api.deleteUser(u.id);

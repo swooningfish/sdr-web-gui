@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, type RepeaterConfig } from '../lib/api';
+  import { confirmAsk } from '../lib/confirm.svelte';
 
   /** RepeaterBook lookup for the "Repeaters" list under Bookmarks. */
   let cfg = $state<RepeaterConfig | null>(null);
@@ -44,8 +45,8 @@
     });
   }
 
-  function forgetToken() {
-    if (!cfg || !confirm('Forget the stored RepeaterBook token? The lookup will be switched off.')) return;
+  async function forgetToken() {
+    if (!cfg || !(await confirmAsk('Forget the stored RepeaterBook token? The lookup will be switched off.', { ok: 'Forget token', danger: true }))) return;
     const c = cfg;
     act(async () => {
       cfg = await api.setRepeaterConfig({ enabled: false, email: c.email, country: c.country, radius_miles: c.radius_miles, token: '' });

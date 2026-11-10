@@ -10,6 +10,7 @@
   import ArissPanel from './ArissPanel.svelte';
   import { ARISS_GALLERY_URL, ISS_NORAD, eventDuring } from '../lib/ariss';
   import RotationToggle from './RotationToggle.svelte';
+  import { confirmAsk } from '../lib/confirm.svelte';
 
   let {
     isAdmin,
@@ -86,7 +87,7 @@
 
   async function stopPass() {
     const what = active?.test ? 'the test pass' : `this ${active?.satellite} pass (it won't restart)`;
-    if (!confirm(`Stop ${what}? Any recording so far is kept.`)) return;
+    if (!(await confirmAsk(`Stop ${what}? Any recording so far is kept.`, { ok: 'Stop pass', danger: true }))) return;
     try {
       await api.stopPass();
       setTimeout(refresh, 800);
@@ -96,7 +97,7 @@
   }
 
   async function remove(e: EventRow) {
-    if (!confirm('Delete this pass recording? This cannot be undone.')) return;
+    if (!(await confirmAsk('Delete this pass recording? This cannot be undone.', { ok: 'Delete', danger: true }))) return;
     try {
       await api.deletePass(e.id);
       recordings = recordings.filter((x) => x.id !== e.id);

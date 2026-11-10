@@ -3,6 +3,7 @@
   import { api, type ScanBand, type ScanFound, type ScanStatus } from '../lib/api';
   import { bookmarks } from '../lib/bookmarks.svelte';
   import { relTime } from '../lib/format';
+  import { confirmAsk } from '../lib/confirm.svelte';
 
   /** Band scan in the bookmark manager: an admin steps the receiver through
    * broadcast FM or DAB, then anyone ticks the stations found and adds them
@@ -57,9 +58,10 @@
   async function start(band: ScanBand) {
     const what = band === 'fm' ? 'the FM band (87.5–108 MHz)' : 'DAB Band III (174–240 MHz)';
     if (
-      !confirm(
+      !(await confirmAsk(
         `Scan ${what}? The receiver retunes for about a minute, for everyone listening, then goes back to where it is now.`,
-      )
+        { ok: 'Scan' },
+      ))
     )
       return;
     err = null;

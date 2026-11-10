@@ -18,6 +18,7 @@
   import { Selection } from '../lib/selection.svelte';
   import BookmarkEditor from './BookmarkEditor.svelte';
   import BookmarkScan from './BookmarkScan.svelte';
+  import { confirmAsk } from '../lib/confirm.svelte';
 
   /** The bookmark manager: slides out over the page. Bookmarks are tiles:
    * click one to listen. Manage mode edits, deletes, imports and exports,
@@ -247,7 +248,7 @@
   /** Overwrite a bookmark's frequency, mode and sample rate with what's tuned now. */
   async function updateToCurrent(b: Bookmark, ask: boolean) {
     const what = `${formatMHz(listen.hz, 4)} ${listen.mode.toUpperCase()}${rateNow ? ` at ${formatRate(rateNow)}` : ''}`;
-    if (ask && !confirm(`Update ${b.name} to ${what}?`)) return;
+    if (ask && !(await confirmAsk(`Update ${b.name} to ${what}?`, { ok: 'Update' }))) return;
     msg = null;
     err = null;
     try {
@@ -295,7 +296,7 @@
   }
 
   async function remove(ids: number[], what: string) {
-    if (!confirm(`Delete ${what}? This can't be undone.`)) return;
+    if (!(await confirmAsk(`Delete ${what}? This can't be undone.`, { ok: 'Delete', danger: true }))) return;
     err = null;
     try {
       const r = await bookmarks.remove(ids);

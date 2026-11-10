@@ -8,6 +8,7 @@
   import { formatMHz, formatRate, relTime } from '../lib/format';
   import { Selection } from '../lib/selection.svelte';
   import { indeterminate } from '../lib/actions';
+  import { confirmAsk } from '../lib/confirm.svelte';
 
   let { isAdmin, radio }: { isAdmin: boolean; radio: RadioState | null } = $props();
   const canCopy = typeof navigator !== 'undefined' && !!navigator.clipboard;
@@ -94,7 +95,7 @@
     const ids = sel.list();
     if (!ids.length) return;
     const readingsTotal = devices.filter((d) => sel.has(d.id)).reduce((n, d) => n + d.count, 0);
-    if (!confirm(`Delete ${ids.length} device${ids.length === 1 ? '' : 's'} and ${readingsTotal} readings? This cannot be undone.`))
+    if (!(await confirmAsk(`Delete ${ids.length} device${ids.length === 1 ? '' : 's'} and ${readingsTotal} readings? This cannot be undone.`, { ok: 'Delete', danger: true })))
       return;
     try {
       await api.deleteDevices(ids);
@@ -227,7 +228,7 @@
   }
 
   async function remove(d: Device) {
-    if (!confirm(`Delete ${deviceLabel(d)} and its ${d.count} readings?`)) return;
+    if (!(await confirmAsk(`Delete ${deviceLabel(d)} and its ${d.count} readings?`, { ok: 'Delete', danger: true }))) return;
     try {
       await api.deleteDevice(d.id);
       devices = devices.filter((x) => x.id !== d.id);

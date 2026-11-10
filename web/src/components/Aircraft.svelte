@@ -14,6 +14,7 @@
   import { unsupported } from '../lib/coverage';
   import { relTime } from '../lib/format';
   import AdsbMap, { type RangeMode, type TrailMode } from './AdsbMap.svelte';
+  import { confirmAsk } from '../lib/confirm.svelte';
 
   let {
     isAdmin,
@@ -463,8 +464,9 @@
           type="button"
           class="small"
           disabled={busy}
-          onclick={() => {
-            if (confirm('Clear the all-time range stats?')) act(() => api.resetAdsbRange().then(loadRange));
+          onclick={async () => {
+            if (await confirmAsk('Clear the all-time range stats?', { ok: 'Reset', danger: true }))
+              act(() => api.resetAdsbRange().then(loadRange));
           }}>Reset range stats</button
         >
       {/if}

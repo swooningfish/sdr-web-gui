@@ -24,6 +24,7 @@
   import Aircraft from './components/Aircraft.svelte';
   import Sstv from './components/Sstv.svelte';
   import Passes from './components/Passes.svelte';
+  import ConfirmHost from './components/ConfirmHost.svelte';
 
   let user = $state<User | null>(null);
   let checking = $state(true);
@@ -403,6 +404,8 @@
     onselect={selectBookmark}
   />
 {/if}
+
+<ConfirmHost />
 
 <style>
   header {

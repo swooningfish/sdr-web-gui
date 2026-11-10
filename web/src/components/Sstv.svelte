@@ -6,6 +6,7 @@
   import { formatMHz, formatRate, relTime } from '../lib/format';
   import { imageUrl, SSTV_MODES, zipUrl } from '../lib/sstv';
   import { Selection } from '../lib/selection.svelte';
+  import { confirmAsk } from '../lib/confirm.svelte';
 
   let { isAdmin, radio }: { isAdmin: boolean; radio: RadioState | null } = $props();
 
@@ -149,7 +150,7 @@
   async function removeSelected() {
     const ids = sel.list();
     if (!ids.length) return;
-    if (!confirm(`Delete ${ids.length} image${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    if (!(await confirmAsk(`Delete ${ids.length} image${ids.length === 1 ? '' : 's'}? This cannot be undone.`, { ok: 'Delete', danger: true }))) return;
     try {
       const r = await api.deleteSstvImages(ids);
       const gone = new Set(ids);
@@ -167,7 +168,7 @@
   }
 
   async function remove(e: EventRow) {
-    if (!confirm('Delete this image? This cannot be undone.')) return;
+    if (!(await confirmAsk('Delete this image? This cannot be undone.', { ok: 'Delete', danger: true }))) return;
     try {
       await api.deleteSstvImage(e.id);
       images = images.filter((x) => x.id !== e.id);
