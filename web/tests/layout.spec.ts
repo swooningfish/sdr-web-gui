@@ -146,7 +146,8 @@ test('sensor and APRS lists can select several items', async ({ page }) => {
 test('SSTV gallery select mode offers ZIP download', async ({ page }) => {
   const images = await (await page.request.get('/api/events?decoder=sstv')).json();
   test.skip(!images.length, 'no SSTV images yet');
-  await openTab(page, 'SSTV');
+  await openTab(page, 'Satellites');
+  await page.getByRole('group', { name: 'Satellites' }).getByRole('button', { name: 'SSTV pictures' }).click();
   await page.getByRole('button', { name: 'Select', exact: true }).click();
   const bar = page.getByRole('toolbar', { name: 'Selected images' });
   await expect(bar).toContainText('0 selected');
@@ -196,8 +197,8 @@ test('rotation can be switched on and off from the receiver presets', async ({ p
   await sw.click();
   await expect(sw).toHaveAttribute('aria-checked', String(!before));
   expect((await (await page.request.get('/api/schedule')).json()).config.rotation).toBe(!before);
-  // The Passes tab shows the same state.
-  await openTab(page, 'Passes');
+  // The Satellites tab shows the same state.
+  await openTab(page, 'Satellites');
   await expect(page.locator('.rotation-row').getByRole('switch')).toHaveAttribute('aria-checked', String(!before));
   await page.locator('.rotation-row').getByRole('switch').click(); // put it back
   await expect(page.locator('.rotation-row').getByRole('switch')).toHaveAttribute('aria-checked', String(before));

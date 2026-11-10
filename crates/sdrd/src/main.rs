@@ -18,6 +18,7 @@ use tracing_subscriber::EnvFilter;
 
 mod adsb;
 mod aprs;
+mod ariss;
 mod audio;
 mod sstv;
 mod auth;

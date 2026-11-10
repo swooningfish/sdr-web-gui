@@ -62,12 +62,26 @@ await page.locator('#adsb-dev').selectOption(adsbBefore);
 for (const [name, file] of [
   ['Sensors', 'sensors'],
   ['APRS', 'aprs'],
-  ['SSTV', 'sstv'],
-  ['Passes', 'passes'],
+  ['Satellites', 'passes'],
   ['Settings', 'settings'],
 ]) {
   await tab(name, name === 'APRS' ? 5000 : 2500);
   await shot(file);
+  if (name === 'Satellites') {
+    // The satellite map, flat and as a globe.
+    const map = page.locator('.satmap');
+    await map.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(1500);
+    await map.screenshot({ path: `${OUT}/satmap.png` });
+    await map.getByRole('button', { name: '3D globe' }).click();
+    await page.waitForTimeout(5000);
+    await map.screenshot({ path: `${OUT}/globe.png` });
+    await map.getByRole('button', { name: '2D map' }).click();
+    // SSTV pictures are the second part of the Satellites page.
+    await page.getByRole('group', { name: 'Satellites' }).getByRole('button', { name: 'SSTV pictures' }).click();
+    await page.waitForTimeout(2500);
+    await shot('sstv');
+  }
 }
 
 // The phone layout.

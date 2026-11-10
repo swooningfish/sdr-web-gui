@@ -5,7 +5,7 @@
   import { schedule } from '../lib/schedule.svelte';
 
   /** Below the receiver: warns before the scheduler retunes for a satellite
-   * pass (and the page switches to Passes), and lets admins stay put. */
+   * pass (and the page switches to Satellites), and lets admins stay put. */
   let {
     isAdmin,
     radio,
@@ -68,7 +68,7 @@
       <span class="muted">· ends in {clock(active.los_ms - now)}{active.recording ? ' · recording' : ''}</span>
     </div>
     <div class="actions">
-      <button type="button" class="small" onclick={onopen}>Open Passes</button>
+      <button type="button" class="small" onclick={onopen}>Open Satellites</button>
     </div>
   </div>
 {:else if up && cfg}
@@ -88,7 +88,7 @@
           In <strong class="num">{clock(tuneIn)}</strong> the receiver will tune to {formatMHz(up.center_hz, 3)}{keepPage ===
           up.aos_ms
             ? ''
-            : ' and this page will switch to Passes'}.
+            : ' and this page will switch to Satellites'}.
           {#if isAdmin}Choose “Stay” to keep the current tuning; otherwise it switches automatically.{/if}
         {/if}
       </p>
@@ -113,12 +113,12 @@
         {#if keepPage === up.aos_ms}
           <button type="button" class="small" onclick={() => onkeeppage(null)}>Switch my page too</button>
         {:else}
-          <button type="button" class="small" title="Don't switch this browser to the Passes page" onclick={() => onkeeppage(up.aos_ms)}
+          <button type="button" class="small" title="Don't switch this browser to the Satellites page" onclick={() => onkeeppage(up.aos_ms)}
             >Keep this page</button
           >
         {/if}
       {/if}
-      <button type="button" class="small" onclick={onopen}>Open Passes</button>
+      <button type="button" class="small" onclick={onopen}>Open Satellites</button>
     </div>
   </div>
 {/if}

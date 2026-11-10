@@ -134,6 +134,24 @@ pub fn look(sat: &Satellite, obs: &Observer, t_ms: i64) -> Option<Look> {
     })
 }
 
+/// The point on the ground directly below the satellite (geodetic latitude,
+/// longitude east, degrees) and its height above the ellipsoid in km.
+pub fn ground(sat: &Satellite, t_ms: i64) -> Option<(f64, f64, f64)> {
+    let (r, _) = sat.teme(t_ms)?;
+    let (s, c) = gmst(t_ms).sin_cos();
+    let (x, y, z) = (c * r[0] + s * r[1], -s * r[0] + c * r[1], r[2]);
+    let e2 = EARTH_F * (2.0 - EARTH_F);
+    let p = (x * x + y * y).sqrt();
+    let mut lat = z.atan2(p * (1.0 - e2));
+    let mut n = EARTH_A_KM;
+    for _ in 0..5 {
+        n = EARTH_A_KM / (1.0 - e2 * lat.sin().powi(2)).sqrt();
+        lat = (z + e2 * n * lat.sin()).atan2(p);
+    }
+    let alt = if lat.cos().abs() > 1e-6 { p / lat.cos() - n } else { z.abs() - n * (1.0 - e2) };
+    Some((lat.to_degrees(), y.atan2(x).to_degrees(), alt))
+}
+
 /// Frequency shift seen on the ground for a transmitter at `freq_hz`.
 pub fn doppler_hz(freq_hz: f64, range_rate_km_s: f64) -> f64 {
     -freq_hz * range_rate_km_s / C_KM_S
@@ -279,6 +297,27 @@ pub(crate) mod tests {
         let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
         assert!((390.0..440.0).contains(&alt), "altitude {alt}");
         assert!((7.6..7.72).contains(&speed), "speed {speed}");
+    }
+
+    #[test]
+    fn ground_point_is_below_the_satellite() {
+        let s = iss();
+        let mut north = false;
+        for i in 0..95 {
+            let t = s.epoch_ms + i * 60_000;
+            let (lat, lon, alt) = ground(&s, t).unwrap();
+            // Never beyond the inclination; ISS altitude.
+            assert!(lat.abs() < 51.9, "lat {lat}");
+            assert!((-180.0..=180.0).contains(&lon));
+            assert!((390.0..440.0).contains(&alt), "alt {alt}");
+            north |= lat > 45.0;
+            // Standing on that point, the satellite is straight up.
+            let obs = Observer { lat_deg: lat, lon_deg: lon, alt_m: 0.0 };
+            let l = look(&s, &obs, t).unwrap();
+            assert!(l.el_deg > 89.9, "el {}", l.el_deg);
+            assert!((l.range_km - alt).abs() < 0.5);
+        }
+        assert!(north, "one orbit reaches the far north");
     }
 
     #[test]

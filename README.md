@@ -11,10 +11,10 @@ See [SPEC.md](SPEC.md) for the full design and roadmap.
 
 ![The receiver front panel above the live spectrum and waterfall](docs/screenshots/spectrum.png)
 
-| APRS map | Aircraft (ADS-B) | SSTV |
+| APRS map | Aircraft (ADS-B) | Satellites: SSTV pictures |
 |---|---|---|
 | [![APRS](docs/screenshots/aprs.png)](#aprs-direwolf) | [![Aircraft](docs/screenshots/aircraft.png)](#aircraft-ads-b) | [![SSTV](docs/screenshots/sstv.png)](#sstv) |
-| **Sensors (rtl_433, TPMS)** | **ISS passes** | **Settings** |
+| **Sensors (rtl_433, TPMS)** | **Satellites: passes and ARISS events** | **Settings** |
 | [![Sensors](docs/screenshots/sensors.png)](#sensors-rtl_433-tpms) | [![Passes](docs/screenshots/passes.png)](#passes-and-scheduling) | [![Settings](docs/screenshots/settings.png)](#settings) |
 
 All screenshots are of the simulated receiver in the dev stack, so you can see the same thing
@@ -148,7 +148,7 @@ They are real, decodable transmissions:
   driving a loop around central London, a weather station, a status beacon, and an "ISS" on
   145.825. Open the APRS tab.
 - **145.800 (also in the VHF block):** SSTV test cards cycling through Robot 36, Martin M2,
-  Scottie S2 and PD 90, with 20 s gaps. Open the SSTV tab to watch them arrive line by line.
+  Scottie S2 and PD 90, with 20 s gaps. Open Satellites → SSTV pictures to watch them arrive line by line.
 - **433.92 (ISM preset, or *Tune* on the Sensors page):** two Nexus temperature/humidity
   sensors that rtl_433 decodes within ~15 s.
 - **144.470 (VHF block):** a CW beacon every 20 s. Listen in **CW** with **Decode CW** on.
@@ -357,10 +357,10 @@ Every line's sync pulse is tracked, so slant from clock differences is corrected
 
 - Default channels: **ISS SSTV 145.800 MHz** (in the default VHF block) and **ARISS UHF
   437.550 MHz**, both FM. Up to 4 channels under Settings → SSTV decoder.
-- When a channel isn't being listened to, the SSTV tab offers admins **Tune to VHF block**
+- When a channel isn't being listened to, the SSTV pictures page offers admins **Tune to VHF block**
   (145.3 MHz) or **Tune to UHF block** (437.0 MHz, covering 436.1–437.9 MHz), whichever
   holds that channel.
-- **SSTV** tab: images appear line by line as they are received, then go into the gallery
+- **Satellites → SSTV pictures**: images appear line by line as they are received, then go into the gallery
   with thumbnails, a full-size viewer, download and (admins) delete.
 - If the signal fades or the radio is retuned mid-image, whatever was received is still
   saved, marked as partial, as long as at least a fifth of the image came through.
@@ -522,7 +522,8 @@ terms allow personal use; check them before sharing the station more widely. Eve
 Set the station location under **Settings → Passes**: search for a town or postcode, type a
 Maidenhead locator (e.g. `IO91wm`), enter coordinates, or press *Use this device's location*
 (browsers only allow that over HTTPS or on `localhost`, not on a plain-HTTP LAN address).
-sdrd then predicts passes for 48 hours ahead with SGP4. Orbit data (TLE) comes
+sdrd then predicts passes for 48 hours ahead with SGP4 (ISS passes to the end of an
+ARISS SSTV event, see below). Orbit data (TLE) comes
 from CelesTrak and is refreshed every 12 h; it can also be pasted in by hand for offline
 setups. Predictions were cross-checked against skyfield: AOS/LOS within a second, look
 angles and range-rate matching to 0.001.
@@ -532,7 +533,7 @@ During a pass of an enabled satellite (ISS by default, above 10°):
 0. With **auto-switch** on (Settings → Passes, the default), a notice under the receiver
    counts down to the pass (from 2 min before tuning). Admins can press **Stay** to keep
    the current tuning for that pass; anyone can **Keep this page**. Otherwise it switches
-   on its own, and every open page jumps to Passes when the pass starts. With auto-switch
+   on its own, and every open page jumps to Satellites when the pass starts. With auto-switch
    off, passes are only predicted and shown.
 1. From 30 s before AOS the radio is tuned to the satellite's profile (default the VHF
    block, which covers ISS SSTV 145.800 and ISS APRS 145.825).
@@ -541,22 +542,52 @@ During a pass of an enabled satellite (ISS by default, above 10°):
    `/data/passes`. Recordings are kept until deleted.
 4. At LOS the previous tuning is restored, or rotation carries on.
 
-The **Passes** tab has:
+The **Satellites** tab has two parts, **Passes** and **SSTV pictures** (see [SSTV](#sstv)).
+Passes has:
 
 - a live sky plot with azimuth, elevation, range and Doppler during a pass
+- the ARISS SSTV event in progress or coming up (see below)
+- a **satellite map**, as a 2D world map or a 3D globe: where each satellite is now, the
+  next 100 minutes of its ground track (green where it is in range of the station), the
+  area that can hear it, the station's range and the night side. Picking a pass in the
+  table shows that pass's track and its highest point. The globe needs WebGL.
 - the next passes with their tracks
 - recordings with an audio player, plus any SSTV images received during each pass
 
-For ARISS events on 437.550 MHz, change the ISS tune and recording frequencies to 437.6 and
-437.550 MHz.
+| 2D map | 3D globe |
+|---|---|
+| ![The satellite map: the ISS, its ground track and the area that can hear it](docs/screenshots/satmap.png) | ![The same as a globe, with the coverage cone under the ISS](docs/screenshots/globe.png) |
+
+### ARISS SSTV events
+
+A few times a year the ISS sends a series of SSTV pictures for several days, usually on
+437.550 MHz rather than 145.800. sdrd reads the dates, frequency and mode from
+[ARISS Upcoming SSTV events](https://www.ariss.org/upcoming-sstv-events.html) every 6 hours
+(the page is free text, so check ariss.org if something looks off; times change at short
+notice). While an event is known:
+
+- ISS passes are predicted to the end of the event (at most 10 days ahead) and marked
+  **SSTV** in the pass table.
+- ISS passes inside the event are tuned 550 kHz below the event frequency at 2.048 MS/s
+  (437.000 MHz for 437.550) and recorded on the event frequency. Afterwards the ISS's own
+  settings apply again. Turn this off under Settings → Passes → *ARISS SSTV events*. If the
+  ISS is already set to record the event frequency, your tuning is left as it is.
+- Pictures are decoded only if the event frequency is an SSTV channel (the default
+  **ARISS UHF 437.550 MHz** channel is).
+- The passes can be added to a calendar: one .ics file with all of them (Apple, Outlook,
+  Thunderbird, or imported into Google Calendar), or a link per pass for Google Calendar
+  and Outlook.com, whose links take one event at a time.
+- Recordings with pictures from an event link to the
+  [ARISS SSTV Gallery](https://ariss-usa.org/ARISS_SSTV/); original decodes qualify for
+  the event certificate.
 
 **Rotation** (off by default) cycles through profiles when no pass is on, for example VHF
 block 60 s then ISM 30 s. It never hops away while an SSTV image is coming in (up to 5 min).
 Admins switch it on or off with the **Rotation** switch under the receiver's presets or on
-the Passes tab (or `PUT /api/schedule/rotation {"enabled": true}`); profiles are edited in
+the Satellites tab (or `PUT /api/schedule/rotation {"enabled": true}`); profiles are edited in
 Settings → Rotation and show as quick-tune buttons under the receiver's presets.
 Admins can run a **test pass** to check tuning and recording end to end. A pass in progress
-(real or test) can be stopped from the Passes tab or Settings.
+(real or test) can be stopped from the Satellites tab or Settings.
 
 ## MQTT / Home Assistant
 

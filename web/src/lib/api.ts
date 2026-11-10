@@ -321,6 +321,26 @@ export interface ScheduleConfig {
   auto_switch: boolean;
   /** Warn this many seconds before retuning for a pass. */
   notice_s: number;
+  /** Receive ISS passes on the event's frequency during ARISS SSTV events. */
+  ariss_auto: boolean;
+}
+
+/** An ARISS SSTV event (pictures sent from the ISS for several days). */
+export interface ArissEvent {
+  series: number;
+  name: string;
+  title: string;
+  start_ms: number;
+  end_ms: number;
+  freq_hz: number | null;
+  mode: string | null;
+  cadence: string | null;
+}
+
+export interface ArissState {
+  checked_ms: number | null;
+  error: string | null;
+  events: ArissEvent[];
 }
 
 /** The next pass the scheduler would tune for. */
@@ -403,6 +423,15 @@ export interface RepeaterConfig {
 /** [time ms, azimuth°, elevation°] */
 export type TrackPoint = [number, number, number];
 
+/** Where a satellite is over the Earth: time (ms), latitude, longitude, height (km). */
+export type GroundPoint = [number, number, number, number];
+
+export interface GroundTrack {
+  satellite: string;
+  norad_id: number;
+  points: GroundPoint[];
+}
+
 export interface Pass {
   satellite: string;
   aos_ms: number;
@@ -453,6 +482,7 @@ export interface ScheduleStatus {
   location: Observer | null;
   passes: Pass[];
   tles: TleInfo[];
+  ariss: ArissState;
 }
 
 export interface ScheduleInfo {
@@ -608,6 +638,11 @@ export const api = {
       `/schedule/geocode?q=${encodeURIComponent(q)}`,
     ),
   system: () => req<SystemInfo>('GET', '/system'),
+  groundTracks: (from_ms?: number, minutes?: number) =>
+    req<{ from_ms: number; to_ms: number; tracks: GroundTrack[] }>(
+      'GET',
+      `/schedule/tracks${from_ms === undefined ? '' : `?from_ms=${Math.floor(from_ms)}&minutes=${minutes ?? 110}`}`,
+    ),
   deletePass: (id: number) => req('DELETE', `/passes/${id}`),
   aprsTracks: (since: number) => req<Track[]>('GET', `/aprs/tracks?since=${Math.floor(since)}`),
   rtl433: () => req<Rtl433Info>('GET', '/decoders/rtl_433'),

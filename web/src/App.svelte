@@ -30,9 +30,11 @@
   let radio = $state<RadioState | null>(null);
   let wsUp = $state(false);
   let view = $state<
-    'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'aircraft' | 'sstv' | 'passes' | 'settings' | 'profile'
+    'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'aircraft' | 'satellites' | 'settings' | 'profile'
   >('spectrum');
   let settingsTab = $state<SettingsTab>('receiver');
+  /** Which part of the Satellites page is showing. */
+  let satTab = $state<'passes' | 'sstv'>('passes');
   let waterfall = $state<ReturnType<typeof Waterfall> | undefined>();
   let harmonics = $state<ReturnType<typeof HarmonicsPanel> | undefined>();
   let listen = $state<Listen>({ on: false, hz: 145_800_000, mode: 'nfm' });
@@ -126,13 +128,16 @@
     if (user) return schedule.use();
   });
 
-  // A real pass started with auto-switch on: show the Passes page (once per
+  // A real pass started with auto-switch on: show the passes on the Satellites page (once per
   // pass, unless this browser said to keep its page).
   $effect(() => {
     const a = schedule.info?.status.active;
     if (!a || a.test || !schedule.info?.config.auto_switch || switchedFor === a.aos_ms) return;
     switchedFor = a.aos_ms;
-    if (keepPage !== a.aos_ms) view = 'passes';
+    if (keepPage !== a.aos_ms) {
+      view = 'satellites';
+      satTab = 'passes';
+    }
   });
 
   // While a pass is recording, listen to its downlink (following Doppler) so
@@ -270,8 +275,7 @@
       <button type="button" class="tab" class:active={view === 'sensors'} onclick={() => (view = 'sensors')}>Sensors</button>
       <button type="button" class="tab" class:active={view === 'aprs'} onclick={() => (view = 'aprs')}>APRS</button>
       <button type="button" class="tab" class:active={view === 'aircraft'} onclick={() => (view = 'aircraft')}>Aircraft</button>
-      <button type="button" class="tab" class:active={view === 'sstv'} onclick={() => (view = 'sstv')}>SSTV</button>
-      <button type="button" class="tab" class:active={view === 'passes'} onclick={() => (view = 'passes')}>Passes</button>
+      <button type="button" class="tab" class:active={view === 'satellites'} onclick={() => (view = 'satellites')}>Satellites</button>
       {#if isAdmin}
         <button type="button" class="tab" class:active={view === 'settings'} onclick={() => (view = 'settings')}>Settings</button>
       {/if}
@@ -320,7 +324,10 @@
           view = 'settings';
         }}
       />
-      <PassNotice {isAdmin} {radio} {keepPage} onkeeppage={(a) => (keepPage = a)} onopen={() => (view = 'passes')} />
+      <PassNotice {isAdmin} {radio} {keepPage} onkeeppage={(a) => (keepPage = a)} onopen={() => {
+        view = 'satellites';
+        satTab = 'passes';
+      }} />
     </div>
     <div class="spectrum-view" hidden={view !== 'spectrum'}>
       <div class="panel wf-panel">
@@ -363,10 +370,18 @@
         }}
       />
     </div>
-    <div hidden={view !== 'sstv'}>
+    <div class="subtabs" role="group" aria-label="Satellites" hidden={view !== 'satellites'}>
+      <button type="button" class="tab" class:active={satTab === 'passes'} aria-pressed={satTab === 'passes'} onclick={() => (satTab = 'passes')}
+        >Passes</button
+      >
+      <button type="button" class="tab" class:active={satTab === 'sstv'} aria-pressed={satTab === 'sstv'} onclick={() => (satTab = 'sstv')}
+        >SSTV pictures</button
+      >
+    </div>
+    <div hidden={view !== 'satellites' || satTab !== 'sstv'}>
       <Sstv bind:this={sstv} {isAdmin} {radio} />
     </div>
-    <div hidden={view !== 'passes'}>
+    <div hidden={view !== 'satellites' || satTab !== 'passes'}>
       <Passes bind:this={passes} {isAdmin} {radio} onsettings={(t = 'passes') => {
           settingsTab = t;
           view = 'settings';
@@ -423,6 +438,15 @@
   .tab.active {
     background: var(--surface-2);
     border-color: var(--border);
+  }
+  .subtabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 12px;
+  }
+  .subtabs[hidden] {
+    display: none;
   }
   .status-bar {
     margin-left: auto;

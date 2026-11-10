@@ -20,6 +20,7 @@ use serde_json::{json, Map};
 use sqlx::SqlitePool;
 use tokio::sync::{mpsc, watch};
 
+use crate::ariss::{self, ArissEvent, ArissState};
 use crate::db;
 use crate::decoders::sstv::SstvHandle;
 use crate::decoders::DecodedEvent;
@@ -32,6 +33,15 @@ const CFG_KEY: &str = "schedule";
 const LOCATION_KEY: &str = "station.location";
 const TLE_MAX_AGE_MS: i64 = 12 * 3_600_000;
 const PREDICT_HOURS: i64 = 48;
+/// During (or shortly before) an ARISS SSTV event, predict to its end.
+const PREDICT_EVENT_MAX_MS: i64 = 10 * 86_400_000;
+const ARISS_KEY: &str = "ariss.events";
+/// How often the ARISS schedule is read again (times change at short notice).
+const ARISS_MAX_AGE_MS: i64 = 6 * 3_600_000;
+/// During an event the radio is centred this far below the downlink, so the
+/// dongle's DC spike stays off the channel (the SSTV tab's UHF block).
+const ARISS_OFFSET_HZ: u64 = 550_000;
+const ARISS_SAMPLE_RATE: u32 = 2_048_000;
 /// Longest we'll hold a rotation switch for an SSTV image in progress.
 const MAX_HOLD_MS: i64 = 5 * 60_000;
 
@@ -90,6 +100,10 @@ pub struct ScheduleConfig {
     /// Warn browsers this many seconds before the radio is retuned for a pass.
     #[serde(default = "default_notice_s")]
     pub notice_s: u32,
+    /// During an ARISS SSTV event, tune and record ISS passes on the event's
+    /// frequency instead of the satellite's own settings.
+    #[serde(default = "default_true")]
+    pub ariss_auto: bool,
 }
 
 fn default_true() -> bool {
@@ -122,6 +136,7 @@ impl Default for ScheduleConfig {
             lead_s: 30,
             auto_switch: true,
             notice_s: default_notice_s(),
+            ariss_auto: true,
         }
     }
 }
@@ -242,6 +257,8 @@ pub struct ScheduleStatus {
     pub location: Option<Observer>,
     pub passes: Vec<Pass>,
     pub tles: Vec<TleInfo>,
+    /// ARISS SSTV events read from ariss.org.
+    pub ariss: ArissState,
 }
 
 enum Cmd {
@@ -351,6 +368,7 @@ pub async fn spawn(
         _ => ScheduleConfig::default(),
     };
     let loc = db::get_setting::<Observer>(&db, LOCATION_KEY).await.ok().flatten();
+    let ariss = db::get_setting::<ArissState>(&db, ARISS_KEY).await.ok().flatten().unwrap_or_default();
     let (cfg_tx, cfg_rx) = watch::channel(cfg);
     let (loc_tx, loc_rx) = watch::channel(loc);
     let (status_tx, status_rx) = watch::channel(ScheduleStatus { mode: "manual", ..Default::default() });
@@ -370,6 +388,7 @@ pub async fn spawn(
         passes_dir: passes_dir.clone(),
         sats: HashMap::new(),
         tles: Vec::new(),
+        ariss,
         passes: Vec::new(),
         predicted_at: 0,
         rot_idx: None,
@@ -392,6 +411,24 @@ pub async fn spawn(
     })
 }
 
+/// The satellite's settings as they apply to this pass: its own, or the
+/// ARISS event's frequency when an ISS pass falls in one.
+fn tuned(ariss: &ArissState, cfg: &ScheduleConfig, s: &SatConfig, p: &Pass) -> SatConfig {
+    let mut s = s.clone();
+    if !cfg.ariss_auto {
+        return s;
+    }
+    let event: Option<&ArissEvent> = ariss.during(s.norad_id, p.aos_ms, p.los_ms);
+    if let Some(hz) = event.and_then(|e| e.freq_hz) {
+        if s.record_hz != hz {
+            s.record_hz = hz;
+            s.center_hz = hz - ARISS_OFFSET_HZ;
+            s.sample_rate = ARISS_SAMPLE_RATE;
+        }
+    }
+    s
+}
+
 struct Active {
     sat: SatConfig,
     pass: Pass,
@@ -412,6 +449,7 @@ struct Run {
     passes_dir: Arc<std::path::Path>,
     sats: HashMap<u32, Satellite>,
     tles: Vec<TleInfo>,
+    ariss: ArissState,
     passes: Vec<(u32, Pass)>,
     predicted_at: i64,
     rot_idx: Option<usize>,
@@ -442,6 +480,7 @@ fn slug(s: &str) -> String {
 impl Run {
     async fn main(mut self, mut cmd_rx: mpsc::Receiver<Cmd>, mut done_rx: mpsc::UnboundedReceiver<RecordDone>) {
         self.refresh_tles(false).await;
+        self.refresh_ariss().await;
         self.predict();
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         let mut tle_check = tokio::time::interval(Duration::from_secs(30 * 60));
@@ -450,7 +489,8 @@ impl Run {
             tokio::select! {
                 _ = tick.tick() => self.step().await,
                 _ = tle_check.tick() => {
-                    if self.refresh_tles(false).await {
+                    let tles = self.refresh_tles(false).await;
+                    if self.refresh_ariss().await || tles {
                         self.predict();
                     }
                 }
@@ -567,6 +607,33 @@ impl Run {
         changed
     }
 
+    /// Read the ARISS SSTV schedule again if it's stale. Returns whether the
+    /// events changed.
+    async fn refresh_ariss(&mut self) -> bool {
+        let now = db::now_ms();
+        if self.ariss.checked_ms.is_some_and(|t| now - t < ARISS_MAX_AGE_MS) {
+            return false;
+        }
+        let before = self.ariss.events.clone();
+        match ariss::fetch(now).await {
+            Ok(events) => {
+                self.ariss = ArissState { checked_ms: Some(now), error: None, events };
+                if let Err(e) = db::set_setting(&self.db, ARISS_KEY, &self.ariss).await {
+                    tracing::warn!("storing ARISS events: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("ARISS events: {e}");
+                // Keep what we had, and try again at the next check.
+                self.ariss.error = Some(e.to_string());
+            }
+        }
+        if self.ariss.events != before {
+            tracing::info!(events = self.ariss.events.len(), "ARISS SSTV schedule updated");
+        }
+        self.ariss.events != before
+    }
+
     fn set_tle_error(&mut self, norad: u32, e: String) {
         if let Some(t) = self.tles.iter_mut().find(|t| t.norad_id == norad) {
             t.error = Some(e);
@@ -579,9 +646,15 @@ impl Run {
         self.passes.clear();
         let Some(obs) = *self.loc_rx.borrow() else { return };
         let cfg = self.cfg_rx.borrow().clone();
+        let mut to = now + PREDICT_HOURS * 3_600_000;
+        if let Some(e) = self.ariss.current_or_next(now).filter(|e| e.start_ms < now + PREDICT_EVENT_MAX_MS) {
+            to = to.max(e.end_ms.min(now + PREDICT_EVENT_MAX_MS));
+        }
         for s in cfg.satellites.iter().filter(|s| s.enabled) {
             let Some(sat) = self.sats.get(&s.norad_id) else { continue };
-            for mut p in orbit::passes(sat, &obs, now - 20 * 60_000, now + PREDICT_HOURS * 3_600_000, s.min_elevation_deg)
+            // Only the ISS needs the longer look-ahead of an event.
+            let to = if s.norad_id == ariss::ISS_NORAD { to } else { now + PREDICT_HOURS * 3_600_000 };
+            for mut p in orbit::passes(sat, &obs, now - 20 * 60_000, to, s.min_elevation_deg)
             {
                 if p.los_ms > now {
                     p.satellite = s.name.clone();
@@ -712,17 +785,19 @@ impl Run {
         }
         let lead = cfg.lead_s as i64 * 1000;
         self.skipped.retain(|aos| now - aos < 3 * 3_600_000);
-        let eligible = |id: u32| {
+        let ariss = self.ariss.clone();
+        let eligible = |id: u32, p: &Pass| {
             cfg.satellites
                 .iter()
-                .any(|s| s.norad_id == id && s.enabled && covers(&ranges, s.center_hz))
+                .any(|s| s.norad_id == id && s.enabled && covers(&ranges, tuned(&ariss, &cfg, s, p).center_hz))
         };
         if self.active.is_none() && cfg.auto_switch {
             let next = self.passes.iter().find(|(id, p)| {
-                now >= p.aos_ms - lead && now < p.los_ms && !self.skipped.contains(&p.aos_ms) && eligible(*id)
+                now >= p.aos_ms - lead && now < p.los_ms && !self.skipped.contains(&p.aos_ms) && eligible(*id, p)
             });
             if let Some((id, p)) = next.cloned() {
-                let sat = cfg.satellites.iter().find(|s| s.norad_id == id).cloned().unwrap();
+                let sat = cfg.satellites.iter().find(|s| s.norad_id == id).unwrap();
+                let sat = tuned(&ariss, &cfg, sat, &p);
                 self.start(sat, p, false);
             }
         }
@@ -731,9 +806,9 @@ impl Run {
         let upcoming = self
             .passes
             .iter()
-            .find(|(id, p)| now < p.los_ms && Some(p.aos_ms) != active_aos && eligible(*id))
+            .find(|(id, p)| now < p.los_ms && Some(p.aos_ms) != active_aos && eligible(*id, p))
             .and_then(|(id, p)| {
-                let s = cfg.satellites.iter().find(|s| s.norad_id == *id)?;
+                let s = tuned(&ariss, &cfg, cfg.satellites.iter().find(|s| s.norad_id == *id)?, p);
                 Some(Upcoming {
                     satellite: s.name.clone(),
                     aos_ms: p.aos_ms,
@@ -815,6 +890,7 @@ impl Run {
             location: *self.loc_rx.borrow(),
             passes: self.passes.iter().map(|(_, p)| p.clone()).collect(),
             tles: self.tles.clone(),
+            ariss: self.ariss.clone(),
         };
         self.status_tx.send_replace(status);
     }
@@ -833,6 +909,44 @@ mod tests {
         let mut c = ScheduleConfig::default();
         c.satellites[0].sample_rate = 123;
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn iss_passes_use_the_event_frequency() {
+        let cfg = ScheduleConfig::default();
+        let iss = &cfg.satellites[0];
+        let event = ArissEvent {
+            series: 35,
+            name: "Space Memories".into(),
+            title: String::new(),
+            start_ms: 1_000_000,
+            end_ms: 2_000_000,
+            freq_hz: Some(437_550_000),
+            mode: None,
+            cadence: None,
+        };
+        let ariss = ArissState { events: vec![event], ..Default::default() };
+        let pass = |aos_ms: i64| Pass {
+            satellite: "ISS".into(),
+            aos_ms,
+            los_ms: aos_ms + 600_000,
+            max_ms: aos_ms,
+            max_el_deg: 40.0,
+            aos_az_deg: 0.0,
+            los_az_deg: 0.0,
+            track: Vec::new(),
+        };
+        let during = tuned(&ariss, &cfg, iss, &pass(1_200_000));
+        assert_eq!((during.center_hz, during.record_hz, during.sample_rate), (437_000_000, 437_550_000, 2_048_000));
+        // Outside the event, another satellite, or switched off: untouched.
+        assert_eq!(&tuned(&ariss, &cfg, iss, &pass(3_000_000)), iss);
+        let other = SatConfig { norad_id: 57189, ..iss.clone() };
+        assert_eq!(tuned(&ariss, &cfg, &other, &pass(1_200_000)), other);
+        let off = ScheduleConfig { ariss_auto: false, ..cfg.clone() };
+        assert_eq!(&tuned(&ariss, &off, iss, &pass(1_200_000)), iss);
+        // Already set to the event frequency by hand: the admin's tuning stays.
+        let mine = SatConfig { center_hz: 437_600_000, record_hz: 437_550_000, ..iss.clone() };
+        assert_eq!(tuned(&ariss, &cfg, &mine, &pass(1_200_000)), mine);
     }
 
     #[test]

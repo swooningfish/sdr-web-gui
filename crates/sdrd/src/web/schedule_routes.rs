@@ -12,9 +12,9 @@ use tower_http::services::ServeFile;
 
 use super::{AdminUser, ApiError, AppState, AuthUser};
 use crate::events;
-use crate::orbit::Observer;
+use crate::orbit::{self, Observer, Satellite};
 use crate::radio::{covers, describe_ranges};
-use crate::scheduler::{ScheduleConfig, PASSES};
+use crate::scheduler::{ScheduleConfig, TleRecord, PASSES};
 
 pub async fn get(State(state): State<AppState>, _user: AuthUser) -> Json<Value> {
     Json(json!({ "config": state.schedule.config(), "status": state.schedule.status() }))
@@ -74,6 +74,49 @@ pub async fn set_location(
         .map_err(ApiError::internal)?;
     tracing::info!(by = %admin.user.username, "station location set");
     Ok(Json(json!({ "location": obs })))
+}
+
+#[derive(Deserialize)]
+pub struct TrackQuery {
+    /// Start of the window (default: 10 minutes ago).
+    from_ms: Option<i64>,
+    /// Length of the window (default 110, at most 240).
+    minutes: Option<u32>,
+}
+
+/// Ground tracks of the configured satellites, for the map: where each one
+/// is over the Earth every 20 s across the window.
+pub async fn tracks(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    axum::extract::Query(q): axum::extract::Query<TrackQuery>,
+) -> Result<Json<Value>, ApiError> {
+    const STEP_MS: i64 = 20_000;
+    let minutes = q.minutes.unwrap_or(110);
+    if !(1..=240).contains(&minutes) {
+        return Err(ApiError::bad_request("minutes must be 1–240"));
+    }
+    let from = q.from_ms.unwrap_or_else(|| crate::db::now_ms() - 10 * 60_000);
+    let to = from.saturating_add(minutes as i64 * 60_000);
+    let mut out = Vec::new();
+    for s in state.schedule.config().satellites.iter().filter(|s| s.enabled) {
+        let Ok(Some(rec)) =
+            crate::db::get_setting::<TleRecord>(&state.db, &format!("tle.{}", s.norad_id)).await
+        else {
+            continue;
+        };
+        let Ok(sat) = Satellite::from_tle(&s.name, &rec.line1, &rec.line2) else { continue };
+        let mut points = Vec::new();
+        let mut t = from;
+        while t <= to {
+            if let Some((lat, lon, alt)) = orbit::ground(&sat, t) {
+                points.push((t, (lat * 1e3).round() / 1e3, (lon * 1e3).round() / 1e3, alt.round()));
+            }
+            t += STEP_MS;
+        }
+        out.push(json!({ "satellite": s.name, "norad_id": s.norad_id, "points": points }));
+    }
+    Ok(Json(json!({ "from_ms": from, "to_ms": to, "tracks": out })))
 }
 
 pub async fn refresh_tle(State(state): State<AppState>, _admin: AdminUser) -> Json<Value> {

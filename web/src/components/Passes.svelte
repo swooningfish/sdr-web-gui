@@ -6,6 +6,9 @@
   import { compass, countdown, duration } from '../lib/passes';
   import { imageUrl } from '../lib/sstv';
   import SkyPlot from './SkyPlot.svelte';
+  import SatMap from './SatMap.svelte';
+  import ArissPanel from './ArissPanel.svelte';
+  import { ARISS_GALLERY_URL, ISS_NORAD, eventDuring } from '../lib/ariss';
   import RotationToggle from './RotationToggle.svelte';
 
   let {
@@ -32,6 +35,10 @@
     return m;
   });
   const active = $derived(st?.active ?? null);
+  const issName = $derived(info?.config.satellites.find((s) => s.norad_id === ISS_NORAD)?.name ?? null);
+  /** The ARISS SSTV event an ISS pass (or recording) falls in. */
+  const eventOf = (satellite: string, from_ms: number, to_ms: number) =>
+    satellite === issName ? eventDuring(st?.ariss?.events ?? [], from_ms, to_ms) : null;
   const shown = $derived.by((): Pass | null => {
     if (!st) return null;
     if (selected !== null) return st.passes.find((p) => p.aos_ms === selected) ?? null;
@@ -184,11 +191,19 @@
             <dt>Path</dt><dd>{compass(shown.aos_az_deg)} → {compass(shown.los_az_deg)}</dd>
           </dl>
         {:else if st?.location}
-          <p class="muted small-text">No passes predicted in the next 48 hours.</p>
+          <p class="muted small-text">No passes predicted yet.</p>
         {/if}
       </div>
     </div>
   </section>
+
+  {#if info}
+    <ArissPanel {info} {now} {isAdmin} onsettings={() => onsettings()} />
+  {/if}
+
+  {#if st?.tles.some((t) => t.epoch_ms)}
+    <SatMap observer={st.location} focus={active?.satellite ?? shown?.satellite ?? null} pass={active ? null : shown} />
+  {/if}
 
   <section class="panel">
     <h2>Upcoming passes</h2>
@@ -200,6 +215,7 @@
           </thead>
           <tbody>
             {#each st.passes as p (p.satellite + p.aos_ms)}
+              {@const ev = eventOf(p.satellite, p.aos_ms, p.los_ms)}
               <tr
                 class:na-row={skipped.has(p.satellite)}
                 title={skipped.get(p.satellite) ?? ''}
@@ -207,7 +223,10 @@
                 class:live={active && !active.test && active.aos_ms === p.aos_ms}
                 onclick={() => (selected = selected === p.aos_ms ? null : p.aos_ms)}
               >
-                <td><button type="button" class="link" onclick={(e) => { e.stopPropagation(); selected = p.aos_ms; }}>{p.satellite}</button></td>
+                <td><button type="button" class="link" onclick={(e) => { e.stopPropagation(); selected = p.aos_ms; }}>{p.satellite}</button>{#if ev}
+                    <span class="badge small-text sstv" title="During ARISS Series {ev.series} “{ev.name}”{ev.freq_hz ? `, ${formatMHz(ev.freq_hz, 3)}` : ''}"
+                      >SSTV</span
+                    >{/if}</td>
                 <td class="nowrap">{when(p.aos_ms)}</td>
                 <td class="muted nowrap">{countdown(p.aos_ms, now)}</td>
                 <td class="num nowrap">{duration(p.los_ms - p.aos_ms)}</td>
@@ -219,7 +238,7 @@
         </table>
       </div>
     {:else}
-      <p class="muted small-text">{st?.location ? 'Nothing above the minimum elevation in the next 48 hours.' : 'No location set.'}</p>
+      <p class="muted small-text">{st?.location ? 'Nothing above the minimum elevation in the time predicted.' : 'No location set.'}</p>
     {/if}
   </section>
 
@@ -232,11 +251,13 @@
       {#each recordings as e (e.id)}
         {@const r = rec(e)}
         {@const imgs = passImages(e)}
+        {@const ev = r.test ? null : eventOf(r.id, r.aos_ms, r.los_ms)}
         <li>
           <div class="rec-head">
             <strong>{r.id}</strong>
             <span class="muted small-text">{when(r.aos_ms)} · max {Math.round(r.max_el_deg)}°{r.seconds ? ` · ${duration(r.seconds * 1000)}` : ''}</span>
             {#if r.test}<span class="badge small-text">test</span>{/if}
+            {#if ev}<span class="badge small-text sstv">ARISS Series {ev.series}</span>{/if}
             <span class="actions">
               {#if r.audio}<a class="button small" href="/api/passes/{e.id}/audio" download>Download</a>{/if}
               {#if isAdmin}<button type="button" class="small danger" onclick={() => remove(e)}>Delete</button>{/if}
@@ -253,6 +274,12 @@
                 >
               {/each}
             </div>
+            {#if ev}
+              <p class="small-text muted gallery">
+                Received during ARISS Series {ev.series} “{ev.name}”: send original decodes to the
+                <a href={ARISS_GALLERY_URL} target="_blank" rel="noopener">ARISS SSTV Gallery</a> for the event certificate.
+              </p>
+            {/if}
           {/if}
         </li>
       {/each}
@@ -393,6 +420,21 @@
     padding: 0 7px;
     border: 1px solid var(--border);
     border-radius: 999px;
+  }
+  .badge.sstv {
+    margin-left: 6px;
+    border-color: var(--ok);
+    color: var(--ok);
+    font-weight: 500;
+  }
+  .rec-head .badge.sstv {
+    margin-left: 0;
+  }
+  .gallery {
+    margin: 0;
+  }
+  .gallery a {
+    color: var(--accent);
   }
   .actions {
     margin-left: auto;

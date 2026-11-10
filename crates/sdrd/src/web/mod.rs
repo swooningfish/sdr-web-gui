@@ -124,6 +124,7 @@ pub fn router(state: AppState) -> Router {
         .route("/schedule", get(schedule_routes::get).put(schedule_routes::set_config))
         .route("/schedule/rotation", axum::routing::put(schedule_routes::set_rotation))
         .route("/schedule/location", axum::routing::put(schedule_routes::set_location))
+        .route("/schedule/tracks", get(schedule_routes::tracks))
         .route("/schedule/tle", axum::routing::put(schedule_routes::set_tle))
         .route("/schedule/tle/refresh", post(schedule_routes::refresh_tle))
         .route("/schedule/test", post(schedule_routes::test_pass))

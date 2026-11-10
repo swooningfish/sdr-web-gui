@@ -168,6 +168,17 @@
         >
         <label>Tune <input class="n" type="number" bind:value={cfg.lead_s} min="0" max="300" /> s before the satellite rises</label>
       </div>
+      <h3>ARISS SSTV events</h3>
+      <label class="check"
+        ><input type="checkbox" bind:checked={cfg.ariss_auto} /> During an ARISS SSTV event, receive ISS passes on the event's
+        frequency</label
+      >
+      <p class="muted small-text hint">
+        A few times a year the ISS sends SSTV pictures for several days, usually on 437.550 MHz instead of 145.800. The dates
+        and frequency are read from ariss.org. While an event is on, ISS passes are tuned 550 kHz below the event frequency
+        (2.048 MS/s) and recorded on it; afterwards the settings above apply again. For pictures to be decoded, the frequency
+        must also be a channel under Settings → Decoders → SSTV.
+      </p>
       <div class="buttons"><button type="submit" class="primary" disabled={busy}>Save schedule</button></div>
     </form>
 
