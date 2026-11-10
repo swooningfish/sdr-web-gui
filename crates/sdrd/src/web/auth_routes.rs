@@ -10,7 +10,8 @@ use serde_json::json;
 use super::{check_origin, client_ip, session_cookie_name, ApiError, AppState, AuthUser};
 use crate::auth;
 
-/// Per-username and per-IP failure budgets within the limiter window.
+/// Failure budgets within the limiter window: per username from one address,
+/// and per address overall.
 const MAX_FAILS_PER_USER: u32 = 5;
 const MAX_FAILS_PER_IP: u32 = 20;
 
@@ -39,35 +40,43 @@ pub async fn login(
     Json(req): Json<LoginReq>,
 ) -> Result<Response, ApiError> {
     check_origin(&state.cfg, &headers)?;
-    let ip_key = format!("ip:{}", client_ip(&state.cfg, peer, &headers));
-    let user_key = format!("user:{}", req.username.to_ascii_lowercase());
+    if req.username.len() > 64 || req.password.len() > auth::MAX_PASSWORD_LEN * 4 {
+        return Err(ApiError::bad_request("invalid credentials"));
+    }
+    let ip = client_ip(&state.cfg, peer, &headers);
+    let ip_key = format!("ip:{ip}");
+    // Per username *and* address: wrong guesses from elsewhere must not lock
+    // the real user out of their own account.
+    let user_key = format!("user:{}|{ip}", req.username.to_ascii_lowercase());
     {
+        // Attempts are counted here, before the password is checked, so a
+        // burst of parallel requests can't all get past the limit; a good
+        // login gives its attempt back below.
         let mut rl = state.limiter.lock().unwrap();
         let wait = rl
-            .blocked_for(&ip_key, MAX_FAILS_PER_IP)
-            .or_else(|| rl.blocked_for(&user_key, MAX_FAILS_PER_USER));
+            .blocked_for(&user_key, MAX_FAILS_PER_USER)
+            .or_else(|| rl.attempt(&ip_key, MAX_FAILS_PER_IP));
         if let Some(secs) = wait {
             return Err(ApiError::too_many(secs));
         }
-    }
-    if req.username.len() > 64 || req.password.len() > auth::MAX_PASSWORD_LEN * 4 {
-        return Err(ApiError::bad_request("invalid credentials"));
+        rl.record_failure(&user_key);
     }
 
     let user = auth::authenticate(&state.db, &req.username, &req.password)
         .await
         .map_err(ApiError::internal)?;
     let Some(user) = user else {
-        let mut rl = state.limiter.lock().unwrap();
-        rl.record_failure(&ip_key);
-        rl.record_failure(&user_key);
         tracing::warn!(user = %req.username, ip = %ip_key, "failed login");
         return Err(ApiError::new(
             axum::http::StatusCode::UNAUTHORIZED,
             "invalid username or password",
         ));
     };
-    state.limiter.lock().unwrap().clear(&user_key);
+    {
+        let mut rl = state.limiter.lock().unwrap();
+        rl.forgive(&ip_key);
+        rl.clear(&user_key);
+    }
 
     let (token, csrf) = auth::create_session(&state.db, user.id, state.cfg.session_hours)
         .await

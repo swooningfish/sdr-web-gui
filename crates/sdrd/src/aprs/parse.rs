@@ -98,6 +98,11 @@ fn set_pos(m: &mut Map<String, Value>, lat: f64, lon: f64, table: u8, code: u8) 
 
 /// `DDMM.mmN` / `DDDMM.mmW`, ambiguity spaces read as zeros.
 fn dm(s: &[u8], deg_len: usize, pos: u8, neg: u8) -> Option<f64> {
+    // Packets come off the air: a non-ASCII byte would become a multi-byte
+    // char and the byte-indexed splits below would panic.
+    if !s.is_ascii() || s.len() <= deg_len {
+        return None;
+    }
     let txt: String = s.iter().map(|&c| if c == b' ' { '0' } else { c as char }).collect();
     let (d, rest) = txt.split_at(deg_len);
     let deg: f64 = d.parse().ok()?;
@@ -382,6 +387,21 @@ mod tests {
 
     fn f(m: &Map<String, Value>, k: &str) -> f64 {
         m.get(k).and_then(Value::as_f64).unwrap_or_else(|| panic!("{k} missing in {m:?}"))
+    }
+
+    #[test]
+    fn non_ascii_coordinates_are_ignored_not_fatal() {
+        // A high byte in either coordinate used to panic in `dm`.
+        for info in [
+            &b"!1\xff30.50N/00007.25W>"[..],
+            b"!5130.5\xffN/00007.25W>",
+            b"!5130.50N/0\xff007.25W>",
+            b"!5130.50N/00007.2\xffW>",
+        ] {
+            let m = parse(&frame("M0ABC-9", "APRS", info));
+            assert_eq!(m["packet"], "other");
+            assert!(m.get("lat").is_none());
+        }
     }
 
     #[test]

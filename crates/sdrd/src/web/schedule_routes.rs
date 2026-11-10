@@ -92,12 +92,18 @@ pub async fn tracks(
     axum::extract::Query(q): axum::extract::Query<TrackQuery>,
 ) -> Result<Json<Value>, ApiError> {
     const STEP_MS: i64 = 20_000;
+    const MAX_FROM_MS: i64 = 4_102_444_800_000;
     let minutes = q.minutes.unwrap_or(110);
     if !(1..=240).contains(&minutes) {
         return Err(ApiError::bad_request("minutes must be 1–240"));
     }
     let from = q.from_ms.unwrap_or_else(|| crate::db::now_ms() - 10 * 60_000);
-    let to = from.saturating_add(minutes as i64 * 60_000);
+    // 1970–2100: keeps the arithmetic below far away from overflow.
+    if !(0..=MAX_FROM_MS).contains(&from) {
+        return Err(ApiError::bad_request("from_ms is out of range"));
+    }
+    let steps = minutes as i64 * 60_000 / STEP_MS;
+    let to = from + steps * STEP_MS;
     let mut out = Vec::new();
     for s in state.schedule.config().satellites.iter().filter(|s| s.enabled) {
         let Ok(Some(rec)) =
@@ -107,12 +113,12 @@ pub async fn tracks(
         };
         let Ok(sat) = Satellite::from_tle(&s.name, &rec.line1, &rec.line2) else { continue };
         let mut points = Vec::new();
-        let mut t = from;
-        while t <= to {
+        // A fixed number of steps, so the loop ends whatever the times are.
+        for i in 0..=steps {
+            let t = from + i * STEP_MS;
             if let Some((lat, lon, alt)) = orbit::ground(&sat, t) {
                 points.push((t, (lat * 1e3).round() / 1e3, (lon * 1e3).round() / 1e3, alt.round()));
             }
-            t += STEP_MS;
         }
         out.push(json!({ "satellite": s.name, "norad_id": s.norad_id, "points": points }));
     }

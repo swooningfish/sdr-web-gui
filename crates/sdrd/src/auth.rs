@@ -221,9 +221,18 @@ pub async fn authenticate(db: &SqlitePool, username: &str, password: &str) -> Re
         ),
         None => (None, dummy_hash().to_string()),
     };
-    let pw = password.to_string();
-    let ok = tokio::task::spawn_blocking(move || verify_sync(&pw, &hash)).await?;
+    let ok = verify_limited(password.to_string(), hash).await?;
     Ok(if ok { user } else { None })
+}
+
+/// Argon2 verifications allowed to run at once. Each takes ~19 MiB and a
+/// core, so a burst of logins queues here instead of exhausting a small host.
+const MAX_CONCURRENT_VERIFY: usize = 4;
+
+async fn verify_limited(pw: String, hash: String) -> Result<bool> {
+    static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_CONCURRENT_VERIFY);
+    let _slot = SLOTS.acquire().await?;
+    Ok(tokio::task::spawn_blocking(move || verify_sync(&pw, &hash)).await?)
 }
 
 pub async fn verify_user_password(db: &SqlitePool, user_id: i64, password: &str) -> Result<bool> {
@@ -232,8 +241,7 @@ pub async fn verify_user_password(db: &SqlitePool, user_id: i64, password: &str)
         .fetch_optional(db)
         .await?;
     let Some(hash) = hash else { return Ok(false) };
-    let pw = password.to_string();
-    Ok(tokio::task::spawn_blocking(move || verify_sync(&pw, &hash)).await?)
+    verify_limited(password.to_string(), hash).await
 }
 
 /// Create the first admin if the database has no users.
@@ -402,6 +410,27 @@ impl RateLimiter {
         e.0 += 1;
     }
 
+    /// Count an attempt against the key before it is checked, so requests
+    /// sent in parallel can't all slip under the limit. Returns the seconds
+    /// to wait if the key is already blocked (nothing is counted then).
+    pub fn attempt(&mut self, key: &str, max_failures: u32) -> Option<u64> {
+        let wait = self.blocked_for(key, max_failures);
+        if wait.is_none() {
+            self.record_failure(key);
+        }
+        wait
+    }
+
+    /// Take back one counted attempt (it turned out to be a good login).
+    pub fn forgive(&mut self, key: &str) {
+        if let Some(e) = self.entries.get_mut(key) {
+            e.0 = e.0.saturating_sub(1);
+            if e.0 == 0 {
+                self.entries.remove(key);
+            }
+        }
+    }
+
     pub fn clear(&mut self, key: &str) {
         self.entries.remove(key);
     }
@@ -430,6 +459,18 @@ mod tests {
         assert!(rl.blocked_for("user:b", 3).is_none());
         rl.clear("user:a");
         assert!(rl.blocked_for("user:a", 3).is_none());
+    }
+
+    #[test]
+    fn attempts_count_up_front_and_can_be_forgiven() {
+        let mut rl = RateLimiter::new(Duration::from_secs(60));
+        assert!(rl.attempt("ip:a", 2).is_none());
+        assert!(rl.attempt("ip:a", 2).is_none());
+        assert!(rl.attempt("ip:a", 2).is_some());
+        rl.forgive("ip:a");
+        assert!(rl.attempt("ip:a", 2).is_none());
+        assert!(rl.attempt("ip:a", 2).is_some());
+        rl.forgive("ip:missing");
     }
 
     #[test]
