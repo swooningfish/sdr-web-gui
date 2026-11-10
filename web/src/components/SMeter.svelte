@@ -2,14 +2,23 @@
   import { onMount } from 'svelte';
   import { needle, sReading } from '../lib/smeter';
 
-  /** Analogue S-meter: a needle over an S1–S9 / +60 dB scale. `bar` draws it
-   * as a slim edgewise meter (a straight scale) for the folded receiver bar. */
+  /** S-meter over an S1–S9 / +60 dB scale: a needle, or with `digital` a row
+   * of LED segments and a numeric readout. `bar` draws it slim (a straight
+   * scale) for the folded receiver bar. */
   let {
     dbm,
     s9 = -73,
     label = '',
     bar = false,
-  }: { dbm: number | null; s9?: number; label?: string; bar?: boolean } = $props();
+    digital = false,
+  }: { dbm: number | null; s9?: number; label?: string; bar?: boolean; digital?: boolean } = $props();
+
+  // Digital: 15 equal segments, S1–S9 then +10…+60 dB (the needle's scale, cut up).
+  const SEGS = 15;
+  const DIG_SCALE = [
+    ...[1, 3, 5, 7, 9].map((s) => ({ seg: s, label: String(s), red: false })),
+    ...[20, 40, 60].map((d) => ({ seg: 9 + d / 10, label: `+${d}`, red: true })),
+  ];
 
   // Edgewise (bar) geometry: the scale runs from BX0 to BX1.
   const BX0 = 9;
@@ -53,12 +62,14 @@
   });
   const tip = $derived(at(shown, R + 6));
   const base = $derived(at(shown, 34));
+  const lit = $derived(Math.round(shown * SEGS));
 </script>
 
 <div
   class="smeter"
   class:bar
-  title={bar ? (dbm === null ? 'No signal reading' : `${dbm.toFixed(1)} dBm · ${sReading(dbm, s9)}`) : undefined}
+  class:digital
+  title={bar || digital ?(dbm === null ? 'No signal reading' : `${dbm.toFixed(1)} dBm · ${sReading(dbm, s9)}`) : undefined}
   role="meter"
   aria-label="Signal strength{label ? ` at ${label}` : ''}"
   aria-valuemin={s9 - 54}
@@ -66,7 +77,26 @@
   aria-valuenow={dbm ?? undefined}
   aria-valuetext={dbm === null ? 'no signal reading' : `${dbm.toFixed(1)} dBm, ${sReading(dbm, s9)}`}
 >
-  {#if bar}
+  {#if digital}
+    {#if !bar}
+      <div class="read" aria-hidden="true">
+        <span class="sval">{dbm === null ? 'S —' : sReading(dbm, s9)}</span>
+        <span class="dval">{dbm === null ? '— dBm' : `${dbm.toFixed(1)} dBm`}</span>
+      </div>
+    {/if}
+    <div class="segs" aria-hidden="true">
+      {#each Array.from({ length: SEGS }, (_, i) => i) as i (i)}
+        <span class="s" class:over={i >= 9} class:on={i < lit}></span>
+      {/each}
+    </div>
+    {#if !bar}
+      <div class="scale" aria-hidden="true">
+        {#each DIG_SCALE as t (t.seg)}
+          <span class:over={t.red} style:left="{((t.seg - 0.5) / SEGS) * 100}%">{t.label}</span>
+        {/each}
+      </div>
+    {/if}
+  {:else if bar}
     <svg viewBox="0 0 150 26" aria-hidden="true">
       <defs>
         <linearGradient id="sm-bar-face" x1="0" y1="0" x2="0" y2="1">
@@ -135,6 +165,82 @@
     max-width: 150px;
     border-radius: 5px;
     padding: 2px;
+  }
+  .smeter.digital {
+    padding: 8px 9px 5px;
+    border-radius: 6px;
+    line-height: 1;
+    background: #0b0d10;
+    box-shadow:
+      inset 0 1px 4px rgba(0, 0, 0, 0.8),
+      0 0 0 2px var(--face-edge, #2d3038);
+    font: 600 9px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: #8b93a1;
+  }
+  .smeter.digital.bar {
+    padding: 6px 6px;
+    align-self: center;
+  }
+  .read {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-variant-numeric: tabular-nums;
+  }
+  .sval {
+    font-size: 20px;
+    font-weight: 700;
+    color: #e5e7eb;
+    white-space: nowrap;
+  }
+  .dval {
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .segs {
+    display: grid;
+    grid-template-columns: repeat(15, minmax(0, 1fr));
+    gap: 2px;
+    height: 14px;
+  }
+  .bar .segs {
+    height: 10px;
+    gap: 1.5px;
+  }
+  .s {
+    border-radius: 1px;
+    background: #22c55e;
+    color: #22c55e;
+    opacity: 0.16;
+  }
+  .s.over {
+    background: #ef4444;
+    color: #ef4444;
+  }
+  .s.on {
+    opacity: 1;
+    box-shadow: 0 0 4px currentColor;
+  }
+  .scale {
+    position: relative;
+    height: 10px;
+    margin-top: 3px;
+  }
+  .scale span {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    font-size: 8px;
+    font-weight: 400;
+  }
+  .scale span.over {
+    color: #f87171;
+  }
+  .scale span:last-child {
+    left: 100% !important;
+    transform: translateX(-100%);
   }
   svg {
     width: 100%;

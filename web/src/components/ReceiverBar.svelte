@@ -80,10 +80,14 @@
   // S-meter calibration: trim in dB, and the IARU VHF scale (S9 = −93 dBm above 30 MHz).
   let trim = $state<number>(stored.trim ?? 0);
   let vhfScale = $state<boolean>(stored.vhfScale ?? false);
+  // Meter faces: a needle (analogue) or LED segments (digital), each meter on its own.
+  type MeterStyle = 'analogue' | 'digital';
+  let sMeter = $state<MeterStyle>(stored.sMeter === 'digital' ? 'digital' : 'analogue');
+  let afMeter = $state<MeterStyle>(stored.afMeter === 'analogue' ? 'analogue' : 'digital');
   // svelte-ignore state_referenced_locally
   let step = $state<number>(typeof stored.step === 'number' ? stored.step : CHANNEL_STEP[listen.mode]);
   $effect(() => {
-    const v = { size, ...open, trim, vhfScale, step, lastGain };
+    const v = { size, ...open, trim, vhfScale, sMeter, afMeter, step, lastGain };
     try {
       localStorage.setItem(LAYOUT, JSON.stringify(v));
     } catch {
@@ -432,7 +436,7 @@
         <span class="muted small-text hide-xs">{modeLabel(listen.mode)}</span>
         {#if showRds && rdsPs}<strong class="rds-mini hide-xs" title={rdsRt || rdsPty || 'RDS'}>{rdsPs}</strong>{/if}
         {#if showDab && dabName}<strong class="rds-mini hide-xs" title={dabMux}>{dabName}</strong>{/if}
-        <span class="bar-meter"><SMeter bar {dbm} {s9} label={formatMHz(listen.hz, 4)} /></span>
+        <span class="bar-meter"><SMeter bar digital={sMeter === 'digital'} {dbm} {s9} label={formatMHz(listen.hz, 4)} /></span>
         {#if dbm !== null}<span class="s-mini small-text hide-xs">{sReading(dbm, s9)}</span>{/if}
       </span>
     {/if}
@@ -458,8 +462,8 @@
       <div class="face">
         <!-- ---- display row: S-meter, LCD, knob -->
         <div class="meter">
-          <SMeter {dbm} {s9} label={formatMHz(listen.hz, 4)} />
-          <AudioMeter levels={() => rx.audioLevels()} />
+          <SMeter digital={sMeter === 'digital'} {dbm} {s9} label={formatMHz(listen.hz, 4)} />
+          <AudioMeter digital={afMeter === 'digital'} levels={() => rx.audioLevels()} />
         </div>
 
         <div class="lcd" aria-label="Display">
@@ -1015,6 +1019,24 @@
             <span class="trim">
               <input id="vhf" type="checkbox" bind:checked={vhfScale} />
               <span class="muted small-text">S9 = −93 dBm above 30 MHz</span>
+            </span>
+
+            <label for="smeter-style">S-meter</label>
+            <span class="trim">
+              <select id="smeter-style" bind:value={sMeter}>
+                <option value="analogue">Analogue (needle)</option>
+                <option value="digital">Digital (LED bar)</option>
+              </select>
+              <span class="muted small-text">this browser</span>
+            </span>
+
+            <label for="afmeter-style">AF peak meter</label>
+            <span class="trim">
+              <select id="afmeter-style" bind:value={afMeter}>
+                <option value="analogue">Analogue (needle)</option>
+                <option value="digital">Digital (LED bar)</option>
+              </select>
+              <span class="muted small-text">this browser</span>
             </span>
           </div>
           <p class="muted small-text hint">
@@ -1788,7 +1810,8 @@
     .face {
       gap: 10px;
     }
-    .meter :global(.smeter) {
+    .meter :global(.smeter),
+    .meter :global(.ameter) {
       max-width: 200px;
     }
     .knob-col :global(.knob) {
