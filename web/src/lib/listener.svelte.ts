@@ -9,6 +9,8 @@ export type VfoName = 'A' | 'B';
 export interface Vfo {
   hz: number;
   mode: AudioMode;
+  /** DAB: the service playing on this VFO's multiplex. */
+  service?: number | null;
 }
 
 /** RDS programme types (European list). */
@@ -99,7 +101,8 @@ export class Listener {
     if (typeof saved.service === 'number') listen.service = saved.service;
     if (saved.active === 'B') this.active = 'B';
     const o = saved.other as Vfo | undefined;
-    if (o && typeof o.hz === 'number' && typeof o.mode === 'string') this.other = { hz: o.hz, mode: o.mode };
+    if (o && typeof o.hz === 'number' && typeof o.mode === 'string')
+      this.other = { hz: o.hz, mode: o.mode, service: typeof o.service === 'number' ? o.service : null };
   }
 
   get afcWorks() {
@@ -120,21 +123,29 @@ export class Listener {
 
   /** VFO A and B as they stand (one of them is `listen`). */
   vfo(name: VfoName): Vfo {
-    return name === this.active ? { hz: this.listen.hz, mode: this.listen.mode } : this.other;
+    return name === this.active ? this.current() : this.other;
   }
 
-  /** A/B: hear the other VFO. */
-  swap() {
-    const cur = { hz: this.listen.hz, mode: this.listen.mode };
-    this.listen.mode = this.other.mode;
-    this.listen.hz = this.other.hz;
+  private current(): Vfo {
+    return { hz: this.listen.hz, mode: this.listen.mode, service: this.listen.service ?? null };
+  }
+
+  /** A/B: hear the other VFO. Returns it, so the caller can bring the
+   * receiver onto it when it's outside the sampled band. */
+  swap(): Vfo {
+    const cur = this.current();
+    const next = this.other;
+    this.listen.mode = next.mode;
+    this.listen.hz = next.hz;
+    this.listen.service = next.service ?? null;
     this.other = cur;
     this.active = this.active === 'A' ? 'B' : 'A';
+    return next;
   }
 
   /** A=B: copy the VFO being heard to the other one. */
   copy() {
-    this.other = { hz: this.listen.hz, mode: this.listen.mode };
+    this.other = this.current();
   }
 
   /** Set up the effects; call while a component is initialising. */
@@ -155,7 +166,7 @@ export class Listener {
         mode: this.listen.mode,
         service: this.listen.service ?? null,
         active: this.active,
-        other: { hz: this.other.hz, mode: this.other.mode },
+        other: { hz: this.other.hz, mode: this.other.mode, service: this.other.service ?? null },
       };
       try {
         localStorage.setItem(PREFS, JSON.stringify(prefs));

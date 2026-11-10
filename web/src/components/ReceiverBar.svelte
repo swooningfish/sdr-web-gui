@@ -307,6 +307,15 @@
     ontune(hz);
   }
 
+  /** A/B: hear the other VFO, retuning the receiver when it's out of band. */
+  function swapVfo() {
+    const was = listen.mode;
+    const v = rx.swap();
+    if (v.mode !== was) step = CHANNEL_STEP[v.mode];
+    typing = false;
+    ontune(v.hz, v.mode, undefined, v.service ?? null);
+  }
+
   function setMode(m: AudioMode) {
     listen.mode = m;
     step = CHANNEL_STEP[m];
@@ -675,7 +684,7 @@
               type="button"
               class="key"
               title="Swap: listen on VFO {otherName} ({formatMHz(rx.other.hz, 4)} {modeLabel(rx.other.mode)})"
-              onclick={() => rx.swap()}>A / B</button
+              onclick={swapVfo}>A / B</button
             >
             <button
               type="button"

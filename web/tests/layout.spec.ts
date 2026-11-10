@@ -369,6 +369,40 @@ test('A/B swaps the VFO being heard and A=B copies it', async ({ page }) => {
   expect(await overflow(page)).toBeLessThanOrEqual(0);
 });
 
+test('A/B retunes the receiver when the other VFO is outside the sampled band', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop-1920', 'state-changing test runs once');
+  const radio = await (await page.request.get('/api/radio')).json();
+  test.skip(!radio.connected || !radio.can_tune, 'receiver not connected or not tunable');
+  const { center_hz: before, sample_rate } = radio.settings;
+  const centre = async () => (await (await page.request.get('/api/radio')).json()).settings.center_hz;
+  await openTab(page, 'Spectrum');
+  await receiverSize(page, 'Large');
+  const knob = page.getByRole('slider', { name: /^Tuning/ });
+  const swap = page.getByRole('button', { name: 'A / B' });
+  const type = async (mhz: string) => {
+    await page.getByRole('button', { name: /^VFO [AB] .*Click to type/ }).click();
+    await page.keyboard.type(mhz);
+    await page.keyboard.press('Enter');
+  };
+  const near = (hz: number) => async () => Math.abs((await centre()) - hz) < sample_rate / 2;
+  const a = await knob.getAttribute('aria-valuenow');
+  // This VFO far from the other one: the receiver follows each swap.
+  await type('98.5');
+  await expect(knob).toHaveAttribute('aria-valuenow', '98500000');
+  await expect.poll(near(98_500_000), { timeout: 5000 }).toBe(true);
+  await swap.click();
+  const b = Number(await knob.getAttribute('aria-valuenow'));
+  expect(b).not.toBe(98_500_000);
+  await expect.poll(near(b), { timeout: 5000 }).toBe(true);
+  await swap.click();
+  await expect(knob).toHaveAttribute('aria-valuenow', '98500000');
+  await expect.poll(near(98_500_000), { timeout: 5000 }).toBe(true);
+  // Put it back.
+  await type((Number(a) / 1e6).toFixed(4));
+  await page.request.post('/api/radio', { data: { center_hz: before }, headers: await csrf(page) });
+  await expect.poll(centre).toBe(before);
+});
+
 test('arrow keys on the spectrum retune the radio', async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop-1920', 'state-changing test runs once');
   const radio = await (await page.request.get('/api/radio')).json();
