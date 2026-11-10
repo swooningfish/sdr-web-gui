@@ -187,7 +187,7 @@
     try {
       const sched = await api.schedule();
       if (sched.config.rotation) {
-        error = 'Profile rotation is on and would retune the radio mid-check. Switch it off in the Receiver panel first.';
+        error = 'Profile rotation is on and would retune the radio mid-check. Switch it off under Centre & presets on the receiver first.';
         return;
       }
     } catch {
@@ -211,7 +211,7 @@
     const warnings: string[] = [];
     if (r.settings.gain_db === null) {
       warnings.push(
-        'Auto gain is on, so the gain may differ from one frequency to the next. Set a fixed gain in the Receiver panel for a fair comparison.',
+        'Auto gain is on, so the gain may differ from one frequency to the next. Set a fixed gain with the Gain knob on the receiver for a fair comparison.',
       );
     }
 

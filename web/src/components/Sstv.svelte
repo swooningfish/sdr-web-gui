@@ -10,7 +10,7 @@
   let { isAdmin, radio }: { isAdmin: boolean; radio: RadioState | null } = $props();
 
   /**
-   * Blocks the SSTV tab offers to tune to. UHF is centred 550 kHz below ARISS
+   * Blocks the SSTV pictures page offers to tune to. UHF is centred 550 kHz below ARISS
    * 437.550 so the dongle's DC spike stays off the channel, and spans most of
    * the 435–438 MHz satellite downlinks.
    */

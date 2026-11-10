@@ -249,7 +249,7 @@
       if (resetTimer) clearTimeout(resetTimer);
       resetTimer = null;
     } else if (viewC !== null && !drag) {
-      // Retuned elsewhere (Receiver panel, a bookmark, rotation). Keep the
+      // Retuned elsewhere (front panel, a bookmark, rotation). Keep the
       // view if it still overlaps the window; otherwise follow the radio.
       const sr = info.sampleRate;
       if (offWindow) {

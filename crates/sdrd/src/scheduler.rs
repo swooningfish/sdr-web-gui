@@ -39,7 +39,7 @@ const ARISS_KEY: &str = "ariss.events";
 /// How often the ARISS schedule is read again (times change at short notice).
 const ARISS_MAX_AGE_MS: i64 = 6 * 3_600_000;
 /// During an event the radio is centred this far below the downlink, so the
-/// dongle's DC spike stays off the channel (the SSTV tab's UHF block).
+/// dongle's DC spike stays off the channel (the SSTV pictures page's UHF block).
 const ARISS_OFFSET_HZ: u64 = 550_000;
 const ARISS_SAMPLE_RATE: u32 = 2_048_000;
 /// Longest we'll hold a rotation switch for an SSTV image in progress.
@@ -94,7 +94,7 @@ pub struct ScheduleConfig {
     /// Tune this many seconds before AOS.
     pub lead_s: u32,
     /// Retune (and record) automatically for passes, and have browsers
-    /// switch to the Passes page. Off: passes are only predicted and shown.
+    /// switch to the Satellites page. Off: passes are only predicted and shown.
     #[serde(default = "default_true")]
     pub auto_switch: bool,
     /// Warn browsers this many seconds before the radio is retuned for a pass.

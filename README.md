@@ -294,7 +294,7 @@ preset, or the ISM step of **rotation** (see [Passes and scheduling](#passes-and
 
 - **Sensors** tab: every device heard, latest readings, signal, a live feed, and per-device
   history with charts (1 h / 24 h / 7 days). Repeats of the same transmission are merged.
-- **Settings → ISM decoder**: enable/disable, frequency, `-R` protocol list, and flex decoders
+- **Settings → Decoders → ISM decoder**: enable/disable, frequency, `-R` protocol list, and flex decoders
   (`-X`). *Check* asks rtl_433 itself whether it accepts a spec; saving restarts rtl_433.
   TPMS sensors are decoded by rtl_433's built-in decoders (Schrader, Toyota, Ford, Renault,
   Hyundai, BMW and more) and show up under their make with pressure and temperature. A flex
@@ -315,7 +315,7 @@ alongside ISS SSTV on 145.800.
   for weather stations) and a packet log. 1 h / 6 h / 24 h window.
 - Parses uncompressed and compressed positions, Mic-E, objects, items, status, messages
   and weather reports. Copies of a packet repeated by digipeaters are merged.
-- **Settings → APRS decoder**: up to 4 channels with labels.
+- **Settings → Decoders → APRS decoder**: up to 4 channels with labels.
 - APRS is public amateur traffic, so viewer accounts can see it.
 - The map uses OpenStreetMap's tile server. Set `SDRD_MAP_TILE_URL` to use another one (the
   Content-Security-Policy follows it).
@@ -356,7 +356,7 @@ VIS header picks the mode automatically:
 Every line's sync pulse is tracked, so slant from clock differences is corrected.
 
 - Default channels: **ISS SSTV 145.800 MHz** (in the default VHF block) and **ARISS UHF
-  437.550 MHz**, both FM. Up to 4 channels under Settings → SSTV decoder.
+  437.550 MHz**, both FM. Up to 4 channels under Settings → Decoders → SSTV decoder.
 - When a channel isn't being listened to, the SSTV pictures page offers admins **Tune to VHF block**
   (145.3 MHz) or **Tune to UHF block** (437.0 MHz, covering 436.1–437.9 MHz), whichever
   holds that channel.

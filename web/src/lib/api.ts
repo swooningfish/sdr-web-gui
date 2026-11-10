@@ -317,7 +317,7 @@ export interface ScheduleConfig {
   profiles: Profile[];
   satellites: SatConfig[];
   lead_s: number;
-  /** Retune for passes automatically and switch browsers to the Passes page. */
+  /** Retune for passes automatically and switch browsers to the Satellites page. */
   auto_switch: boolean;
   /** Warn this many seconds before retuning for a pass. */
   notice_s: number;

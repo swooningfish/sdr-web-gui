@@ -73,7 +73,7 @@
     }
     act(async () => {
       // Rotation lives in its own settings tab (and is switched from the
-      // receiver and Passes page): keep whatever the server has now.
+      // receiver and Satellites page): keep whatever the server has now.
       const cur = (await api.schedule()).config;
       out.rotation = cur.rotation;
       out.profiles = cur.profiles;
@@ -154,7 +154,7 @@
       <h3>Auto-switch for passes</h3>
       <label class="check"
         ><input type="checkbox" bind:checked={cfg.auto_switch} /> Tune to each pass automatically and switch everyone's page to
-        Passes</label
+        Satellites</label
       >
       <p class="muted small-text hint">
         A notice appears under the receiver beforehand. Admins can choose <strong>Stay</strong> on it to keep the current

@@ -104,8 +104,8 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
      only. Up/Down step the listening frequency for everyone. The waterfall history slides
      to stay lined up after a retune.
    - Bookmarks: a shared station list (admins edit) plus each user's own. Flags on the
-     spectrum, a Bookmarks panel under Listen (search, list/group filter, ★ Save), and a
-     Bookmarks page from its cog (sortable table, edit, multi-select delete, CSV export of
+     spectrum, and a bookmark manager that slides out from the receiver's front panel
+     (search, list/group filter, ★ Save; Manage: edit, multi-select delete, CSV export of
      all/station/mine, CSV import of our own format, CHIRP or gqrx). A bookmark keeps the
      sample rate it was saved at (optional); picking one switches to that rate and, outside
      the band, retunes the radio for admins. Anyone who can edit a bookmark can update it to
@@ -113,7 +113,7 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
    - CW mode (700 Hz beat note, band-pass, AGC) and a Morse decoder (optional, any mode
      but WFM): tone lock, adaptive speed (5–40 WPM), word-by-word output with junk
      filtering; reads FM repeater idents in NFM.
-   - RDS on WFM: station name, programme type, radio text and PI, in the Listen panel and
+   - RDS on WFM: station name, programme type, radio text and PI, in the strip under the spectrum and
      on the receiver's display (an RDS annunciator, the station name, and radio text
      that scrolls when it's wider than the display); the compact bar shows the name.
    - Simulator additions: CW beacon on 144.470, repeater with a Morse ident on 145.7125,
@@ -188,7 +188,7 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
    - Pager decoding: POCSAG (512/1200/2400 baud) and FLEX on NFM, per-channel like APRS
      (multimon-ng or native); message log with capcode, function, type (numeric/alpha/tone),
      search and filters; capcode aliases; optional MQTT/HA for chosen capcodes.
-   - Data modes: a Data panel under Listen that decodes the listening channel — e.g. RTTY,
+   - Data modes: a Data panel under the spectrum that decodes the listening channel — e.g. RTTY,
      PSK31, packet/AFSK1200 outside APRS, FT8/FT4 and WSPR on the usual dial frequencies,
      and simple ones (DTMF, ZVEI/selcall, EAS). Exact list to settle when it's built.
    - Bookmarks/band plan pick the decoder where the mode is known; a rotation profile can
@@ -223,7 +223,7 @@ Along the way (from requests during the build, and Greg's own commits):
 - **SSTV:** multi-select gallery with ZIP download and bulk delete.
 - **Passes:** stop a test or real pass; station location by place/postcode search
   (Nominatim) or Maidenhead locator, with a clear hint when geolocation needs HTTPS;
-  rotation on/off switch in the Receiver panel and Passes tab.
+  rotation on/off switch under the receiver's presets and on the Satellites tab.
 - **Harmonics check:** measures a short-range device's carrier and its harmonics (retuning
   to each) and rates them Good / Medium / Bad against Ofcom (EN 300 220-1 Table 19, UK SRD
   ERP limits) and FCC Part 15 (§15.231(b), §15.249, §15.227, §15.205/§15.209) limits, in dBc

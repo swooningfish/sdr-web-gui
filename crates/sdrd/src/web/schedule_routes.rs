@@ -188,7 +188,7 @@ pub async fn skip_pass(
         return Err(ApiError::bad_request("no such pass"));
     }
     if st.active.as_ref().is_some_and(|a| a.aos_ms == r.aos_ms && !a.test) {
-        return Err(ApiError::bad_request("that pass has started; stop it on the Passes page"));
+        return Err(ApiError::bad_request("that pass has started; stop it on the Satellites page"));
     }
     state.schedule.skip_pass(r.aos_ms, r.skip).await;
     tracing::info!(by = %admin.user.username, aos_ms = r.aos_ms, skip = r.skip, "pass skip changed");

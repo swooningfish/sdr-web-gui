@@ -1,6 +1,6 @@
 /** Frequency bookmarks: the station's shared list plus the user's own,
- * loaded once and shared by the spectrum, the side panel and the
- * Bookmarks page. */
+ * loaded once and shared by the spectrum, the receiver's front panel and the
+ * bookmark manager. */
 
 import { api } from './api';
 import type { AudioMode } from './audio';

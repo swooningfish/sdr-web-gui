@@ -3,7 +3,7 @@
 
 export type AudioMode = 'nfm' | 'wfm' | 'am' | 'usb' | 'lsb' | 'cw' | 'dab';
 
-/** What the user is listening to (shared by the Listen panel and the waterfall). */
+/** What the user is listening to (shared by the receiver's front panel and the waterfall). */
 export interface Listen {
   on: boolean;
   hz: number;

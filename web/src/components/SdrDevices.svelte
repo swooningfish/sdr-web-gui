@@ -37,7 +37,7 @@
     }
   }
 
-  // Reload when the receiver changes (here, from the Receiver panel, or unplugged).
+  // Reload when the receiver changes (here, from the receiver's front panel, or unplugged).
   $effect(() => {
     void radio?.device_id;
     void radio?.connected;

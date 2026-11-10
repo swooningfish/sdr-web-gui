@@ -53,7 +53,7 @@
   let sstv = $state<ReturnType<typeof Sstv> | undefined>();
   let passes = $state<ReturnType<typeof Passes> | undefined>();
   let receiver = $state<ReturnType<typeof ReceiverBar> | undefined>();
-  /** AOS of a pass this browser opted not to jump to the Passes page for. */
+  /** AOS of a pass this browser opted not to jump to the Satellites page for. */
   let keepPage = $state<number | null>(null);
   let switchedFor: number | null = null;
 
