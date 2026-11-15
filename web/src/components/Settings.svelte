@@ -5,6 +5,7 @@
   import DecoderSettings from './DecoderSettings.svelte';
   import AprsSettings from './AprsSettings.svelte';
   import SstvSettings from './SstvSettings.svelte';
+  import MeshSettings from './MeshSettings.svelte';
   import LocationSettings from './LocationSettings.svelte';
   import ScheduleSettings from './ScheduleSettings.svelte';
   import RotationSettings from './RotationSettings.svelte';
@@ -73,6 +74,7 @@
       <DecoderSettings {radio} />
       <AprsSettings {radio} />
       <SstvSettings {radio} />
+      <MeshSettings />
     {:else if tab === 'rotation'}
       <RotationSettings {radio} />
     {:else if tab === 'passes'}

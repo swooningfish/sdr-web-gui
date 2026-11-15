@@ -194,7 +194,19 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
    - Bookmarks/band plan pick the decoder where the mode is known; a rotation profile can
      hold a pager or data channel like the other decoders.
    - Simulator: a POCSAG pager channel and a data-mode beacon to test against.
-11. **Meshtastic and MeshCore** (later)
+11. **Meshtastic and MeshCore** (in progress: decoding and views done; untested on air)
+   - Done: native LoRa demodulator (dechirp + FFT; preamble detection, integer/fractional CFO
+     and timing from the up/down-chirp pair, transmitter clock drift from the CFO, 4 samples
+     per chip with interpolated windows; Gray mapping, diagonal deinterleaving, Hamming
+     4/5–4/8, whitening, explicit header and CRC-16), fed from the main receiver whenever it
+     covers a preset (Meshtastic LongFast/MediumFast/ShortFast on 869.525, MeshCore narrow on
+     869.618). Meshtastic header, AES-CTR channels (default + admin PSKs), text, position,
+     node info and telemetry protobufs; PKI DMs shown as encrypted. MeshCore adverts, group
+     text (AES-ECB + HMAC, Public + admin secrets + #hashtag channels), DMs as hashes. Mesh
+     tab: node map and list, channel messages (private ones admins only), packet log with
+     repeats and CRC errors. Simulator nodes on both networks, incl. two private channels.
+   - Left: second dongle on 868 MHz, MQTT/HA for nodes, other regions, check against real
+     transmitters (bit layout follows gr-lora_sdr and the firmware sources).
    - LoRa demodulator for the UK/EU 868 MHz presets (Meshtastic LongFast and the others;
      MeshCore's narrow EU/UK preset), on the main dongle or a second one kept on 868 MHz
      like ADS-B.

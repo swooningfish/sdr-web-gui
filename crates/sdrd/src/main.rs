@@ -30,6 +30,7 @@ mod decoders;
 mod dsp;
 mod events;
 mod fkeys;
+mod mesh;
 mod mqtt;
 mod orbit;
 mod recorder;
@@ -152,12 +153,14 @@ async fn serve() -> Result<()> {
         mqtt.clone(),
     )
     .await?;
+    let mesh = mesh::spawn(&db, radio.clone(), iq_tx.subscribe()).await?;
     let (event_feed, _) = broadcast::channel(256);
     tokio::spawn(events::run(db.clone(), events_rx, event_feed.clone(), mqtt.clone()));
 
     // Hourly cleanup of expired sessions and old events.
     {
         let db = db.clone();
+        let mesh = mesh.clone();
         let days = cfg.event_retention_days;
         tokio::spawn(async move {
             let mut t = tokio::time::interval(Duration::from_secs(3600));
@@ -175,6 +178,9 @@ async fn serve() -> Result<()> {
                 }
                 if let Err(e) = adsb::purge(&db, days).await {
                     tracing::warn!("aircraft log purge failed: {e}");
+                }
+                if let Err(e) = mesh::purge(&db, &mesh, days).await {
+                    tracing::warn!("mesh purge failed: {e}");
                 }
             }
         });
@@ -200,6 +206,7 @@ async fn serve() -> Result<()> {
         event_feed,
         mqtt,
         adsb,
+        mesh,
         scan,
     };
     let app = web::router(state);

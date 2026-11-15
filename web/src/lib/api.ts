@@ -132,6 +132,110 @@ export interface AdsbReceiverSettings {
   bias_tee: boolean;
 }
 
+export type MeshProto = 'meshtastic' | 'meshcore';
+
+export interface MeshPreset {
+  id: string;
+  proto: MeshProto;
+  name: string;
+  freq_hz: number;
+  sf: number;
+  bw: number;
+  cr: number;
+  sync: number;
+}
+
+/** A private channel key; `key` is only sent to admins. */
+export interface MeshChannelKey {
+  name: string;
+  key?: string;
+}
+
+export interface MeshConfig {
+  enabled: boolean;
+  presets: string[];
+  meshtastic_channels: MeshChannelKey[];
+  meshcore_channels: MeshChannelKey[];
+}
+
+export interface MeshInfo {
+  config: MeshConfig;
+  status: {
+    enabled: boolean;
+    /** IQ from the main receiver is being decoded. */
+    listening: boolean;
+    presets: { preset: MeshPreset; enabled: boolean; in_band: boolean; packets: number; last_ms: number | null }[];
+    tune_hz: number;
+    nodes_24h: { meshtastic: number; meshcore: number };
+    crc_errors: number;
+  };
+  presets: MeshPreset[];
+  main_tuned: boolean;
+  tile_url: string;
+}
+
+export interface MeshNode {
+  key: string;
+  proto: MeshProto;
+  id: string;
+  short_name: string | null;
+  long_name: string | null;
+  hw: string | null;
+  role: string | null;
+  lat: number | null;
+  lon: number | null;
+  alt: number | null;
+  pos_ms: number | null;
+  battery: number | null;
+  voltage: number | null;
+  channel_util: number | null;
+  air_util_tx: number | null;
+  uptime_s: number | null;
+  temperature: number | null;
+  humidity: number | null;
+  pressure: number | null;
+  snr: number | null;
+  hops: number | null;
+  preset: string;
+  first_ms: number;
+  last_ms: number;
+  packets: number;
+}
+
+export interface MeshMessage {
+  id: number;
+  ts_ms: number;
+  proto: MeshProto;
+  channel: string | null;
+  private: boolean;
+  from_key: string | null;
+  from_name: string | null;
+  text: string;
+  snr: number | null;
+  hops: number | null;
+}
+
+export interface MeshPacket {
+  ts_ms: number;
+  preset: string;
+  proto: MeshProto;
+  crc_ok: boolean;
+  snr: number;
+  offset_hz: number;
+  len: number;
+  /** Hex; empty for viewers on private channels. */
+  raw: string;
+  from: string | null;
+  from_name: string | null;
+  to: string | null;
+  kind: string;
+  summary: string;
+  channel: string | null;
+  private: boolean;
+  hops: number | null;
+  repeat: boolean;
+}
+
 export interface AdsbInfo {
   config: { enabled: boolean };
   status: AdsbStatus;
@@ -658,5 +762,11 @@ export const api = {
   selectAdsbDevice: (id: string) => req('POST', '/adsb/device', { id }),
   setAdsbReceiver: (s: AdsbReceiverSettings) => req('PUT', '/adsb/receiver', s),
   downloadAircraftDb: () => req('POST', '/adsb/database'),
+  mesh: () => req<MeshInfo>('GET', '/mesh'),
+  setMesh: (config: MeshConfig) => req('PUT', '/mesh', config),
+  meshNodes: () => req<{ now: number; nodes: MeshNode[] }>('GET', '/mesh/nodes'),
+  deleteMeshNodes: (keys: string[]) => req('POST', '/mesh/nodes/delete', { keys }),
+  meshMessages: (limit = 300) => req<{ messages: MeshMessage[] }>('GET', `/mesh/messages?limit=${limit}`),
+  meshPackets: () => req<{ packets: MeshPacket[] }>('GET', '/mesh/packets'),
   checkSpec: (spec: string) => req<{ ok: boolean; message?: string }>('POST', '/decoders/rtl_433/check', { spec }),
 };

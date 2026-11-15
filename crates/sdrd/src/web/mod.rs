@@ -18,6 +18,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::adsb::AdsbHandle;
+use crate::mesh::MeshHandle;
 use crate::auth::{self, RateLimiter, Role, Session};
 use crate::config::Config;
 use crate::decoders::aprs::AprsHandle;
@@ -29,6 +30,7 @@ use crate::radio::{IqBlock, RadioHandle};
 use crate::scheduler::SchedulerHandle;
 
 mod adsb_routes;
+mod mesh_routes;
 mod aprs_routes;
 mod auth_routes;
 mod bookmark_routes;
@@ -64,6 +66,7 @@ pub struct AppState {
     pub event_feed: EventFeed,
     pub mqtt: Option<MqttHandle>,
     pub adsb: AdsbHandle,
+    pub mesh: MeshHandle,
     pub scan: crate::scan::ScanHandle,
 }
 
@@ -120,6 +123,11 @@ pub fn router(state: AppState) -> Router {
         .route("/adsb/device", post(adsb_routes::select_device))
         .route("/adsb/receiver", axum::routing::put(adsb_routes::set_receiver))
         .route("/adsb/database", post(adsb_routes::download_db))
+        .route("/mesh", get(mesh_routes::get).put(mesh_routes::set_config))
+        .route("/mesh/nodes", get(mesh_routes::nodes))
+        .route("/mesh/nodes/delete", post(mesh_routes::delete_nodes))
+        .route("/mesh/messages", get(mesh_routes::messages))
+        .route("/mesh/packets", get(mesh_routes::packets))
         .route("/sstv", get(sstv_routes::get_config).put(sstv_routes::set_config))
         .route("/schedule", get(schedule_routes::get).put(schedule_routes::set_config))
         .route("/schedule/rotation", axum::routing::put(schedule_routes::set_rotation))

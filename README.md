@@ -168,6 +168,11 @@ They are real, decodable transmissions:
   ADS-B receiver in **Settings → Receiver** (or start with `SDRD_ADSB_DEVICE=sim-v4`), or tune
   the main receiver to 1090 MHz at 2.4 MS/s, and open the **Aircraft** tab. Set the station
   location (Settings → Passes) near London for distances, range rings and the taxiing one.
+- **869.5 MHz (LoRa mesh):** three Meshtastic nodes on LongFast and three MeshCore nodes on
+  the UK/EU narrow preset, with positions, telemetry and channel chatter, one packet every
+  6 s. Open the **Mesh** tab and press *Tune to 869.575 MHz*. Two messages are on private
+  channels: add Meshtastic channel `SimClub` with PSK `b25haXItc2ltLWNsdWIhIQ==` and MeshCore
+  channel `#onair` (no key) under Settings → Decoders to read them.
 
 To watch what sdrd publishes to the dev MQTT broker:
 
@@ -341,6 +346,43 @@ emergencies come first, in red. Click an aircraft for its details.
 For registrations and types, an admin downloads the **aircraft database** (Mictronics, via
 tar1090-db, ~9 MB from GitHub) under Settings → Receiver. Distances and range need the station
 location (Settings → Passes).
+
+## Meshtastic and MeshCore
+
+sdrd has its own LoRa demodulator (no extra hardware or software), fed from the main receiver
+whenever it's tuned near **869.575 MHz** with 1 MS/s or more (the Mesh tab tunes there for
+admins; a rotation profile checks in now and then). Presets, all UK/EU 868 MHz:
+
+| Preset | Frequency | Modulation |
+|---|---|---|
+| Meshtastic LongFast (default) | 869.525 MHz | SF11, 250 kHz, CR 4/5 |
+| Meshtastic MediumFast | 869.525 MHz | SF9, 250 kHz, CR 4/5 |
+| Meshtastic ShortFast | 869.525 MHz | SF7, 250 kHz, CR 4/5 |
+| MeshCore UK/EU narrow | 869.618 MHz | SF8, 62.5 kHz, CR 4/8 |
+
+What can be read:
+
+- **Meshtastic:** the radio header (from, to, hops), then anything on a channel we have the key
+  for: the default channels (LongFast and the other preset names on the default key) always,
+  private channels once an admin adds their name and PSK (Settings → Decoders). Text, position,
+  node info (names, hardware, role) and telemetry (battery, voltage, channel use, uptime,
+  environment) are decoded; other ports are named. Direct messages on firmware 2.5+ use
+  public-key encryption: shown as encrypted, with who sent them to whom.
+- **MeshCore:** adverts (name, type, position, public key; signatures aren't checked), group
+  messages on Public and on channels an admin adds (a secret, or a `#hashtag` channel whose key
+  comes from its name), acks; direct messages, requests and responses show only the 1-byte
+  hashes of sender and recipient (with the node's name when only one known node matches).
+
+The **Mesh** tab has the nodes on a map and in a list (SNR, hops, battery, last heard; click
+one for its details), the channel messages, and a packet log with every packet heard
+(repeats of the same packet relayed again hidden by default; raw bytes on click; damaged
+packets in red). Messages on private channels, their keys and their raw bytes are shown to
+admins only, and what a node sends on a private channel doesn't update the node list. Nodes
+and messages are kept as long as other events.
+
+Not yet: a second dongle kept on 869 MHz (like the ADS-B one), other regions' frequencies,
+MQTT / Home Assistant for tracked nodes, and testing against real transmitters (the
+demodulator is checked against its own transmitter and the simulator only).
 
 ## SSTV
 

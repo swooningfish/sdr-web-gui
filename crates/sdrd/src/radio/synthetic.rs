@@ -6,7 +6,7 @@ use std::f64::consts::TAU;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::{kind_of, sim_aircraft, to_cu8, tuner_ranges, DeviceInfo, IqBlock, RadioSettings, SourceCtx};
+use super::{kind_of, sim_aircraft, sim_mesh, to_cu8, tuner_ranges, DeviceInfo, IqBlock, RadioSettings, SourceCtx};
 use crate::config::SourceKind;
 use crate::aprs::ax25;
 use crate::audio::{cw, rds};
@@ -45,6 +45,8 @@ enum Kind {
     M17 { period: f64 },
     /// An aircraft's ADS-B squitters on 1090 MHz (index into the flights).
     Aircraft { idx: usize },
+    /// LoRa mesh traffic on a preset (index into `mesh::PRESETS`).
+    Mesh { preset: usize },
 }
 
 /// Simulated SRD: carrier, FSK deviation, bit rate.
@@ -188,6 +190,8 @@ struct Emitter {
     keys: Vec<(f64, f64)>,
     rds: Vec<bool>,
     phase2: f64,
+    /// The LoRa packet on air.
+    lora: Option<crate::mesh::lora::Waveform>,
 }
 
 pub(super) struct SynthGen {
@@ -215,6 +219,7 @@ impl SynthGen {
             keys: Vec::new(),
             rds: Vec::new(),
             phase2: 0.0,
+            lora: None,
         };
         let nexus = |id, channel, base_c, humidity, first: f64| {
             let mut em = e(
@@ -270,6 +275,11 @@ impl SynthGen {
                 em
             }))
             .chain((0..DAB_MUXES.len()).map(|mux| e(DAB_MUXES[mux].0, 0.1, Kind::Dab { mux })))
+            .chain([(sim_mesh::MT_PRESET, 1.0), (sim_mesh::MC_PRESET, 1.0 + sim_mesh::MESHCORE_OFFSET)].map(|(preset, first)| {
+                let mut em = e(sim_mesh::freq_hz(preset), 0.03, Kind::Mesh { preset });
+                em.next = first;
+                em
+            }))
             .chain((0..sim_aircraft::FLIGHTS.len()).map(|idx| {
                 let mut em = e(1_090_000_000.0, 0.3, Kind::Aircraft { idx });
                 // Stagger the first squitters.
@@ -516,6 +526,36 @@ impl SynthGen {
                             None => 0.0,
                         };
                         (offset, weight > 0.0)
+                    }
+                    Kind::Mesh { preset } => {
+                        if t >= em.next {
+                            let late = t - em.next;
+                            em.next += sim_mesh::PERIOD * ((late / sim_mesh::PERIOD).floor() + 1.0);
+                            if late < 0.5 {
+                                let wall = wall_secs();
+                                let (raw, amp) = if preset == sim_mesh::MT_PRESET {
+                                    sim_mesh::meshtastic(em.seq, wall)
+                                } else {
+                                    sim_mesh::meshcore(em.seq, wall)
+                                };
+                                em.seq = em.seq.wrapping_add(1);
+                                em.amp = amp;
+                                em.lora = Some(crate::mesh::lora::Waveform::new(&crate::mesh::PRESETS[preset].params(), &raw));
+                                em.tx_start = t;
+                            }
+                        }
+                        // Chirps as complex baseband, from their exact phase.
+                        match em.lora.as_ref().and_then(|w| w.phase_at(t - em.tx_start)) {
+                            Some(c) => {
+                                let ph = TAU * c.fract();
+                                baseband = Some((ph.cos(), ph.sin()));
+                                (offset, true)
+                            }
+                            None => {
+                                em.lora = None;
+                                (offset, false)
+                            }
+                        }
                     }
                     Kind::Dab { mux } => {
                         // The multiplex's frame on a loop, read at our sample rate.

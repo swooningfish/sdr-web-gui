@@ -22,6 +22,7 @@
   import Dashboard from './components/Dashboard.svelte';
   import Aprs from './components/Aprs.svelte';
   import Aircraft from './components/Aircraft.svelte';
+  import Mesh from './components/Mesh.svelte';
   import Sstv from './components/Sstv.svelte';
   import Passes from './components/Passes.svelte';
   import ConfirmHost from './components/ConfirmHost.svelte';
@@ -31,7 +32,7 @@
   let radio = $state<RadioState | null>(null);
   let wsUp = $state(false);
   let view = $state<
-    'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'aircraft' | 'satellites' | 'settings' | 'profile'
+    'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'aircraft' | 'mesh' | 'satellites' | 'settings' | 'profile'
   >('spectrum');
   let settingsTab = $state<SettingsTab>('receiver');
   /** Which part of the Satellites page is showing. */
@@ -276,6 +277,7 @@
       <button type="button" class="tab" class:active={view === 'sensors'} onclick={() => (view = 'sensors')}>Sensors</button>
       <button type="button" class="tab" class:active={view === 'aprs'} onclick={() => (view = 'aprs')}>APRS</button>
       <button type="button" class="tab" class:active={view === 'aircraft'} onclick={() => (view = 'aircraft')}>Aircraft</button>
+      <button type="button" class="tab" class:active={view === 'mesh'} onclick={() => (view = 'mesh')}>Mesh</button>
       <button type="button" class="tab" class:active={view === 'satellites'} onclick={() => (view = 'satellites')}>Satellites</button>
       {#if isAdmin}
         <button type="button" class="tab" class:active={view === 'settings'} onclick={() => (view = 'settings')}>Settings</button>
@@ -367,6 +369,17 @@
         active={view === 'aircraft'}
         onsettings={(t) => {
           settingsTab = t;
+          view = 'settings';
+        }}
+      />
+    </div>
+    <div hidden={view !== 'mesh'}>
+      <Mesh
+        {isAdmin}
+        {radio}
+        active={view === 'mesh'}
+        onsettings={() => {
+          settingsTab = 'decoders';
           view = 'settings';
         }}
       />
