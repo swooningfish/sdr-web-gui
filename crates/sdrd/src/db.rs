@@ -154,6 +154,8 @@ pub async fn open(path: &Path) -> Result<SqlitePool> {
     // DAB service id (bookmarks and F-keys in DAB mode).
     add_columns(&pool, "bookmarks", &[("service_id", "INTEGER")]).await?;
     add_columns(&pool, "fkeys", &[("service_id", "INTEGER")]).await?;
+    // Receiver debug details for a decoded packet (JSON); NULL = none recorded.
+    add_columns(&pool, "events", &[("rx", "TEXT")]).await?;
     Ok(pool)
 }
 

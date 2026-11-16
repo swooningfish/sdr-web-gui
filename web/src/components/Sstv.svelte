@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { collapsible } from '../lib/actions';
   import { onMount } from 'svelte';
   import { api, type Device, type EventRow, type RadioState, type SstvInfo } from '../lib/api';
   import type { SstvRows } from '../lib/stream';
@@ -193,7 +194,7 @@
 <svelte:window onkeydown={(e) => selecting && e.key === 'Escape' && !dialog?.open && stopSelecting()} />
 
 <div class="sstv">
-  <section class="panel">
+  <section class="panel" use:collapsible={'sstv-status'}>
     <div class="head">
       <h2>SSTV</h2>
       {#if info}
@@ -248,7 +249,7 @@
     {/if}
   </section>
 
-  <section class="panel">
+  <section class="panel" use:collapsible={'sstv-gallery'}>
     <div class="head">
       <h2>Gallery</h2>
       <span class="gallery-tools small-text">

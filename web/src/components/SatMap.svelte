@@ -3,6 +3,7 @@
    * World map (2D) or globe (3D) of the scheduled satellites: where each is
    * now, the ground track ahead, the area that can hear it, and the night side.
    */
+  import { collapsible } from '../lib/actions';
   import { onMount, untrack } from 'svelte';
   import { api, type GroundTrack, type Observer, type Pass } from '../lib/api';
   import type { Globe } from '../lib/globe';
@@ -407,7 +408,7 @@
   });
 </script>
 
-<section class="panel satmap" class:full bind:this={card}>
+<section class="panel satmap" class:full bind:this={card} use:collapsible={'sat-map'}>
   <div class="head">
     <h2>Satellite map</h2>
     <div class="controls">

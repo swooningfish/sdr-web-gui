@@ -14,6 +14,9 @@ pub struct DecodedEvent {
     pub ts_ms: i64,
     pub freq_hz: Option<u64>,
     pub data: Map<String, Value>,
+    /// Receiver-side debug details (raw decoder output, tuning, IF, rates),
+    /// stored with the event but not published or used for de-duplication.
+    pub rx: Option<Map<String, Value>>,
 }
 
 impl DecodedEvent {
@@ -26,6 +29,12 @@ impl DecodedEvent {
             ts_ms: crate::db::now_ms(),
             freq_hz,
             data,
+            rx: None,
         }
+    }
+
+    pub fn with_rx(mut self, rx: Map<String, Value>) -> Self {
+        self.rx = Some(rx);
+        self
     }
 }

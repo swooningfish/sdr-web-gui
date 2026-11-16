@@ -345,6 +345,8 @@ export interface EventRow {
   rssi: number | null;
   snr: number | null;
   data: Json;
+  /** Receiver debug details (raw rtl_433 line, demod, IF, rates); null for older events. */
+  rx?: Json | null;
 }
 
 export interface FlexDecoder {

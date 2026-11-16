@@ -1,5 +1,6 @@
 <script lang="ts">
   /** ARISS SSTV events: the one in progress or coming up, and how the station will receive it. */
+  import { collapsible } from '../lib/actions';
   import type { ArissEvent, Pass, ScheduleInfo } from '../lib/api';
   import { ARISS_EVENTS_URL, ARISS_GALLERY_URL, ISS_NORAD, download, eventDuring, googleUrl, outlookUrl, passesIcs, utc } from '../lib/ariss';
   import { formatMHz, relTime } from '../lib/format';
@@ -63,7 +64,7 @@
 </script>
 
 {#if event || past.length}
-  <section class="panel">
+  <section class="panel" use:collapsible={'sat-ariss'}>
     <div class="head">
       <h2>ARISS SSTV events</h2>
       {#if ariss.checked_ms}<span class="muted small-text">Checked {relTime(ariss.checked_ms, now)}</span>{/if}
