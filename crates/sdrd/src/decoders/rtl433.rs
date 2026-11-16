@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -16,12 +16,14 @@ use tokio::sync::{broadcast, mpsc, watch};
 use super::DecodedEvent;
 use crate::db;
 use crate::dsp::ddc::{decimation_for, fits, Ddc};
-use crate::radio::{IqBlock, MAX_FREQ_HZ, MIN_FREQ_HZ};
+use crate::radio::{IqBlock, RadioState, MAX_FREQ_HZ, MIN_FREQ_HZ};
 
 pub const NAME: &str = "rtl_433";
 /// rtl_433's own default rate; we never go below it.
 const MIN_RATE: u32 = 250_000;
 const LOG_LINES: usize = 40;
+/// Longest raw rtl_433 line kept with an event for debugging.
+const RAW_MAX: usize = 4096;
 /// Flex decoder older versions shipped by default. It has no preamble or match
 /// and an 8 µs bit (2 samples at 250 kS/s), so it reports any FSK burst as raw
 /// bits under the name "TPMS". Real TPMS comes from rtl_433's built-in decoders.
@@ -203,6 +205,7 @@ pub async fn spawn(
     db: &sqlx::SqlitePool,
     path: String,
     iq_rx: broadcast::Receiver<Arc<IqBlock>>,
+    radio: watch::Receiver<RadioState>,
     events: mpsc::Sender<DecodedEvent>,
 ) -> anyhow::Result<Rtl433Handle> {
     let cfg = match db::get_setting::<Rtl433Config>(db, SETTINGS_KEY).await {
@@ -230,6 +233,8 @@ pub async fn spawn(
         cfg_rx,
         status: Arc::new(status_tx),
         events,
+        radio,
+        tuning: Arc::new(Mutex::new(Tuning::default())),
     };
     std::thread::Builder::new()
         .name("rtl_433".into())
@@ -260,6 +265,91 @@ struct Worker {
     cfg_rx: watch::Receiver<Rtl433Config>,
     status: Arc<watch::Sender<Rtl433Status>>,
     events: mpsc::Sender<DecodedEvent>,
+    radio: watch::Receiver<RadioState>,
+    /// How the stream now being fed to rtl_433 was cut from the capture.
+    tuning: Arc<Mutex<Tuning>>,
+}
+
+/// The receiver side of the stream handed to rtl_433, for packet debugging.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Tuning {
+    /// Radio centre frequency.
+    center_hz: u64,
+    /// Radio (capture) sample rate.
+    sdr_rate: u32,
+    decimation: u32,
+    /// Rate of the stream rtl_433 sees.
+    stream_rate: u32,
+}
+
+fn mhz_to_hz(v: Option<&Value>) -> Option<i64> {
+    v.and_then(Value::as_f64).map(|m| (m * 1e6).round() as i64)
+}
+
+/// Debug details for one decoded packet: the raw line, the demodulation and
+/// frequencies rtl_433 measured, and where that sits in our tuning (the IF is
+/// the signal's offset from the radio's centre frequency).
+fn rx_info(line: &str, data: &Map<String, Value>, nominal_hz: u64, t: Tuning, radio: Option<&RadioState>) -> Map<String, Value> {
+    use serde_json::json;
+    let mut rx = Map::new();
+    let mut raw = line.to_string();
+    if raw.len() > RAW_MAX {
+        let mut cut = RAW_MAX;
+        while !raw.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        raw.truncate(cut);
+        raw.push('…');
+    }
+    rx.insert("raw".into(), raw.into());
+    // rtl_433's own time for piped input: offset into the stream it was fed.
+    if let Some(v) = data.get("time") {
+        rx.insert("stream_time".into(), v.clone());
+    }
+    if let Some(v) = data.get("mod") {
+        rx.insert("demod".into(), v.clone());
+    }
+    if let Some(v) = data.get("protocol") {
+        rx.insert("protocol".into(), v.clone());
+    }
+    // FSK reports both tones (freq1/freq2); OOK/ASK reports one (freq).
+    let f1 = mhz_to_hz(data.get("freq1"));
+    let f2 = mhz_to_hz(data.get("freq2"));
+    let signal = f1.or_else(|| mhz_to_hz(data.get("freq")));
+    rx.insert("nominal_hz".into(), json!(nominal_hz));
+    if let Some(sig) = signal {
+        let sig = match (f1, f2) {
+            (Some(a), Some(b)) => (a + b) / 2,
+            _ => sig,
+        };
+        rx.insert("signal_hz".into(), json!(sig));
+        rx.insert("offset_hz".into(), json!(sig - nominal_hz as i64));
+        if t.center_hz > 0 {
+            rx.insert("if_hz".into(), json!(sig - t.center_hz as i64));
+        }
+    }
+    if let (Some(a), Some(b)) = (f1, f2) {
+        rx.insert("fsk_shift_hz".into(), json!((b - a).abs()));
+    }
+    if t.center_hz > 0 {
+        rx.insert("center_hz".into(), json!(t.center_hz));
+        rx.insert("ddc_offset_hz".into(), json!(nominal_hz as i64 - t.center_hz as i64));
+        rx.insert("sdr_rate".into(), json!(t.sdr_rate));
+        rx.insert("decimation".into(), json!(t.decimation));
+        rx.insert("stream_rate".into(), json!(t.stream_rate));
+    }
+    if let Some(radio) = radio {
+        // None = tuner AGC.
+        rx.insert("gain_db".into(), json!(radio.settings.gain_db));
+        rx.insert("ppm".into(), json!(radio.settings.ppm));
+        if let Some(d) = &radio.device {
+            rx.insert("device".into(), json!(d));
+        }
+        if let Some(d) = &radio.tuner {
+            rx.insert("tuner".into(), json!(d));
+        }
+    }
+    rx
 }
 
 fn push_log(status: &watch::Sender<Rtl433Status>, line: String) {
@@ -358,6 +448,13 @@ impl Worker {
                 let offset = cfg.frequency_hz as f64 - block.center_hz as f64;
                 ddc = Some((key, Ddc::new(block.sample_rate, offset, decim)));
             }
+            let t = Tuning {
+                center_hz: block.center_hz,
+                sdr_rate: block.sample_rate,
+                decimation: decim as u32,
+                stream_rate: rate,
+            };
+            *self.tuning.lock().unwrap() = t;
             let (_, d) = ddc.as_mut().unwrap();
             iq.clear();
             d.process_cu8(&block.data, &mut iq);
@@ -415,6 +512,8 @@ impl Worker {
         let status = self.status.clone();
         let events = self.events.clone();
         let freq_hz = cfg.frequency_hz;
+        let tuning = self.tuning.clone();
+        let radio = self.radio.clone();
         std::thread::Builder::new()
             .name("rtl_433-out".into())
             .spawn(move || {
@@ -423,7 +522,9 @@ impl Worker {
                     if line.starts_with('{') {
                         match serde_json::from_str::<Map<String, Value>>(&line) {
                             Ok(data) => {
-                                let ev = DecodedEvent::new(NAME, Some(freq_hz), data);
+                                let t = *tuning.lock().unwrap();
+                                let rx = rx_info(&line, &data, freq_hz, t, Some(&radio.borrow()));
+                                let ev = DecodedEvent::new(NAME, Some(freq_hz), data).with_rx(rx);
                                 if events.try_send(ev).is_err() {
                                     tracing::warn!("event queue full, dropping rtl_433 event");
                                 }
@@ -477,6 +578,23 @@ mod tests {
         assert!(a.windows(2).any(|w| w == ["-R", "-59"]));
         assert!(a.windows(2).any(|w| w[0] == "-X" && w[1].starts_with("n=TPMS")));
         assert!(!a.iter().any(|x| x.starts_with("n=off")));
+    }
+
+    #[test]
+    fn rx_info_works_out_if_and_offset() {
+        let line = r#"{"time":"@1.5s","model":"Toyota","id":"abc","mod":"FSK","freq1":433.9,"freq2":433.96,"protocol":88}"#;
+        let data: Map<String, Value> = serde_json::from_str(line).unwrap();
+        let t = Tuning { center_hz: 434_000_000, sdr_rate: 1_024_000, decimation: 4, stream_rate: 256_000 };
+        let rx = rx_info(line, &data, 433_920_000, t, None);
+        assert_eq!(rx["raw"], line);
+        assert_eq!(rx["demod"], "FSK");
+        assert_eq!(rx["stream_time"], "@1.5s");
+        assert_eq!(rx["signal_hz"], 433_930_000);
+        assert_eq!(rx["fsk_shift_hz"], 60_000);
+        assert_eq!(rx["offset_hz"], 10_000);
+        assert_eq!(rx["if_hz"], -70_000);
+        assert_eq!(rx["ddc_offset_hz"], -80_000);
+        assert_eq!(rx["stream_rate"], 256_000);
     }
 
     #[test]

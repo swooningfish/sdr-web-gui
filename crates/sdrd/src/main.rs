@@ -110,7 +110,13 @@ async fn serve() -> Result<()> {
     let (events_tx, events_rx) = tokio::sync::mpsc::channel(1024);
     // The scheduler publishes the Doppler shift of the satellite being tracked.
     let (doppler_tx, doppler_rx) = tokio::sync::watch::channel(None);
-    let rtl433 = decoders::rtl433::spawn(&db, cfg.rtl433_path.clone(), iq_tx.subscribe(), events_tx.clone()).await?;
+    let rtl433 = decoders::rtl433::spawn(
+        &db,
+        cfg.rtl433_path.clone(),
+        iq_tx.subscribe(),
+        radio.subscribe(),
+        events_tx.clone(),
+    ).await?;
     let aprs = decoders::aprs::spawn(
         &db,
         cfg.direwolf_path.clone(),

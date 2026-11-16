@@ -72,12 +72,19 @@ pub struct EventRow {
     pub snr: Option<f64>,
     #[serde(serialize_with = "raw_json")]
     pub data: String,
+    /// Receiver debug details (see `DecodedEvent::rx`), as JSON.
+    #[serde(serialize_with = "raw_json_opt")]
+    pub rx: Option<String>,
 }
 
 /// Emit a stored JSON string as JSON rather than as a quoted string.
 fn raw_json<S: serde::Serializer>(s: &str, ser: S) -> Result<S::Ok, S::Error> {
     let v: Value = serde_json::from_str(s).unwrap_or(Value::Null);
     v.serialize(ser)
+}
+
+fn raw_json_opt<S: serde::Serializer>(s: &Option<String>, ser: S) -> Result<S::Ok, S::Error> {
+    raw_json(s.as_deref().unwrap_or("null"), ser)
 }
 
 impl Device {
@@ -262,7 +269,7 @@ pub async fn device_events(
     limit: i64,
 ) -> Result<Vec<EventRow>> {
     Ok(sqlx::query_as(
-        "SELECT id, device_id, ts, freq_hz, rssi, snr, data FROM events \
+        "SELECT id, device_id, ts, freq_hz, rssi, snr, data, rx FROM events \
          WHERE device_id = ? AND ts >= ? AND ts < ? ORDER BY ts DESC LIMIT ?",
     )
     .bind(device_id)
@@ -275,7 +282,7 @@ pub async fn device_events(
 
 pub async fn recent_events(db: &SqlitePool, decoder: Option<&str>, limit: i64) -> Result<Vec<EventRow>> {
     Ok(sqlx::query_as(
-        "SELECT e.id, e.device_id, e.ts, e.freq_hz, e.rssi, e.snr, e.data FROM events e \
+        "SELECT e.id, e.device_id, e.ts, e.freq_hz, e.rssi, e.snr, e.data, e.rx FROM events e \
          JOIN devices d ON d.id = e.device_id WHERE (?1 IS NULL OR d.decoder = ?1) \
          ORDER BY e.ts DESC LIMIT ?2",
     )
@@ -303,20 +310,20 @@ pub async fn purge(db: &SqlitePool, days: i64) -> Result<(u64, u64)> {
     Ok((e.rows_affected(), d.rows_affected()))
 }
 
-/// (id, device_id, ts, freq_hz, rssi, snr, data, decoder)
-type EventDecoderRow = (i64, i64, i64, Option<i64>, Option<f64>, Option<f64>, String, String);
+/// (id, device_id, ts, freq_hz, rssi, snr, data, rx, decoder)
+type EventDecoderRow = (i64, i64, i64, Option<i64>, Option<f64>, Option<f64>, String, Option<String>, String);
 
 /// An event and the decoder of its device.
 pub async fn get_event(db: &SqlitePool, id: i64) -> Result<Option<(EventRow, String)>> {
     let row: Option<EventDecoderRow> = sqlx::query_as(
-        "SELECT e.id, e.device_id, e.ts, e.freq_hz, e.rssi, e.snr, e.data, d.decoder \
+        "SELECT e.id, e.device_id, e.ts, e.freq_hz, e.rssi, e.snr, e.data, e.rx, d.decoder \
          FROM events e JOIN devices d ON d.id = e.device_id WHERE e.id = ?",
     )
     .bind(id)
     .fetch_optional(db)
     .await?;
-    Ok(row.map(|(id, device_id, ts, freq_hz, rssi, snr, data, decoder)| {
-        (EventRow { id, device_id, ts, freq_hz, rssi, snr, data }, decoder)
+    Ok(row.map(|(id, device_id, ts, freq_hz, rssi, snr, data, rx, decoder)| {
+        (EventRow { id, device_id, ts, freq_hz, rssi, snr, data, rx }, decoder)
     }))
 }
 
@@ -365,8 +372,9 @@ async fn store(db: &SqlitePool, ev: &DecodedEvent) -> Result<(Device, EventRow)>
     let rssi = ev.data.get("rssi").and_then(Value::as_f64);
     let snr = ev.data.get("snr").and_then(Value::as_f64);
     let freq_hz = ev.freq_hz.map(|f| f as i64);
+    let rx = ev.rx.as_ref().map(|m| Value::Object(m.clone()).to_string());
     let id = sqlx::query(
-        "INSERT INTO events (device_id, ts, freq_hz, rssi, snr, data) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO events (device_id, ts, freq_hz, rssi, snr, data, rx) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(device.id)
     .bind(ev.ts_ms)
@@ -374,6 +382,7 @@ async fn store(db: &SqlitePool, ev: &DecodedEvent) -> Result<(Device, EventRow)>
     .bind(rssi)
     .bind(snr)
     .bind(&data)
+    .bind(&rx)
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
@@ -386,6 +395,7 @@ async fn store(db: &SqlitePool, ev: &DecodedEvent) -> Result<(Device, EventRow)>
         rssi,
         snr,
         data,
+        rx,
     };
     Ok((device, row))
 }

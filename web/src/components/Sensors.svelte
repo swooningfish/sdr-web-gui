@@ -4,6 +4,7 @@
   import { CHART_FIELDS, deviceLabel, deviceTitle, readings, series } from '../lib/sensors';
   import TimeChart from './TimeChart.svelte';
   import DeviceIdent from './DeviceIdent.svelte';
+  import PacketDebug from './PacketDebug.svelte';
   import { unsupported } from '../lib/coverage';
   import { formatMHz, formatRate, relTime } from '../lib/format';
   import { Selection } from '../lib/selection.svelte';
@@ -24,6 +25,11 @@
   let trackedOnly = $state(false);
   let selectedId = $state<number | null>(null);
   let history = $state<EventRow[]>([]);
+  /** Packet picked from the history for the debug view; null = the latest. */
+  let inspectId = $state<number | null>(null);
+  const inspected = $derived(
+    (inspectId !== null ? history.find((e) => e.id === inspectId) : undefined) ?? history[0] ?? null,
+  );
   const RANGES = [
     { label: '1 h', ms: 3600_000 },
     { label: '24 h', ms: 24 * 3600_000 },
@@ -200,6 +206,7 @@
     const id = selectedId;
     if (id === null) return;
     history = [];
+    inspectId = null;
     try {
       const h = await api.deviceEvents(id, { since: Date.now() - rangeMs, limit: 10_000 });
       if (selectedId === id) history = h;
@@ -472,7 +479,11 @@
             <table>
               <tbody>
                 {#each history.slice(0, 200) as ev (ev.id)}
-                  <tr>
+                  <tr
+                    class:inspect={inspectId === ev.id}
+                    title="Show this packet in Packet debug"
+                    onclick={() => (inspectId = inspectId === ev.id ? null : ev.id)}
+                  >
                     <td class="nowrap muted" title={new Date(ev.ts).toLocaleString()}>{time(ev.ts)}</td>
                     <td>{readings(ev.data).join(' · ')}</td>
                   </tr>
@@ -480,6 +491,7 @@
               </tbody>
             </table>
           </div>
+          <PacketDebug event={inspected} latest={inspectId === null || inspected?.id !== inspectId} />
         </section>
       {:else}
         <section class="panel">
@@ -714,7 +726,10 @@
   }
   .history td {
     font-size: 13px;
-    cursor: default;
+    cursor: pointer;
+  }
+  .history tr.inspect td {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
   }
   .feed {
     list-style: none;
