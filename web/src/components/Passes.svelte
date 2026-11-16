@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { collapsible } from '../lib/actions';
   import { onMount } from 'svelte';
   import { api, type Device, type EventRow, type Pass, type RadioState, type ScheduleInfo } from '../lib/api';
   import { unsupported } from '../lib/coverage';
@@ -108,7 +109,7 @@
 </script>
 
 <div class="passes">
-  <section class="panel">
+  <section class="panel" use:collapsible={'sat-passes'}>
     <div class="head">
       <h2>Passes</h2>
       {#if st}
@@ -206,7 +207,7 @@
     <SatMap observer={st.location} focus={active?.satellite ?? shown?.satellite ?? null} pass={active ? null : shown} />
   {/if}
 
-  <section class="panel">
+  <section class="panel" use:collapsible={'sat-upcoming'}>
     <h2>Upcoming passes</h2>
     {#if st?.passes.length}
       <div class="table-wrap">
@@ -243,7 +244,7 @@
     {/if}
   </section>
 
-  <section class="panel">
+  <section class="panel" use:collapsible={'sat-recordings'}>
     <h2>Recordings</h2>
     {#if recordings.length === 0}
       <p class="muted small-text">Each pass is logged here, with its audio when recording is on.</p>
