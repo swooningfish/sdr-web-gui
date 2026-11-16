@@ -4,7 +4,7 @@
   import { Stream } from './lib/stream';
   import { formatMHz } from './lib/format';
   import Login from './components/Login.svelte';
-  import Settings, { type SettingsTab } from './components/Settings.svelte';
+  import Settings from './components/Settings.svelte';
   import Profile from './components/Profile.svelte';
   import Waterfall from './components/Waterfall.svelte';
   import ReceiverBar from './components/ReceiverBar.svelte';
@@ -26,17 +26,16 @@
   import Sstv from './components/Sstv.svelte';
   import Passes from './components/Passes.svelte';
   import ConfirmHost from './components/ConfirmHost.svelte';
+  import { parseRoute, routeHash, routeTitle, type SatTab, type SettingsTab, type View } from './lib/route';
 
   let user = $state<User | null>(null);
   let checking = $state(true);
   let radio = $state<RadioState | null>(null);
   let wsUp = $state(false);
-  let view = $state<
-    'spectrum' | 'dashboard' | 'sensors' | 'aprs' | 'aircraft' | 'mesh' | 'satellites' | 'settings' | 'profile'
-  >('spectrum');
+  let view = $state<View>('spectrum');
   let settingsTab = $state<SettingsTab>('receiver');
   /** Which part of the Satellites page is showing. */
-  let satTab = $state<'passes' | 'sstv'>('passes');
+  let satTab = $state<SatTab>('passes');
   let waterfall = $state<ReturnType<typeof Waterfall> | undefined>();
   let harmonics = $state<ReturnType<typeof HarmonicsPanel> | undefined>();
   let listen = $state<Listen>({ on: false, hz: 145_800_000, mode: 'nfm' });
@@ -60,6 +59,47 @@
   let switchedFor: number | null = null;
 
   const isAdmin = $derived(user?.role === 'admin');
+
+  /** Show the page named in the URL's hash (typed, linked, or back/forward). */
+  function applyRoute() {
+    const r = parseRoute(location.hash);
+    if (!r) {
+      // Not a page: put back the one that's showing.
+      if (user) history.replaceState(null, '', routeHash(view, satTab, settingsTab));
+      return;
+    }
+    view = r.view;
+    if (r.satTab) satTab = r.satTab;
+    if (r.settingsTab) settingsTab = r.settingsTab;
+  }
+  applyRoute();
+
+  onMount(() => {
+    window.addEventListener('hashchange', applyRoute);
+    return () => window.removeEventListener('hashchange', applyRoute);
+  });
+
+  // Keep the hash (and the tab's title) in step with the page, adding a
+  // history entry per change so back and forward move between pages. Left
+  // alone while signed out, so signing in lands on the page that was linked.
+  $effect(() => {
+    if (!user) return;
+    // Settings are admin only.
+    let redirected = false;
+    if (view === 'settings' && !isAdmin) {
+      view = 'spectrum';
+      redirected = true;
+    }
+    const hash = routeHash(view, satTab, settingsTab);
+    document.title = routeTitle(view);
+    if (location.hash === hash) return;
+    // A missing, unknown, shortened (`#satellites`) or refused hash is
+    // corrected in place: stacking it would make Back bounce straight here.
+    const r = parseRoute(location.hash);
+    const same = r && routeHash(r.view, r.satTab ?? satTab, r.settingsTab ?? settingsTab) === hash;
+    if (r && !same && !redirected) history.pushState(null, '', hash);
+    else history.replaceState(null, '', hash);
+  });
 
   onMount(async () => {
     try {
@@ -255,7 +295,12 @@
 {#if checking}
   <main class="center muted">Loading…</main>
 {:else if !user}
-  <Login onlogin={(u) => (user = u)} />
+  <Login
+    onlogin={(u) => {
+      applyRoute();
+      user = u;
+    }}
+  />
 {:else}
   <header>
     <div class="brand">

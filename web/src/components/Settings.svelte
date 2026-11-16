@@ -14,14 +14,7 @@
   import Users from './Users.svelte';
   import SystemInfo from './SystemInfo.svelte';
 
-  export type SettingsTab =
-    | 'receiver'
-    | 'decoders'
-    | 'rotation'
-    | 'passes'
-    | 'integrations'
-    | 'users'
-    | 'system';
+  import type { SettingsTab } from '../lib/route';
 
   let {
     radio,
