@@ -279,6 +279,8 @@ pub struct Frame {
     pub snr_db: f32,
     /// Frequency offset of the transmitter, Hz.
     pub offset_hz: f32,
+    /// Sync word the packet was received on; only read by tests for now.
+    #[allow(dead_code)]
     pub sync: u8,
 }
 
