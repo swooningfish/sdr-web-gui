@@ -158,6 +158,11 @@ impl Rtl433Handle {
         self.raw.get(key)
     }
 
+    /// Latest bursts and "log next burst" requests, shared with `events::run`.
+    pub fn raw_store(&self) -> RawStore {
+        self.raw.clone()
+    }
+
     pub async fn set_config(&self, db: &sqlx::SqlitePool, cfg: Rtl433Config) -> anyhow::Result<()> {
         db::set_setting(db, SETTINGS_KEY, &cfg).await?;
         self.cfg_tx.send_replace(cfg);
@@ -563,7 +568,9 @@ impl Worker {
                                 if let Some(mut sig) = sig {
                                     sig.ts = ev.ts_ms;
                                     rx.insert("signal".into(), true.into());
-                                    raw.insert(crate::events::identity(&ev).0, sig);
+                                    let sig = Arc::new(sig);
+                                    raw.insert(crate::events::identity(&ev).0, sig.clone());
+                                    ev.signal = Some(sig);
                                 }
                                 ev = ev.with_rx(rx);
                                 if events.try_send(ev).is_err() {

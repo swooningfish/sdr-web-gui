@@ -142,6 +142,100 @@ pub async fn device_raw_iq(
         .into_response())
 }
 
+async fn device_by_id(state: &AppState, s: &Session, id: i64) -> Result<Device, ApiError> {
+    let d = events::get_device(&state.db, id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(not_found)?;
+    check_decoder(state, s, Some(&d.decoder))?;
+    Ok(d)
+}
+
+/// Whether the device's next burst will be saved with its event.
+pub async fn get_burst_log(
+    State(state): State<AppState>,
+    AuthUser(s): AuthUser,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
+    let d = device_by_id(&state, &s, id).await?;
+    Ok(Json(json!({ "armed": state.rtl433.raw_store().is_armed(&d.key) })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BurstLogReq {
+    armed: bool,
+}
+
+pub async fn set_burst_log(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Path(id): Path<i64>,
+    Json(req): Json<BurstLogReq>,
+) -> Result<Json<Value>, ApiError> {
+    let d = device_by_id(&state, &admin, id).await?;
+    if d.decoder != crate::decoders::rtl433::NAME {
+        return Err(ApiError::bad_request("only rtl_433 devices have bursts to log"));
+    }
+    state.rtl433.raw_store().arm(&d.key, req.armed);
+    tracing::info!(by = %admin.user.username, device = %d.key, armed = req.armed, "log next burst");
+    Ok(Json(json!({ "armed": req.armed })))
+}
+
+async fn saved_burst(state: &AppState, s: &Session, event_id: i64) -> Result<(String, Vec<u8>), ApiError> {
+    let (_, decoder) = events::get_event(&state.db, event_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "no such event"))?;
+    check_decoder(state, s, Some(&decoder))?;
+    events::get_burst(&state.db, event_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "no burst saved with this event"))
+}
+
+pub async fn event_burst(
+    State(state): State<AppState>,
+    AuthUser(s): AuthUser,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
+    let (meta, _) = saved_burst(&state, &s, id).await?;
+    Ok(Json(serde_json::from_str(&meta).map_err(ApiError::internal)?))
+}
+
+pub async fn event_burst_iq(
+    State(state): State<AppState>,
+    AuthUser(s): AuthUser,
+    Path(id): Path<i64>,
+) -> Result<Response, ApiError> {
+    let (meta, iq) = saved_burst(&state, &s, id).await?;
+    let name = serde_json::from_str::<Value>(&meta)
+        .ok()
+        .and_then(|m| m["file_name"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "burst.cs8".into());
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\"")),
+            (header::CACHE_CONTROL, "private, max-age=604800, immutable".to_string()),
+        ],
+        iq,
+    )
+        .into_response())
+}
+
+pub async fn delete_event_burst(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
+    if !events::delete_burst(&state.db, id).await.map_err(ApiError::internal)? {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "no burst saved with this event"));
+    }
+    tracing::info!(by = %admin.user.username, event = id, "saved burst deleted");
+    Ok(Json(json!({ "ok": true })))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DevicePatch {

@@ -161,7 +161,13 @@ async fn serve() -> Result<()> {
     .await?;
     let mesh = mesh::spawn(&db, radio.clone(), iq_tx.subscribe()).await?;
     let (event_feed, _) = broadcast::channel(256);
-    tokio::spawn(events::run(db.clone(), events_rx, event_feed.clone(), mqtt.clone()));
+    tokio::spawn(events::run(
+        db.clone(),
+        events_rx,
+        event_feed.clone(),
+        mqtt.clone(),
+        rtl433.raw_store(),
+    ));
 
     // Hourly cleanup of expired sessions and old events.
     {

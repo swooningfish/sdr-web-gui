@@ -53,6 +53,12 @@ CREATE TABLE IF NOT EXISTS events (
     data      TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_device_ts ON events(device_id, ts);
+-- Radio bursts saved on request ("log next burst"): RawSignal JSON and cs8 IQ.
+CREATE TABLE IF NOT EXISTS bursts (
+    event_id INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+    meta     TEXT NOT NULL,
+    iq       BLOB NOT NULL
+);
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
 CREATE TABLE IF NOT EXISTS bookmarks (
     id         INTEGER PRIMARY KEY,

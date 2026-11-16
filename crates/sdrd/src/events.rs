@@ -12,6 +12,7 @@ use sqlx::SqlitePool;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::db;
+use crate::decoders::burst::{RawSignal, RawStore};
 use crate::decoders::DecodedEvent;
 use crate::mqtt::MqttHandle;
 
@@ -75,6 +76,8 @@ pub struct EventRow {
     /// Receiver debug details (see `DecodedEvent::rx`), as JSON.
     #[serde(serialize_with = "raw_json_opt")]
     pub rx: Option<String>,
+    /// A radio burst was saved with this event (see `get_burst`).
+    pub burst: bool,
 }
 
 /// Emit a stored JSON string as JSON rather than as a quoted string.
@@ -269,7 +272,8 @@ pub async fn device_events(
     limit: i64,
 ) -> Result<Vec<EventRow>> {
     Ok(sqlx::query_as(
-        "SELECT id, device_id, ts, freq_hz, rssi, snr, data, rx FROM events \
+        "SELECT id, device_id, ts, freq_hz, rssi, snr, data, rx, \
+         EXISTS(SELECT 1 FROM bursts b WHERE b.event_id = events.id) AS burst FROM events \
          WHERE device_id = ? AND ts >= ? AND ts < ? ORDER BY ts DESC LIMIT ?",
     )
     .bind(device_id)
@@ -282,7 +286,8 @@ pub async fn device_events(
 
 pub async fn recent_events(db: &SqlitePool, decoder: Option<&str>, limit: i64) -> Result<Vec<EventRow>> {
     Ok(sqlx::query_as(
-        "SELECT e.id, e.device_id, e.ts, e.freq_hz, e.rssi, e.snr, e.data, e.rx FROM events e \
+        "SELECT e.id, e.device_id, e.ts, e.freq_hz, e.rssi, e.snr, e.data, e.rx, \
+         EXISTS(SELECT 1 FROM bursts b WHERE b.event_id = e.id) AS burst FROM events e \
          JOIN devices d ON d.id = e.device_id WHERE (?1 IS NULL OR d.decoder = ?1) \
          ORDER BY e.ts DESC LIMIT ?2",
     )
@@ -310,25 +315,53 @@ pub async fn purge(db: &SqlitePool, days: i64) -> Result<(u64, u64)> {
     Ok((e.rows_affected(), d.rows_affected()))
 }
 
-/// (id, device_id, ts, freq_hz, rssi, snr, data, rx, decoder)
-type EventDecoderRow = (i64, i64, i64, Option<i64>, Option<f64>, Option<f64>, String, Option<String>, String);
+/// (id, device_id, ts, freq_hz, rssi, snr, data, rx, burst, decoder)
+type EventDecoderRow = (i64, i64, i64, Option<i64>, Option<f64>, Option<f64>, String, Option<String>, bool, String);
 
 /// An event and the decoder of its device.
 pub async fn get_event(db: &SqlitePool, id: i64) -> Result<Option<(EventRow, String)>> {
     let row: Option<EventDecoderRow> = sqlx::query_as(
-        "SELECT e.id, e.device_id, e.ts, e.freq_hz, e.rssi, e.snr, e.data, e.rx, d.decoder \
+        "SELECT e.id, e.device_id, e.ts, e.freq_hz, e.rssi, e.snr, e.data, e.rx, \
+         EXISTS(SELECT 1 FROM bursts b WHERE b.event_id = e.id), d.decoder \
          FROM events e JOIN devices d ON d.id = e.device_id WHERE e.id = ?",
     )
     .bind(id)
     .fetch_optional(db)
     .await?;
-    Ok(row.map(|(id, device_id, ts, freq_hz, rssi, snr, data, rx, decoder)| {
-        (EventRow { id, device_id, ts, freq_hz, rssi, snr, data, rx }, decoder)
+    Ok(row.map(|(id, device_id, ts, freq_hz, rssi, snr, data, rx, burst, decoder)| {
+        (EventRow { id, device_id, ts, freq_hz, rssi, snr, data, rx, burst }, decoder)
     }))
 }
 
 pub async fn delete_event(db: &SqlitePool, id: i64) -> Result<bool> {
     let r = sqlx::query("DELETE FROM events WHERE id = ?").bind(id).execute(db).await?;
+    Ok(r.rows_affected() > 0)
+}
+
+/// Keep a radio burst with its event (removed with the event or device).
+pub async fn save_burst(db: &SqlitePool, event_id: i64, sig: &RawSignal) -> Result<()> {
+    let mut meta = serde_json::to_value(sig)?;
+    meta["file_name"] = sig.file_name().into();
+    let iq: Vec<u8> = sig.iq.iter().map(|b| *b as u8).collect();
+    sqlx::query("INSERT OR REPLACE INTO bursts (event_id, meta, iq) VALUES (?, ?, ?)")
+        .bind(event_id)
+        .bind(meta.to_string())
+        .bind(iq)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// A saved burst: its description (JSON) and cs8 IQ.
+pub async fn get_burst(db: &SqlitePool, event_id: i64) -> Result<Option<(String, Vec<u8>)>> {
+    Ok(sqlx::query_as("SELECT meta, iq FROM bursts WHERE event_id = ?")
+        .bind(event_id)
+        .fetch_optional(db)
+        .await?)
+}
+
+pub async fn delete_burst(db: &SqlitePool, event_id: i64) -> Result<bool> {
+    let r = sqlx::query("DELETE FROM bursts WHERE event_id = ?").bind(event_id).execute(db).await?;
     Ok(r.rows_affected() > 0)
 }
 
@@ -396,6 +429,7 @@ async fn store(db: &SqlitePool, ev: &DecodedEvent) -> Result<(Device, EventRow)>
         snr,
         data,
         rx,
+        burst: false,
     };
     Ok((device, row))
 }
@@ -417,7 +451,13 @@ pub fn ws_message(device: &Device, event: &EventRow) -> FeedMsg {
     }
 }
 
-pub async fn run(db: SqlitePool, mut rx: mpsc::Receiver<DecodedEvent>, feed: EventFeed, mqtt: Option<MqttHandle>) {
+pub async fn run(
+    db: SqlitePool,
+    mut rx: mpsc::Receiver<DecodedEvent>,
+    feed: EventFeed,
+    mqtt: Option<MqttHandle>,
+    raw: RawStore,
+) {
     let mut recent: HashMap<String, (Instant, String)> = HashMap::new();
     while let Some(ev) = rx.recv().await {
         let (key, ..) = identity(&ev);
@@ -435,8 +475,19 @@ pub async fn run(db: SqlitePool, mut rx: mpsc::Receiver<DecodedEvent>, feed: Eve
         }
 
         match store(&db, &ev).await {
-            Ok((device, row)) => {
+            Ok((device, mut row)) => {
                 tracing::debug!(device = %device.key, "event");
+                if let Some(sig) = &ev.signal {
+                    if raw.take_armed(&device.key) {
+                        match save_burst(&db, row.id, sig).await {
+                            Ok(()) => {
+                                row.burst = true;
+                                tracing::info!(device = %device.key, event = row.id, "burst logged");
+                            }
+                            Err(e) => tracing::warn!("saving burst failed: {e}"),
+                        }
+                    }
+                }
                 let _ = feed.send(ws_message(&device, &row));
                 if let Some(m) = &mqtt {
                     m.publish_event(&device, &ev);
@@ -501,7 +552,23 @@ mod tests {
         set_on_dashboard(&db, t2.id, false).await.unwrap();
         assert_eq!(ids(dashboard_devices(&db).await.unwrap()), vec![t1.id]);
 
+        // A saved burst comes back with its event and goes with it.
+        let c = num_complex::Complex32::new;
+        let mut iq = vec![c(0.01, 0.0); 100];
+        iq.extend(std::iter::repeat_n(c(1.0, 0.0), 500));
+        iq.extend(std::iter::repeat_n(c(0.01, 0.0), 2000));
+        let sig =
+            crate::decoders::burst::extract(&iq, 0, 100, 250_000, 433_920_000, Some("ASK"), e2.ts).unwrap();
+        save_burst(&db, e2.id, &sig).await.unwrap();
+        let (meta, iq) = get_burst(&db, e2.id).await.unwrap().unwrap();
+        assert_eq!(iq.len(), sig.iq_samples * 2);
+        assert!(meta.contains("g001_433.92M_250k.cs8"));
+        let evs = device_events(&db, d1.id, None, None, 10).await.unwrap();
+        assert_eq!(evs.iter().filter(|e| e.burst).count(), 1);
+        assert!(get_event(&db, e2.id).await.unwrap().unwrap().0.burst);
+
         assert!(delete_device(&db, d1.id).await.unwrap());
+        assert!(get_burst(&db, e2.id).await.unwrap().is_none()); // cascaded
         for d in [t1.id, t2.id] {
             delete_device(&db, d).await.unwrap();
         }

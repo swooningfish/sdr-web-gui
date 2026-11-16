@@ -2,10 +2,28 @@
   import { api, type EventRow, type Json, type RawSignal } from '../lib/api';
   import { formatMHz, formatRate } from '../lib/format';
   import { pulseText } from '../lib/sensors';
+  import { confirmAsk } from '../lib/confirm.svelte';
   import SignalView from './SignalView.svelte';
 
   /** The packet to show (newest unless one was picked from the history). */
-  let { event, latest, deviceId }: { event: EventRow | null; latest: boolean; deviceId: number } = $props();
+  let {
+    event,
+    latest,
+    deviceId,
+    isAdmin,
+    armed,
+    onArm,
+    onBurstDeleted,
+  }: {
+    event: EventRow | null;
+    latest: boolean;
+    deviceId: number;
+    isAdmin: boolean;
+    /** The device's next burst will be saved with its event. */
+    armed: boolean;
+    onArm: (on: boolean) => void;
+    onBurstDeleted: (eventId: number) => void;
+  } = $props();
 
   const OPEN_PREF = 'sdr.sensors.debug';
   let open = $state(
@@ -26,32 +44,52 @@
     }
   }
 
-  // The radio signal is kept (in memory) for each device's latest packet only.
+  // A burst saved with the event (logged on request) comes from the database;
+  // otherwise only each device's latest packet has one, in memory.
   let sig = $state<RawSignal | null>(null);
+  let sigKey = $state('');
   let sigState = $state<'none' | 'loading' | 'ok' | 'gone'>('none');
+  const saved = $derived(!!event?.burst);
+  const iqHref = $derived(
+    event?.burst ? `/api/events/${event.id}/burst.cs8` : `/api/devices/${deviceId}/raw.cs8`,
+  );
   $effect(() => {
     const ev = event;
     const id = deviceId;
-    if (!open || !ev?.rx || ev.rx.signal !== true) {
+    if (!open || !ev || (!ev.burst && ev.rx?.signal !== true)) {
       sigState = 'none';
       return;
     }
-    if (sig && sig.ts === ev.ts) {
+    const key = ev.burst ? `saved:${ev.id}` : `mem:${id}:${ev.ts}`;
+    if (sig && sigKey === key) {
       sigState = 'ok';
       return;
     }
     sigState = 'loading';
-    api
-      .deviceRaw(id)
+    (ev.burst ? api.eventBurst(ev.id) : api.deviceRaw(id))
       .then((s) => {
-        if (event?.ts !== ev.ts) return;
+        if (event?.id !== ev.id) return;
         sig = s;
-        sigState = s.ts === ev.ts ? 'ok' : 'gone';
+        sigKey = key;
+        sigState = ev.burst || s.ts === ev.ts ? 'ok' : 'gone';
       })
       .catch(() => {
-        if (event?.ts === ev.ts) sigState = 'gone';
+        if (event?.id === ev.id) sigState = 'gone';
       });
   });
+
+  async function deleteSaved() {
+    const ev = event;
+    if (!ev?.burst) return;
+    if (!(await confirmAsk('Delete the radio burst saved with this packet?', { ok: 'Delete', danger: true })))
+      return;
+    try {
+      await api.deleteEventBurst(ev.id);
+      onBurstDeleted(ev.id);
+    } catch {
+      /* stays listed; nothing else to do */
+    }
+  }
 
   const canCopy = typeof navigator !== 'undefined' && !!navigator.clipboard;
   let copied = $state(false);
@@ -149,13 +187,36 @@
         <dd>{v}</dd>
       {/each}
     </dl>
-    <h4>Radio signal</h4>
+    <div class="sig-head">
+      <h4>Radio signal</h4>
+      {#if saved}<span class="badge">saved</span>{/if}
+      <span class="grow"></span>
+      {#if isAdmin}
+        {#if armed}
+          <span class="small-text waiting">Waiting for the next burst…</span>
+          <button type="button" class="small" onclick={() => onArm(false)}>Cancel</button>
+        {:else}
+          <button
+            type="button"
+            class="small"
+            title="Save the next packet's burst (IQ and pulses) with it, kept like the rest of its history"
+            onclick={() => onArm(true)}>Log next burst</button
+          >
+        {/if}
+        {#if saved}
+          <button type="button" class="small danger" onclick={deleteSaved}>Delete saved</button>
+        {/if}
+      {/if}
+    </div>
     {#if sigState === 'ok' && sig}
-      <SignalView {sig} {deviceId} />
+      <SignalView {sig} href={iqHref} />
     {:else if sigState === 'loading'}
       <p class="muted small-text">Loading the captured signal…</p>
     {:else if sigState === 'gone'}
-      <p class="muted small-text">The radio signal is only kept for each device's latest packet, until sdrd restarts.</p>
+      <p class="muted small-text">
+        Only each device's latest packet keeps its signal (until sdrd restarts), unless it was saved with
+        "Log next burst".
+      </p>
     {:else}
       <p class="muted small-text">No radio signal was captured for this packet.</p>
     {/if}
@@ -199,8 +260,28 @@
     font-size: 15px;
   }
   h4 {
-    margin: 12px 0 4px;
+    margin: 0;
     font-size: 14px;
+  }
+  .sig-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 12px 0 4px;
+  }
+  .grow {
+    flex: 1;
+  }
+  .badge {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--ok) 25%, transparent);
+    color: var(--ok);
+  }
+  .waiting {
+    color: var(--warn);
   }
   dl {
     display: grid;

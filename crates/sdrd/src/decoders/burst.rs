@@ -8,7 +8,7 @@
 //! as a `.cs8` file that rtl_433 can replay (`rtl_433 -r file.cs8 -A`).
 //! Only the latest burst per device is kept, in memory.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f32::consts::PI;
 use std::sync::{Arc, Mutex};
 
@@ -307,23 +307,46 @@ fn runs(levels: &[bool], us: f64, min: usize) -> (Vec<i32>, bool) {
     (out, truncated)
 }
 
-/// The latest burst of each device, keyed by device key.
+/// The latest burst of each device, keyed by device key, and the devices
+/// whose next burst should be saved with its event ("log next burst").
 #[derive(Clone, Default)]
-pub struct RawStore(Arc<Mutex<HashMap<String, Arc<RawSignal>>>>);
+pub struct RawStore {
+    latest: Arc<Mutex<HashMap<String, Arc<RawSignal>>>>,
+    armed: Arc<Mutex<HashSet<String>>>,
+}
 
 impl RawStore {
-    pub fn insert(&self, key: String, sig: RawSignal) {
-        let mut m = self.0.lock().unwrap();
+    pub fn insert(&self, key: String, sig: Arc<RawSignal>) {
+        let mut m = self.latest.lock().unwrap();
         if m.len() >= MAX_DEVICES && !m.contains_key(&key) {
             if let Some(old) = m.iter().min_by_key(|(_, s)| s.ts).map(|(k, _)| k.clone()) {
                 m.remove(&old);
             }
         }
-        m.insert(key, Arc::new(sig));
+        m.insert(key, sig);
     }
 
     pub fn get(&self, key: &str) -> Option<Arc<RawSignal>> {
-        self.0.lock().unwrap().get(key).cloned()
+        self.latest.lock().unwrap().get(key).cloned()
+    }
+
+    /// Save (or stop waiting to save) the device's next burst.
+    pub fn arm(&self, key: &str, on: bool) {
+        let mut a = self.armed.lock().unwrap();
+        if on {
+            a.insert(key.to_string());
+        } else {
+            a.remove(key);
+        }
+    }
+
+    pub fn is_armed(&self, key: &str) -> bool {
+        self.armed.lock().unwrap().contains(key)
+    }
+
+    /// True (once) if the device's next burst was to be saved.
+    pub fn take_armed(&self, key: &str) -> bool {
+        self.armed.lock().unwrap().remove(key)
     }
 }
 
@@ -410,6 +433,19 @@ mod tests {
         let f: Vec<f64> = sig.freq_khz.iter().flatten().cloned().collect();
         assert!(f.iter().any(|k| (*k - 40.0).abs() < 1.0));
         assert!(f.iter().any(|k| (*k + 40.0).abs() < 1.0));
+    }
+
+    #[test]
+    fn arming_fires_once() {
+        let s = RawStore::default();
+        assert!(!s.take_armed("k"));
+        s.arm("k", true);
+        assert!(s.is_armed("k"));
+        assert!(s.take_armed("k"));
+        assert!(!s.take_armed("k"));
+        s.arm("k", true);
+        s.arm("k", false);
+        assert!(!s.is_armed("k"));
     }
 
     #[test]

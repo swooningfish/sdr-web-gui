@@ -1,6 +1,8 @@
 //! External and built-in decoders. Each one turns IQ into `DecodedEvent`s,
 //! which `events` stores, streams to the browser and publishes to MQTT.
 
+use std::sync::Arc;
+
 use serde_json::{Map, Value};
 
 pub mod aprs;
@@ -18,6 +20,8 @@ pub struct DecodedEvent {
     /// Receiver-side debug details (raw decoder output, tuning, IF, rates),
     /// stored with the event but not published or used for de-duplication.
     pub rx: Option<Map<String, Value>>,
+    /// The radio burst the packet was decoded from, if it was captured.
+    pub signal: Option<Arc<burst::RawSignal>>,
 }
 
 impl DecodedEvent {
@@ -31,6 +35,7 @@ impl DecodedEvent {
             freq_hz,
             data,
             rx: None,
+            signal: None,
         }
     }
 

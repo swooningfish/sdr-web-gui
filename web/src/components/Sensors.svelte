@@ -27,6 +27,8 @@
   let history = $state<EventRow[]>([]);
   /** Packet picked from the history for the debug view; null = the latest. */
   let inspectId = $state<number | null>(null);
+  /** The selected device's next burst will be saved ("log next burst"). */
+  let burstArmed = $state(false);
   const inspected = $derived(
     (inspectId !== null ? history.find((e) => e.id === inspectId) : undefined) ?? history[0] ?? null,
   );
@@ -127,6 +129,7 @@
     if (selectedId === device.id) {
       now = Date.now(); // keep the newest point inside the chart's time range
       history = [event, ...history];
+      if (event.burst) burstArmed = false;
     }
   }
 
@@ -199,6 +202,13 @@
     selectedId = d.id;
     copied = false;
     nameInput = d.name ?? '';
+    burstArmed = false;
+    api
+      .burstLog(d.id)
+      .then((r) => {
+        if (selectedId === d.id) burstArmed = r.armed;
+      })
+      .catch(() => {});
     await loadHistory();
   }
 
@@ -213,6 +223,21 @@
     } catch (e) {
       fail(e);
     }
+  }
+
+  async function armBurst(on: boolean) {
+    const id = selectedId;
+    if (id === null) return;
+    try {
+      const r = await api.setBurstLog(id, on);
+      if (selectedId === id) burstArmed = r.armed;
+    } catch (e) {
+      fail(e);
+    }
+  }
+
+  function burstDeleted(eventId: number) {
+    history = history.map((e) => (e.id === eventId ? { ...e, burst: false } : e));
   }
 
   function setRange(ms: number) {
@@ -485,7 +510,10 @@
                     onclick={() => (inspectId = inspectId === ev.id ? null : ev.id)}
                   >
                     <td class="nowrap muted" title={new Date(ev.ts).toLocaleString()}>{time(ev.ts)}</td>
-                    <td>{readings(ev.data).join(' · ')}</td>
+                    <td>
+                      {readings(ev.data).join(' · ')}
+                      {#if ev.burst}<span class="iq" title="Radio burst saved with this packet">IQ</span>{/if}
+                    </td>
                   </tr>
                 {/each}
               </tbody>
@@ -495,6 +523,10 @@
             event={inspected}
             latest={inspectId === null || inspected?.id !== inspectId}
             deviceId={selected.id}
+            {isAdmin}
+            armed={burstArmed}
+            onArm={armBurst}
+            onBurstDeleted={burstDeleted}
           />
         </section>
       {:else}
@@ -731,6 +763,14 @@
   .history td {
     font-size: 13px;
     cursor: pointer;
+  }
+  .iq {
+    margin-left: 6px;
+    font-size: 10px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--ok) 25%, transparent);
+    color: var(--ok);
   }
   .history tr.inspect td {
     background: color-mix(in srgb, var(--accent) 18%, transparent);

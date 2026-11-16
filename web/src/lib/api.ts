@@ -347,6 +347,8 @@ export interface EventRow {
   data: Json;
   /** Receiver debug details (raw rtl_433 line, demod, IF, rates); null for older events. */
   rx?: Json | null;
+  /** A radio burst was saved with this event ("log next burst"). */
+  burst?: boolean;
 }
 
 /** The radio signal behind a device's latest packet (see /devices/{id}/raw). */
@@ -722,6 +724,10 @@ export const api = {
     return req<EventRow[]>('GET', `/devices/${id}/events?${q}`);
   },
   deviceRaw: (id: number) => req<RawSignal>('GET', `/devices/${id}/raw`),
+  burstLog: (id: number) => req<{ armed: boolean }>('GET', `/devices/${id}/burst-log`),
+  setBurstLog: (id: number, armed: boolean) => req<{ armed: boolean }>('PUT', `/devices/${id}/burst-log`, { armed }),
+  eventBurst: (eventId: number) => req<RawSignal>('GET', `/events/${eventId}/burst`),
+  deleteEventBurst: (eventId: number) => req('DELETE', `/events/${eventId}/burst`),
   updateDevice: (id: number, patch: DevicePatch) => req<Device>('PATCH', `/devices/${id}`, patch),
   dashboard: () => req<Device[]>('GET', '/dashboard'),
   setDashboardOrder: (ids: number[]) => req<Device[]>('PUT', '/dashboard/order', { ids }),

@@ -2,7 +2,8 @@
   import type { RawSignal } from '../lib/api';
   import { pulseGroups, pulseText } from '../lib/sensors';
 
-  let { sig, deviceId }: { sig: RawSignal; deviceId: number } = $props();
+  /** `href`: where the .cs8 IQ download comes from. */
+  let { sig, href }: { sig: RawSignal; href: string } = $props();
 
   const W = 600;
   const H = 90;
@@ -104,7 +105,7 @@
     <p class="small-text muted">No clear pulses in this burst.</p>
   {/if}
   <p class="small-text">
-    <a href={`/api/devices/${deviceId}/raw.cs8`} download={sig.file_name}>Download IQ ({sig.file_name})</a>
+    <a {href} download={sig.file_name}>Download IQ ({sig.file_name})</a>
     <span class="muted">· replay with <code>rtl_433 -r {sig.file_name} -A</code></span>
   </p>
 </div>

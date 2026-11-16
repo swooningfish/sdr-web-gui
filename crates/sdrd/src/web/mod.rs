@@ -110,6 +110,15 @@ pub fn router(state: AppState) -> Router {
         .route("/devices/{id}/events", get(sensors::device_events))
         .route("/devices/{id}/raw", get(sensors::device_raw))
         .route("/devices/{id}/raw.cs8", get(sensors::device_raw_iq))
+        .route(
+            "/devices/{id}/burst-log",
+            get(sensors::get_burst_log).put(sensors::set_burst_log),
+        )
+        .route(
+            "/events/{id}/burst",
+            get(sensors::event_burst).delete(sensors::delete_event_burst),
+        )
+        .route("/events/{id}/burst.cs8", get(sensors::event_burst_iq))
         .route("/dashboard", get(sensors::dashboard))
         .route("/dashboard/order", axum::routing::put(sensors::set_dashboard_order))
         .route("/events", get(sensors::recent_events))
