@@ -491,7 +491,11 @@
               </tbody>
             </table>
           </div>
-          <PacketDebug event={inspected} latest={inspectId === null || inspected?.id !== inspectId} />
+          <PacketDebug
+            event={inspected}
+            latest={inspectId === null || inspected?.id !== inspectId}
+            deviceId={selected.id}
+          />
         </section>
       {:else}
         <section class="panel">

@@ -108,6 +108,8 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(sensors::update_device).delete(sensors::delete_device),
         )
         .route("/devices/{id}/events", get(sensors::device_events))
+        .route("/devices/{id}/raw", get(sensors::device_raw))
+        .route("/devices/{id}/raw.cs8", get(sensors::device_raw_iq))
         .route("/dashboard", get(sensors::dashboard))
         .route("/dashboard/order", axum::routing::put(sensors::set_dashboard_order))
         .route("/events", get(sensors::recent_events))

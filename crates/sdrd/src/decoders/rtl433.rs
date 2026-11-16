@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::sync::{broadcast, mpsc, watch};
 
+use super::burst::{self, RawSignal, RawStore, Ring};
 use super::DecodedEvent;
 use crate::db;
 use crate::dsp::ddc::{decimation_for, fits, Ddc};
@@ -138,6 +139,7 @@ pub struct Rtl433Handle {
     path: Arc<str>,
     cfg_tx: Arc<watch::Sender<Rtl433Config>>,
     status_rx: watch::Receiver<Rtl433Status>,
+    raw: RawStore,
 }
 
 const SETTINGS_KEY: &str = "decoder.rtl_433";
@@ -149,6 +151,11 @@ impl Rtl433Handle {
 
     pub fn status(&self) -> Rtl433Status {
         self.status_rx.borrow().clone()
+    }
+
+    /// The radio signal of a device's latest packet (by device key).
+    pub fn raw_signal(&self, key: &str) -> Option<Arc<RawSignal>> {
+        self.raw.get(key)
     }
 
     pub async fn set_config(&self, db: &sqlx::SqlitePool, cfg: Rtl433Config) -> anyhow::Result<()> {
@@ -235,7 +242,10 @@ pub async fn spawn(
         events,
         radio,
         tuning: Arc::new(Mutex::new(Tuning::default())),
+        ring: Arc::new(Mutex::new(Ring::new())),
+        raw: RawStore::default(),
     };
+    let raw = worker.raw.clone();
     std::thread::Builder::new()
         .name("rtl_433".into())
         .spawn(move || worker.run())?;
@@ -243,6 +253,7 @@ pub async fn spawn(
         path,
         cfg_tx: Arc::new(cfg_tx),
         status_rx,
+        raw,
     })
 }
 
@@ -268,6 +279,9 @@ struct Worker {
     radio: watch::Receiver<RadioState>,
     /// How the stream now being fed to rtl_433 was cut from the capture.
     tuning: Arc<Mutex<Tuning>>,
+    /// The last seconds of that stream, to cut packet bursts out of.
+    ring: Arc<Mutex<Ring>>,
+    raw: RawStore,
 }
 
 /// The receiver side of the stream handed to rtl_433, for packet debugging.
@@ -280,6 +294,21 @@ struct Tuning {
     decimation: u32,
     /// Rate of the stream rtl_433 sees.
     stream_rate: u32,
+}
+
+/// The burst behind a decoded packet, from the stream ring, if it can be found.
+fn cut_burst(ring: &Mutex<Ring>, data: &Map<String, Value>, rate: u32, freq_hz: u64) -> Option<RawSignal> {
+    let secs = burst::stream_secs(data.get("time")?.as_str()?)?;
+    let at = (secs * rate as f64).round() as u64;
+    let (start, window) = {
+        let r = ring.lock().unwrap();
+        if r.rate != rate {
+            return None; // a newer rtl_433 process has taken over
+        }
+        r.slice(at.saturating_sub(rate as u64), at + rate as u64)
+    };
+    let demod = data.get("mod").and_then(Value::as_str);
+    burst::extract(&window, start, at, rate, freq_hz, demod, 0)
 }
 
 fn mhz_to_hz(v: Option<&Value>) -> Option<i64> {
@@ -469,6 +498,7 @@ impl Worker {
                 self.failed(format!("writing to rtl_433: {e}"), &mut retry_at, &mut backoff);
             } else {
                 backoff = Duration::from_secs(2);
+                self.ring.lock().unwrap().push(&iq);
             }
         }
     }
@@ -507,6 +537,8 @@ impl Worker {
             .map_err(|e| format!("can't start {}: {e}", self.path))?;
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
+        // rtl_433's clock starts at the first sample of this process.
+        self.ring.lock().unwrap().reset(rate);
         let stderr = child.stderr.take().unwrap();
 
         let status = self.status.clone();
@@ -514,6 +546,8 @@ impl Worker {
         let freq_hz = cfg.frequency_hz;
         let tuning = self.tuning.clone();
         let radio = self.radio.clone();
+        let ring = self.ring.clone();
+        let raw = self.raw.clone();
         std::thread::Builder::new()
             .name("rtl_433-out".into())
             .spawn(move || {
@@ -523,8 +557,15 @@ impl Worker {
                         match serde_json::from_str::<Map<String, Value>>(&line) {
                             Ok(data) => {
                                 let t = *tuning.lock().unwrap();
-                                let rx = rx_info(&line, &data, freq_hz, t, Some(&radio.borrow()));
-                                let ev = DecodedEvent::new(NAME, Some(freq_hz), data).with_rx(rx);
+                                let mut rx = rx_info(&line, &data, freq_hz, t, Some(&radio.borrow()));
+                                let sig = cut_burst(&ring, &data, rate, freq_hz);
+                                let mut ev = DecodedEvent::new(NAME, Some(freq_hz), data);
+                                if let Some(mut sig) = sig {
+                                    sig.ts = ev.ts_ms;
+                                    rx.insert("signal".into(), true.into());
+                                    raw.insert(crate::events::identity(&ev).0, sig);
+                                }
+                                ev = ev.with_rx(rx);
                                 if events.try_send(ev).is_err() {
                                     tracing::warn!("event queue full, dropping rtl_433 event");
                                 }

@@ -88,3 +88,40 @@ export function series(events: EventRow[], key: string): Point[] {
   }
   return out;
 }
+
+export interface PulseGroup {
+  us: number;
+  count: number;
+}
+
+/** Group similar widths (within ±20 %), most common first, at most `max`. */
+function group(widths: number[], max = 6): PulseGroup[] {
+  const sorted = [...widths].sort((a, b) => a - b);
+  const out: { sum: number; count: number }[] = [];
+  for (const w of sorted) {
+    const g = out[out.length - 1];
+    if (g && w <= (g.sum / g.count) * 1.2) {
+      g.sum += w;
+      g.count++;
+    } else {
+      out.push({ sum: w, count: 1 });
+    }
+  }
+  return out
+    .map((g) => ({ us: Math.round(g.sum / g.count), count: g.count }))
+    .sort((a, b) => b.count - a.count || a.us - b.us)
+    .slice(0, max);
+}
+
+/** Pulse (positive) and gap (negative) widths, grouped like rtl_433 -A does. */
+export function pulseGroups(pulses: number[]): { high: PulseGroup[]; low: PulseGroup[] } {
+  return {
+    high: group(pulses.filter((p) => p > 0)),
+    low: group(pulses.filter((p) => p < 0).map((p) => -p)),
+  };
+}
+
+/** "+500 -1000 +500 …", a pulse/gap pair per word pair. */
+export function pulseText(pulses: number[]): string {
+  return pulses.map((p) => (p > 0 ? `+${p}` : `${p}`)).join(' ');
+}

@@ -1,7 +1,8 @@
 //! ISM / TPMS devices, their events, and the rtl_433 decoder settings.
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -91,6 +92,54 @@ pub async fn recent_events(
             .await
             .map_err(ApiError::internal)?,
     ))
+}
+
+/// The latest packet's radio signal for a device (rtl_433 only; kept in memory).
+async fn raw_signal(
+    state: &AppState,
+    s: &Session,
+    id: i64,
+) -> Result<std::sync::Arc<crate::decoders::burst::RawSignal>, ApiError> {
+    let d = events::get_device(&state.db, id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(not_found)?;
+    check_decoder(state, s, Some(&d.decoder))?;
+    state
+        .rtl433
+        .raw_signal(&d.key)
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "no signal captured for this device since sdrd started"))
+}
+
+pub async fn device_raw(
+    State(state): State<AppState>,
+    AuthUser(s): AuthUser,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
+    let sig = raw_signal(&state, &s, id).await?;
+    let mut v = serde_json::to_value(&*sig).map_err(ApiError::internal)?;
+    v["file_name"] = sig.file_name().into();
+    Ok(Json(v))
+}
+
+/// The burst as signed 8-bit IQ, named so `rtl_433 -r <file>` picks up the
+/// frequency and sample rate.
+pub async fn device_raw_iq(
+    State(state): State<AppState>,
+    AuthUser(s): AuthUser,
+    Path(id): Path<i64>,
+) -> Result<Response, ApiError> {
+    let sig = raw_signal(&state, &s, id).await?;
+    let bytes: Vec<u8> = sig.iq.iter().map(|b| *b as u8).collect();
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", sig.file_name())),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 #[derive(Deserialize)]
