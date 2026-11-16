@@ -12,12 +12,16 @@ default = []
 rtlsdr = []
 
 [dependencies]
+aes = "0.8"
 anyhow = "1"
 argon2 = "0.5"
+base64 = "0.22"
 axum = { version = "0.8", features = ["ws", "macros"] }
 bytes = "1"
+ctr = "0.9"
 flate2 = "1"
 hex = "0.4"
+hmac = "0.12"
 num-complex = "0.4"
 png = "0.17"
 zip = { version = "2", default-features = false }

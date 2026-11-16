@@ -22,6 +22,7 @@ use crate::config::{Config, SourceKind};
 
 mod replay;
 mod sim_aircraft;
+mod sim_mesh;
 #[cfg(feature = "rtlsdr")]
 mod rtlsdr;
 mod rtltcp;

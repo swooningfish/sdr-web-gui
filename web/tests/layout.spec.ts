@@ -290,9 +290,10 @@ test('a bookmark can be added, put on an F-key, recalled and deleted', async ({ 
   // Delete the bookmark; the key keeps its own copy until cleared.
   drawer = await openBookmarks(page);
   await drawer.getByRole('button', { name: 'Manage' }).click();
-  page.once('dialog', (d) => d.accept());
   await drawer.locator('.tile').filter({ hasText: name }).click();
   await drawer.getByRole('toolbar', { name: 'Selected bookmarks' }).getByRole('button', { name: 'Delete' }).click();
+  // The app asks in its own dialog (not window.confirm), so answer it there.
+  await page.getByRole('dialog').filter({ hasText: 'Delete 1 bookmark' }).getByRole('button', { name: 'Delete' }).click();
   await expect(drawer.locator('.tile').filter({ hasText: name })).toHaveCount(0);
   // Put F8 back how it was.
   if (f8) await page.request.put('/api/fkeys/8', { data: f8, headers: await csrf(page) });

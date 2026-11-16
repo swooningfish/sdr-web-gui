@@ -101,7 +101,25 @@ CREATE TABLE IF NOT EXISTS adsb_sightings (
     min_alt  INTEGER,
     max_alt  INTEGER
 );
-CREATE INDEX IF NOT EXISTS adsb_sightings_last ON adsb_sightings(last_ms)
+CREATE INDEX IF NOT EXISTS adsb_sightings_last ON adsb_sightings(last_ms);
+CREATE TABLE IF NOT EXISTS mesh_nodes (
+    key     TEXT PRIMARY KEY,
+    data    TEXT NOT NULL,
+    last_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mesh_messages (
+    id        INTEGER PRIMARY KEY,
+    ts_ms     INTEGER NOT NULL,
+    proto     TEXT NOT NULL,
+    channel   TEXT,
+    private   INTEGER NOT NULL,
+    from_key  TEXT,
+    from_name TEXT,
+    text      TEXT NOT NULL,
+    snr       REAL,
+    hops      INTEGER
+);
+CREATE INDEX IF NOT EXISTS mesh_messages_ts ON mesh_messages(ts_ms)
 "#;
 
 pub async fn open(path: &Path) -> Result<SqlitePool> {
