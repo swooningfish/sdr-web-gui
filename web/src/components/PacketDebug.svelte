@@ -1,9 +1,11 @@
 <script lang="ts">
-  import type { EventRow, Json } from '../lib/api';
+  import { api, type EventRow, type Json, type RawSignal } from '../lib/api';
   import { formatMHz, formatRate } from '../lib/format';
+  import { pulseText } from '../lib/sensors';
+  import SignalView from './SignalView.svelte';
 
   /** The packet to show (newest unless one was picked from the history). */
-  let { event, latest }: { event: EventRow | null; latest: boolean } = $props();
+  let { event, latest, deviceId }: { event: EventRow | null; latest: boolean; deviceId: number } = $props();
 
   const OPEN_PREF = 'sdr.sensors.debug';
   let open = $state(
@@ -23,6 +25,33 @@
       /* per-browser convenience only */
     }
   }
+
+  // The radio signal is kept (in memory) for each device's latest packet only.
+  let sig = $state<RawSignal | null>(null);
+  let sigState = $state<'none' | 'loading' | 'ok' | 'gone'>('none');
+  $effect(() => {
+    const ev = event;
+    const id = deviceId;
+    if (!open || !ev?.rx || ev.rx.signal !== true) {
+      sigState = 'none';
+      return;
+    }
+    if (sig && sig.ts === ev.ts) {
+      sigState = 'ok';
+      return;
+    }
+    sigState = 'loading';
+    api
+      .deviceRaw(id)
+      .then((s) => {
+        if (event?.ts !== ev.ts) return;
+        sig = s;
+        sigState = s.ts === ev.ts ? 'ok' : 'gone';
+      })
+      .catch(() => {
+        if (event?.ts === ev.ts) sigState = 'gone';
+      });
+  });
 
   const canCopy = typeof navigator !== 'undefined' && !!navigator.clipboard;
   let copied = $state(false);
@@ -90,7 +119,11 @@
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(JSON.stringify({ ts: event?.ts, rx, data }, null, 2));
+      const signal =
+        sigState === 'ok' && sig
+          ? { ...sig, envelope: undefined, freq_khz: undefined, pulses: pulseText(sig.pulses) }
+          : undefined;
+      await navigator.clipboard.writeText(JSON.stringify({ ts: event?.ts, rx, data, signal }, null, 2));
       copied = true;
       setTimeout(() => (copied = false), 1500);
     } catch {
@@ -116,6 +149,16 @@
         <dd>{v}</dd>
       {/each}
     </dl>
+    <h4>Radio signal</h4>
+    {#if sigState === 'ok' && sig}
+      <SignalView {sig} {deviceId} />
+    {:else if sigState === 'loading'}
+      <p class="muted small-text">Loading the captured signal…</p>
+    {:else if sigState === 'gone'}
+      <p class="muted small-text">The radio signal is only kept for each device's latest packet, until sdrd restarts.</p>
+    {:else}
+      <p class="muted small-text">No radio signal was captured for this packet.</p>
+    {/if}
     <div class="raw-head">
       <span class="small-text muted">Raw rtl_433 output</span>
       {#if canCopy}
@@ -154,6 +197,10 @@
   h3 {
     margin: 16px 0 6px;
     font-size: 15px;
+  }
+  h4 {
+    margin: 12px 0 4px;
+    font-size: 14px;
   }
   dl {
     display: grid;

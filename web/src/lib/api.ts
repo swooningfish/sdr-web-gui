@@ -349,6 +349,30 @@ export interface EventRow {
   rx?: Json | null;
 }
 
+/** The radio signal behind a device's latest packet (see /devices/{id}/raw). */
+export interface RawSignal {
+  /** Matches the EventRow.ts of the packet it belongs to. */
+  ts: number;
+  rate: number;
+  freq_hz: number;
+  demod: string | null;
+  start_us: number;
+  duration_us: number;
+  /** 0–1000 relative to the burst peak. */
+  envelope: number[];
+  freq_khz: (number | null)[];
+  /** Envelope of the first `detail_us` only, fine enough to see single pulses. */
+  detail: number[];
+  detail_us: number;
+  snr_db: number;
+  /** µs; positive = pulse / mark, negative = gap / space. */
+  pulses: number[];
+  pulses_truncated: boolean;
+  slicer: 'level' | 'frequency';
+  iq_samples: number;
+  file_name: string;
+}
+
 export interface FlexDecoder {
   spec: string;
   enabled: boolean;
@@ -697,6 +721,7 @@ export const api = {
     if (opts.since !== undefined) q.set('since', String(Math.floor(opts.since)));
     return req<EventRow[]>('GET', `/devices/${id}/events?${q}`);
   },
+  deviceRaw: (id: number) => req<RawSignal>('GET', `/devices/${id}/raw`),
   updateDevice: (id: number, patch: DevicePatch) => req<Device>('PATCH', `/devices/${id}`, patch),
   dashboard: () => req<Device[]>('GET', '/dashboard'),
   setDashboardOrder: (ids: number[]) => req<Device[]>('PUT', '/dashboard/order', { ids }),
