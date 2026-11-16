@@ -462,7 +462,8 @@ pub async fn run(
     // and the event itself while it still waits for a burst to be logged.
     // Sensors repeat each packet several times; a repeat is dropped as a
     // duplicate, but if the stored copy had no signal and the device is armed,
-    // a repeat's burst is saved with it.
+    // a repeat's burst is saved with it. Only a burst checked to be the
+    // device's own (`verified`) is saved.
     let mut recent: HashMap<String, (Instant, String, Option<Box<(Device, EventRow)>>)> = HashMap::new();
     while let Some(ev) = rx.recv().await {
         let (key, ..) = identity(&ev);
@@ -471,7 +472,7 @@ pub async fn run(
         let window = dedupe_window(ev.decoder);
         if let Some((t, last, waiting)) = recent.get_mut(&key) {
             if *last == fp && now.duration_since(*t) < window {
-                if let (Some(sig), Some(w)) = (&ev.signal, waiting.as_mut()) {
+                if let (Some(sig), Some(w)) = (ev.signal.as_ref().filter(|s| s.verified), waiting.as_mut()) {
                     if raw.take_armed(&key) {
                         let (device, row) = &mut **w;
                         log_burst(&db, &feed, device, row, sig).await;
@@ -490,7 +491,7 @@ pub async fn run(
                 tracing::debug!(device = %device.key, "event");
                 let mut waiting = None;
                 if raw.is_armed(&device.key) {
-                    match &ev.signal {
+                    match ev.signal.as_ref().filter(|s| s.verified) {
                         Some(sig) if raw.take_armed(&device.key) => {
                             save_and_flag(&db, &device, &mut row, sig).await;
                         }
@@ -637,9 +638,11 @@ mod tests {
         let mut iq = vec![c(0.01, 0.0); 100];
         iq.extend(std::iter::repeat_n(c(1.0, 0.0), 500));
         iq.extend(std::iter::repeat_n(c(0.01, 0.0), 2000));
-        let sig = Arc::new(
-            crate::decoders::burst::extract(&iq, 0, 100, 250_000, 433_920_000, Some("ASK"), 0).unwrap(),
-        );
+        let mut sig = crate::decoders::burst::extract(&iq, 0, 100, 250_000, 433_920_000, Some("ASK"), 0).unwrap();
+        // Another transmitter's burst (not decoded as this device) isn't logged.
+        let other = Arc::new(sig.clone());
+        sig.verified = true;
+        let sig = Arc::new(sig);
 
         let raw = RawStore::default();
         let (feed, mut sub) = broadcast::channel(16);
@@ -649,6 +652,9 @@ mod tests {
         raw.arm(&identity(&ev(pkt.clone())).0, true);
 
         tx.send(ev(pkt.clone())).await.unwrap(); // stored, no signal
+        let mut wrong = ev(pkt.clone());
+        wrong.signal = Some(other);
+        tx.send(wrong).await.unwrap(); // duplicate, burst isn't this device's
         let mut repeat = ev(pkt.clone());
         repeat.signal = Some(sig.clone());
         tx.send(repeat).await.unwrap(); // duplicate, carries the burst

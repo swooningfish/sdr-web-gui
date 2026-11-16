@@ -121,6 +121,9 @@ pub struct RawSignal {
     /// Interleaved I/Q, signed 8-bit (rtl_433's cs8 format).
     #[serde(skip)]
     pub iq: Vec<i8>,
+    /// rtl_433, given just this burst, decoded the same device from it. Only
+    /// checked while the device's next burst is to be logged.
+    pub verified: bool,
 }
 
 impl RawSignal {
@@ -132,17 +135,18 @@ impl RawSignal {
     }
 }
 
-/// Find the burst nearest `at` (a stream position) in `window` (which starts
-/// at stream position `start`) and describe it.
-pub fn extract(
-    window: &[Complex32],
-    start: u64,
-    at: u64,
-    rate: u32,
-    freq_hz: u64,
-    demod: Option<&str>,
-    ts: i64,
-) -> Option<RawSignal> {
+/// The bursts in a window of stream.
+struct Found {
+    mag: Vec<f32>,
+    noise: f32,
+    thr: f32,
+    /// Samples per activity block.
+    block: usize,
+    /// Bursts as (first, last) active block, in time order.
+    bursts: Vec<(usize, usize)>,
+}
+
+fn find(window: &[Complex32], rate: u32) -> Option<Found> {
     if window.is_empty() || rate == 0 {
         return None;
     }
@@ -169,15 +173,106 @@ pub fn extract(
             _ => bursts.push((i, i)),
         }
     }
-    let at_block = (at.saturating_sub(start) as usize / block) as i64;
-    let (b0, b1) = *bursts.iter().min_by_key(|(s, e)| {
-        if (*s as i64..=*e as i64).contains(&at_block) {
-            0
-        } else {
-            (*s as i64 - at_block).abs().min((*e as i64 - at_block).abs())
-        }
-    })?;
+    Some(Found { mag, noise, thr, block, bursts })
+}
 
+impl Found {
+    /// Indexes into `bursts`, nearest to block `at_block` first.
+    fn nearest(&self, at_block: i64) -> Vec<usize> {
+        let mut idx: Vec<usize> = (0..self.bursts.len()).collect();
+        idx.sort_by_key(|&i| {
+            let (s, e) = (self.bursts[i].0 as i64, self.bursts[i].1 as i64);
+            if (s..=e).contains(&at_block) {
+                0
+            } else {
+                (s - at_block).abs().min((e - at_block).abs())
+            }
+        });
+        idx
+    }
+}
+
+/// Find the burst nearest `at` (a stream position) in `window` (which starts
+/// at stream position `start`) and describe it.
+pub fn extract(
+    window: &[Complex32],
+    start: u64,
+    at: u64,
+    rate: u32,
+    freq_hz: u64,
+    demod: Option<&str>,
+    ts: i64,
+) -> Option<RawSignal> {
+    let f = find(window, rate)?;
+    let at_block = (at.saturating_sub(start) as usize / f.block) as i64;
+    let i = *f.nearest(at_block).first()?;
+    Some(describe(window, &f, f.bursts[i], start, at, rate, freq_hz, demod, ts))
+}
+
+/// A burst that might be the packet rtl_433 reported, for checking.
+pub struct Candidate {
+    /// The burst with the quiet around it (up to [`MAX_CONTEXT_SECS`] each
+    /// side, stopping short of any neighbouring burst), to replay to rtl_433.
+    pub replay: Vec<Complex32>,
+    pub signal: RawSignal,
+}
+
+/// Quiet kept around a candidate when replaying it.
+const MAX_CONTEXT_SECS: f64 = 0.2;
+
+/// Up to `n` bursts in `window`, nearest `at` first (see [`extract`]).
+#[allow(clippy::too_many_arguments)]
+pub fn candidates(
+    window: &[Complex32],
+    start: u64,
+    at: u64,
+    rate: u32,
+    freq_hz: u64,
+    demod: Option<&str>,
+    ts: i64,
+    n: usize,
+) -> Vec<Candidate> {
+    let Some(f) = find(window, rate) else { return Vec::new() };
+    let at_block = (at.saturating_sub(start) as usize / f.block) as i64;
+    let ctx = (MAX_CONTEXT_SECS * rate as f64) as usize;
+    f.nearest(at_block)
+        .into_iter()
+        .take(n)
+        .map(|i| {
+            let (b0, b1) = f.bursts[i];
+            let (s0, s1) = (b0 * f.block, ((b1 + 1) * f.block).min(window.len()));
+            // Halfway to the neighbours, so they aren't replayed too.
+            let lo = match i.checked_sub(1).map(|p| (f.bursts[p].1 + 1) * f.block) {
+                Some(prev_end) => (prev_end + s0) / 2,
+                None => 0,
+            };
+            let hi = match f.bursts.get(i + 1).map(|b| b.0 * f.block) {
+                Some(next_start) => (s1 + next_start) / 2,
+                None => window.len(),
+            };
+            let lo = lo.max(s0.saturating_sub(ctx));
+            let hi = hi.min(s1 + ctx).max(s1);
+            Candidate {
+                replay: window[lo..hi].to_vec(),
+                signal: describe(window, &f, (b0, b1), start, at, rate, freq_hz, demod, ts),
+            }
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn describe(
+    window: &[Complex32],
+    f: &Found,
+    (b0, b1): (usize, usize),
+    start: u64,
+    at: u64,
+    rate: u32,
+    freq_hz: u64,
+    demod: Option<&str>,
+    ts: i64,
+) -> RawSignal {
+    let (mag, noise, thr, block) = (&f.mag, f.noise, f.thr, f.block);
     let pad = (PAD_SECS * rate as f64) as usize;
     let s0 = (b0 * block).saturating_sub(pad);
     let s1 = ((b1 + 1) * block + pad).min(mag.len());
@@ -238,7 +333,7 @@ pub fn extract(
         out.push((c.im * scale).round().clamp(-127.0, 127.0) as i8);
     }
 
-    Some(RawSignal {
+    RawSignal {
         ts,
         rate,
         freq_hz,
@@ -255,7 +350,8 @@ pub fn extract(
         slicer: if fsk { "frequency" } else { "level" },
         iq_samples: iq.len(),
         iq: out,
-    })
+        verified: false,
+    }
 }
 
 /// Peak of each of (at most) `n` buckets of `m`, 0–1000 relative to `peak`.
@@ -446,6 +542,34 @@ mod tests {
         s.arm("k", true);
         s.arm("k", false);
         assert!(!s.is_armed("k"));
+    }
+
+    #[test]
+    fn candidates_nearest_first_without_neighbours() {
+        let rate = 250_000u32;
+        let s = |ms: f64| (ms * rate as f64 / 1e3) as usize;
+        let mut v = vec![Complex32::new(0.01, 0.0); s(1000.0)];
+        // Bursts at 100, 400 and 450 ms, each 5 ms long.
+        for at in [100.0, 400.0, 450.0] {
+            for x in &mut v[s(at)..s(at + 5.0)] {
+                *x = Complex32::new(1.0, 0.0);
+            }
+        }
+        let c = candidates(&v, 0, s(398.0) as u64, rate, 433_920_000, Some("ASK"), 0, 5);
+        assert_eq!(c.len(), 3);
+        // Nearest first: 400, then 450, then 100.
+        let starts: Vec<f64> = c.iter().map(|c| c.signal.start_us / 1000.0 + 398.0).collect();
+        assert!((starts[0] - 400.0).abs() < 3.0, "{starts:?}");
+        assert!((starts[1] - 450.0).abs() < 3.0, "{starts:?}");
+        assert!((starts[2] - 100.0).abs() < 3.0, "{starts:?}");
+        // The 400 ms replay stops halfway to 450 ms: only one burst in it.
+        let on = |r: &[Complex32]| {
+            r.windows(2).filter(|w| w[0].norm() < 0.5 && w[1].norm() >= 0.5).count()
+        };
+        assert_eq!(on(&c[0].replay), 1);
+        // Halfway back to 105 ms and on to 450 ms: ~252–428 ms.
+        assert!(c[0].replay.len() >= s(170.0) && c[0].replay.len() <= s(180.0), "{}", c[0].replay.len());
+        assert!(c.iter().all(|c| !c.signal.verified));
     }
 
     #[test]

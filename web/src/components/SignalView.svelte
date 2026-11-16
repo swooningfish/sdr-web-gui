@@ -57,7 +57,8 @@
 <div class="signal">
   <div class="meta small-text muted">
     {ms(sig.duration_us)} burst · {Math.round(sig.snr_db)} dB above noise · {sig.iq_samples.toLocaleString()} samples at
-    {sig.rate / 1000} kS/s
+    {sig.rate / 1000} kS/s{#if sig.verified}
+      · re-decoded as this sensor{/if}
   </div>
   <figure>
     <figcaption class="small-text muted">Amplitude</figcaption>

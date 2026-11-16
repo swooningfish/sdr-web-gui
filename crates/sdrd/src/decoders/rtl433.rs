@@ -9,6 +9,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use num_complex::Complex32;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::sync::{broadcast, mpsc, watch};
@@ -301,19 +302,129 @@ struct Tuning {
     stream_rate: u32,
 }
 
-/// The burst behind a decoded packet, from the stream ring, if it can be found.
-fn cut_burst(ring: &Mutex<Ring>, data: &Map<String, Value>, rate: u32, freq_hz: u64) -> Option<RawSignal> {
+/// Bursts tried when checking which one a packet came from.
+const MAX_CANDIDATES: usize = 4;
+/// Silence appended to a replayed burst, so rtl_433 sees the packet end.
+const REPLAY_TAIL_SECS: f64 = 0.3;
+/// Longest wait for rtl_433 to decode a replayed burst.
+const REPLAY_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The stream around a decoded packet: (start position, samples, packet position).
+fn packet_window(ring: &Mutex<Ring>, data: &Map<String, Value>, rate: u32) -> Option<(u64, Vec<Complex32>, u64)> {
     let secs = burst::stream_secs(data.get("time")?.as_str()?)?;
     let at = (secs * rate as f64).round() as u64;
-    let (start, window) = {
-        let r = ring.lock().unwrap();
-        if r.rate != rate {
-            return None; // a newer rtl_433 process has taken over
-        }
-        r.slice(at.saturating_sub(rate as u64), at + rate as u64)
-    };
+    let r = ring.lock().unwrap();
+    if r.rate != rate {
+        return None; // a newer rtl_433 process has taken over
+    }
+    let (start, window) = r.slice(at.saturating_sub(rate as u64), at + rate as u64);
+    Some((start, window, at))
+}
+
+/// The burst behind a decoded packet, from the stream ring, if it can be found.
+/// With `check`, the burst is one rtl_433 decodes as the same device again
+/// (marked `verified`) if any is; other bursts nearby are tried too, since
+/// another transmitter can be nearer the time rtl_433 gives.
+fn cut_burst(
+    ring: &Mutex<Ring>,
+    data: &Map<String, Value>,
+    rate: u32,
+    freq_hz: u64,
+    check: Option<&Check>,
+) -> Option<RawSignal> {
+    let (start, window, at) = packet_window(ring, data, rate)?;
     let demod = data.get("mod").and_then(Value::as_str);
+    let Some(check) = check else {
+        return burst::extract(&window, start, at, rate, freq_hz, demod, 0);
+    };
+    let protocol = data.get("protocol").and_then(Value::as_i64);
+    for (n, c) in burst::candidates(&window, start, at, rate, freq_hz, demod, 0, MAX_CANDIDATES)
+        .into_iter()
+        .enumerate()
+    {
+        match check.decodes_as(&c.replay, rate, freq_hz, protocol) {
+            Ok(true) => {
+                tracing::debug!(device = %check.key, candidate = n, "burst matched");
+                let mut sig = c.signal;
+                sig.verified = true;
+                return Some(sig);
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(device = %check.key, "checking burst: {e}");
+                break;
+            }
+        }
+    }
+    tracing::info!(device = %check.key, "no burst near the packet decodes as this device; still waiting");
+    // Still shown as the latest burst, but not logged.
     burst::extract(&window, start, at, rate, freq_hz, demod, 0)
+}
+
+/// Checks a burst against the device whose next burst is to be logged.
+struct Check<'a> {
+    path: &'a str,
+    cfg: &'a Rtl433Config,
+    key: String,
+}
+
+impl Check<'_> {
+    /// Whether rtl_433, given just `iq`, decodes the device `self.key`.
+    fn decodes_as(&self, iq: &[Complex32], rate: u32, freq_hz: u64, protocol: Option<i64>) -> Result<bool, String> {
+        let mut args: Vec<String> = [
+            "-r", "cs16:-", "-s", &rate.to_string(), "-f", &freq_hz.to_string(), "-F", "json", "-M", "protocol",
+            "-C", "si",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        // Just the protocol that decoded it, when rtl_433 said which.
+        match protocol {
+            Some(p) if p > 0 => args.extend(["-R".to_string(), p.to_string()]),
+            _ => {
+                for p in &self.cfg.protocols {
+                    args.extend(["-R".to_string(), p.to_string()]);
+                }
+            }
+        }
+        for f in self.cfg.flex.iter().filter(|f| f.enabled) {
+            args.extend(["-X".to_string(), f.spec.clone()]);
+        }
+
+        let mut bytes = Vec::with_capacity((iq.len() + (REPLAY_TAIL_SECS * rate as f64) as usize) * 4);
+        for c in iq {
+            bytes.extend_from_slice(&((c.re * 32767.0).clamp(-32767.0, 32767.0) as i16).to_le_bytes());
+            bytes.extend_from_slice(&((c.im * 32767.0).clamp(-32767.0, 32767.0) as i16).to_le_bytes());
+        }
+        bytes.resize(bytes.len() + (REPLAY_TAIL_SECS * rate as f64) as usize * 4, 0);
+
+        let mut child = Command::new(self.path)
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("can't start {}: {e}", self.path))?;
+        let mut stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        // Feed and read on their own threads so a stuck rtl_433 can't hang us.
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&bytes);
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let lines: Vec<String> = BufReader::new(stdout).lines().map_while(Result::ok).collect();
+            let _ = tx.send(lines);
+        });
+        let lines = rx.recv_timeout(REPLAY_TIMEOUT);
+        let _ = child.kill();
+        let _ = child.wait();
+        let lines = lines.map_err(|_| "rtl_433 did not finish".to_string())?;
+        Ok(lines.iter().filter(|l| l.starts_with('{')).any(|l| {
+            serde_json::from_str::<Map<String, Value>>(l)
+                .is_ok_and(|d| crate::events::identity(&DecodedEvent::new(NAME, Some(freq_hz), d)).0 == self.key)
+        }))
+    }
 }
 
 fn mhz_to_hz(v: Option<&Value>) -> Option<i64> {
@@ -556,6 +667,8 @@ impl Worker {
         let radio = self.radio.clone();
         let ring = self.ring.clone();
         let raw = self.raw.clone();
+        let path = self.path.clone();
+        let cfg = cfg.clone();
         std::thread::Builder::new()
             .name("rtl_433-out".into())
             .spawn(move || {
@@ -566,13 +679,16 @@ impl Worker {
                             Ok(data) => {
                                 let t = *tuning.lock().unwrap();
                                 let mut rx = rx_info(&line, &data, freq_hz, t, Some(&radio.borrow()));
-                                let sig = cut_burst(&ring, &data, rate, freq_hz);
+                                let key = crate::events::identity(&DecodedEvent::new(NAME, None, data.clone())).0;
+                                // Only a burst that is this device's may be logged.
+                                let check = raw.is_armed(&key).then(|| Check { path: &path, cfg: &cfg, key: key.clone() });
+                                let sig = cut_burst(&ring, &data, rate, freq_hz, check.as_ref());
                                 let mut ev = DecodedEvent::new(NAME, Some(freq_hz), data);
                                 if let Some(mut sig) = sig {
                                     sig.ts = ev.ts_ms;
                                     rx.insert("signal".into(), true.into());
                                     let sig = Arc::new(sig);
-                                    raw.insert(crate::events::identity(&ev).0, sig.clone());
+                                    raw.insert(key, sig.clone());
                                     ev.signal = Some(sig);
                                 }
                                 ev = ev.with_rx(rx);

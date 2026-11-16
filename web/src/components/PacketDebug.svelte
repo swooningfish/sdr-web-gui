@@ -193,13 +193,15 @@
       <span class="grow"></span>
       {#if isAdmin}
         {#if armed}
-          <span class="small-text waiting">Waiting for the next burst…</span>
+          <span class="small-text waiting" title="Only a burst that rtl_433 decodes as this sensor again is saved"
+            >Waiting for this sensor's next burst…</span
+          >
           <button type="button" class="small" onclick={() => onArm(false)}>Cancel</button>
         {:else}
           <button
             type="button"
             class="small"
-            title="Save the next packet's burst (IQ and pulses) with it, kept like the rest of its history"
+            title="Save this sensor's next burst (IQ and pulses) with its packet, once rtl_433 decodes the burst as this sensor"
             onclick={() => onArm(true)}>Log next burst</button
           >
         {/if}

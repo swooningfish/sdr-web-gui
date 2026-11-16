@@ -372,6 +372,9 @@ export interface RawSignal {
   pulses_truncated: boolean;
   slicer: 'level' | 'frequency';
   iq_samples: number;
+  /** rtl_433 decoded this same sensor from just this burst (checked when
+   *  logging; absent on bursts logged before the check existed). */
+  verified?: boolean;
   file_name: string;
 }
 
