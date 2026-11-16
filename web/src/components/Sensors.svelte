@@ -125,10 +125,16 @@
     const i = devices.findIndex((d) => d.id === device.id);
     if (i >= 0) devices.splice(i, 1);
     devices.unshift(device);
-    feed = [{ device, event }, ...feed].slice(0, 50);
+    // An event sent again (a burst saved with it from a repeat) replaces itself.
+    const again = feed.some((f) => f.event.id === event.id) || history.some((e) => e.id === event.id);
+    if (again) {
+      feed = feed.map((f) => (f.event.id === event.id ? { device, event } : f));
+    } else {
+      feed = [{ device, event }, ...feed].slice(0, 50);
+    }
     if (selectedId === device.id) {
       now = Date.now(); // keep the newest point inside the chart's time range
-      history = [event, ...history];
+      history = again ? history.map((e) => (e.id === event.id ? event : e)) : [event, ...history];
       if (event.burst) burstArmed = false;
     }
   }

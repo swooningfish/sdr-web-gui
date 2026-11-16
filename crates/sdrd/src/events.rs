@@ -458,43 +458,77 @@ pub async fn run(
     mqtt: Option<MqttHandle>,
     raw: RawStore,
 ) {
-    let mut recent: HashMap<String, (Instant, String)> = HashMap::new();
+    // Per device: when its last event was stored, that event's fingerprint,
+    // and the event itself while it still waits for a burst to be logged.
+    // Sensors repeat each packet several times; a repeat is dropped as a
+    // duplicate, but if the stored copy had no signal and the device is armed,
+    // a repeat's burst is saved with it.
+    let mut recent: HashMap<String, (Instant, String, Option<Box<(Device, EventRow)>>)> = HashMap::new();
     while let Some(ev) = rx.recv().await {
         let (key, ..) = identity(&ev);
         let fp = fingerprint(&ev.data);
         let now = Instant::now();
         let window = dedupe_window(ev.decoder);
-        if let Some((t, last)) = recent.get(&key) {
+        if let Some((t, last, waiting)) = recent.get_mut(&key) {
             if *last == fp && now.duration_since(*t) < window {
+                if let (Some(sig), Some(w)) = (&ev.signal, waiting.as_mut()) {
+                    if raw.take_armed(&key) {
+                        let (device, row) = &mut **w;
+                        log_burst(&db, &feed, device, row, sig).await;
+                        *waiting = None;
+                    }
+                }
                 continue;
             }
         }
-        recent.insert(key, (now, fp));
         if recent.len() > 4096 {
-            recent.retain(|_, (t, _)| now.duration_since(*t) < Duration::from_secs(30));
+            recent.retain(|_, (t, ..)| now.duration_since(*t) < Duration::from_secs(30));
         }
 
         match store(&db, &ev).await {
             Ok((device, mut row)) => {
                 tracing::debug!(device = %device.key, "event");
-                if let Some(sig) = &ev.signal {
-                    if raw.take_armed(&device.key) {
-                        match save_burst(&db, row.id, sig).await {
-                            Ok(()) => {
-                                row.burst = true;
-                                tracing::info!(device = %device.key, event = row.id, "burst logged");
-                            }
-                            Err(e) => tracing::warn!("saving burst failed: {e}"),
+                let mut waiting = None;
+                if raw.is_armed(&device.key) {
+                    match &ev.signal {
+                        Some(sig) if raw.take_armed(&device.key) => {
+                            save_and_flag(&db, &device, &mut row, sig).await;
                         }
+                        Some(_) => {}
+                        None => waiting = Some(Box::new((device.clone(), row.clone()))),
                     }
                 }
+                recent.insert(key, (now, fp, waiting));
                 let _ = feed.send(ws_message(&device, &row));
                 if let Some(m) = &mqtt {
                     m.publish_event(&device, &ev);
                 }
             }
-            Err(e) => tracing::warn!("storing event failed: {e}"),
+            Err(e) => {
+                recent.insert(key, (now, fp, None));
+                tracing::warn!("storing event failed: {e}");
+            }
         }
+    }
+}
+
+/// Save a burst with a stored event and mark the row.
+async fn save_and_flag(db: &SqlitePool, device: &Device, row: &mut EventRow, sig: &RawSignal) {
+    match save_burst(db, row.id, sig).await {
+        Ok(()) => {
+            row.burst = true;
+            tracing::info!(device = %device.key, event = row.id, "burst logged");
+        }
+        Err(e) => tracing::warn!("saving burst failed: {e}"),
+    }
+}
+
+/// Save a repeat's burst with the already-sent event and tell browsers again
+/// (same event id, now flagged), so they update the row in place.
+async fn log_burst(db: &SqlitePool, feed: &EventFeed, device: &Device, row: &mut EventRow, sig: &RawSignal) {
+    save_and_flag(db, device, row, sig).await;
+    if row.burst {
+        let _ = feed.send(ws_message(device, row));
     }
 }
 
@@ -586,6 +620,49 @@ mod tests {
         assert_eq!(list_devices(&db, Some("rtl_433"), 10).await.unwrap().len(), 0);
         assert_eq!(tracks(&db, "aprs", 0).await.unwrap().len(), 1);
         assert_eq!(recent_events(&db, Some("aprs"), 10).await.unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A sensor repeats its packet; if the stored copy had no signal, an
+    /// armed device's burst is taken from a repeat and saved with it.
+    #[tokio::test]
+    async fn logs_burst_from_a_repeat() {
+        let dir = std::env::temp_dir().join(format!("sdrd-burst-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let _ = std::fs::remove_file(&path);
+        let db = db::open(&path).await.unwrap();
+
+        let c = num_complex::Complex32::new;
+        let mut iq = vec![c(0.01, 0.0); 100];
+        iq.extend(std::iter::repeat_n(c(1.0, 0.0), 500));
+        iq.extend(std::iter::repeat_n(c(0.01, 0.0), 2000));
+        let sig = Arc::new(
+            crate::decoders::burst::extract(&iq, 0, 100, 250_000, 433_920_000, Some("ASK"), 0).unwrap(),
+        );
+
+        let raw = RawStore::default();
+        let (feed, mut sub) = broadcast::channel(16);
+        let (tx, rx) = mpsc::channel(16);
+        let task = tokio::spawn(run(db.clone(), rx, feed, None, raw.clone()));
+        let pkt = json!({"model":"Nexus-TH","id":90,"channel":1,"temperature_C":21.3});
+        raw.arm(&identity(&ev(pkt.clone())).0, true);
+
+        tx.send(ev(pkt.clone())).await.unwrap(); // stored, no signal
+        let mut repeat = ev(pkt.clone());
+        repeat.signal = Some(sig.clone());
+        tx.send(repeat).await.unwrap(); // duplicate, carries the burst
+        drop(tx);
+        task.await.unwrap();
+
+        let first: Value = serde_json::from_str(&sub.recv().await.unwrap().json).unwrap();
+        let again: Value = serde_json::from_str(&sub.recv().await.unwrap().json).unwrap();
+        assert_eq!(first["event"]["burst"], false);
+        assert_eq!(again["event"]["burst"], true);
+        assert_eq!(first["event"]["id"], again["event"]["id"]);
+        let id = again["event"]["id"].as_i64().unwrap();
+        assert!(get_burst(&db, id).await.unwrap().is_some());
+        assert!(!raw.is_armed("rtl_433:Nexus-TH:90:1"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

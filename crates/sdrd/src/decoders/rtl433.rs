@@ -497,13 +497,16 @@ impl Worker {
                 bytes.extend_from_slice(&((c.re * 32767.0).clamp(-32767.0, 32767.0) as i16).to_le_bytes());
                 bytes.extend_from_slice(&((c.im * 32767.0).clamp(-32767.0, 32767.0) as i16).to_le_bytes());
             }
+            // Into the ring first: rtl_433 can decode (and the output thread
+            // cut) a burst from these samples before write_all returns. A
+            // failed write restarts rtl_433, which resets the ring anyway.
+            self.ring.lock().unwrap().push(&iq);
             let p = proc.as_mut().unwrap();
             if let Err(e) = p.stdin.write_all(&bytes) {
                 proc = None;
                 self.failed(format!("writing to rtl_433: {e}"), &mut retry_at, &mut backoff);
             } else {
                 backoff = Duration::from_secs(2);
-                self.ring.lock().unwrap().push(&iq);
             }
         }
     }

@@ -63,7 +63,9 @@
     devices[i] = device;
     now = Date.now();
     const cutoff = now - DAY;
-    history[device.id] = [event, ...(history[device.id] ?? []).filter((e) => e.ts >= cutoff)];
+    // An event sent again (a burst saved with it) replaces itself.
+    const prev = (history[device.id] ?? []).filter((e) => e.ts >= cutoff && e.id !== event.id);
+    history[device.id] = [event, ...prev].sort((a, b) => b.ts - a.ts);
   }
 
   /** Quiet for much longer than its usual reporting interval. */
