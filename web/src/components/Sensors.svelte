@@ -1,7 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, ApiError, type Device, type DevicePatch, type EventRow, type RadioState, type Rtl433Info } from '../lib/api';
-  import { CHART_FIELDS, deviceLabel, deviceTitle, readings, series } from '../lib/sensors';
+  import {
+    CHART_FIELDS,
+    DEFAULT_DISTANCE,
+    calibrateRef,
+    deviceLabel,
+    deviceTitle,
+    estimateDistance,
+    formatDistance,
+    medianRssi,
+    readings,
+    series,
+  } from '../lib/sensors';
   import TimeChart from './TimeChart.svelte';
   import DeviceIdent from './DeviceIdent.svelte';
   import PacketDebug from './PacketDebug.svelte';
@@ -116,6 +127,55 @@
       fail(e);
     }
   }
+  // Distance estimate from signal level (log-distance path loss model).
+  const model = $derived(info?.distance ?? DEFAULT_DISTANCE);
+  /** With tuner AGC the level isn't comparable between packets, let alone a range. */
+  const agc = $derived(radio?.settings.gain_db === null);
+  const distTitle = $derived(
+    `Rough estimate from signal level (${model.ref_db} dB at 1 m, path loss exponent ${model.exponent}). ` +
+      'Walls, antennas and each sensor\'s transmit power change it a lot; calibrate it from a sensor at a known distance.' +
+      (agc ? ' The radio is on automatic gain, so levels drift and the estimate is unreliable.' : ''),
+  );
+  const dist = (rssi: number) => formatDistance(estimateDistance(rssi, model));
+  const selRssi = $derived(medianRssi(history));
+  let calInput = $state('');
+  let expInput = $state('');
+  let calMsg = $state<string | null>(null);
+  $effect(() => {
+    expInput = String(model.exponent);
+  });
+
+  async function saveModel(m: { ref_db: number; exponent: number }) {
+    calMsg = null;
+    try {
+      const saved = await api.setDistanceModel({ ref_db: Math.round(m.ref_db * 10) / 10, exponent: m.exponent });
+      if (info) info = { ...info, distance: saved };
+      calMsg = 'Saved';
+    } catch (e) {
+      calMsg = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  function calibrate(e: SubmitEvent) {
+    e.preventDefault();
+    const metres = Number(calInput);
+    const exponent = Number(expInput);
+    if (!(exponent >= 1 && exponent <= 6)) {
+      calMsg = 'Path loss exponent must be between 1 and 6';
+      return;
+    }
+    if (calInput.trim() === '') {
+      saveModel({ ref_db: model.ref_db, exponent });
+      return;
+    }
+    if (!(metres > 0) || selRssi === null) {
+      calMsg = selRssi === null ? 'No signal levels to calibrate from' : 'Enter the distance in metres';
+      return;
+    }
+    saveModel({ ref_db: calibrateRef(selRssi, metres, exponent), exponent });
+    calInput = '';
+  }
+
   const charts = $derived(
     CHART_FIELDS.map((f) => ({ ...f, points: series(history, f.key) })).filter((c) => c.points.length > 0),
   );
@@ -446,7 +506,12 @@
                     <div><DeviceIdent device={d} showModel={!!d.name} /></div>
                   </td>
                   <td class="readings">{readings(r).slice(0, 4).join(' · ')}</td>
-                  <td class="num hide-sm">{typeof r.rssi === 'number' ? `${r.rssi.toFixed(1)} dB` : ''}</td>
+                  <td class="num hide-sm">
+                    {#if typeof r.rssi === 'number'}
+                      {r.rssi.toFixed(1)} dB
+                      <div class="dist muted" title={distTitle}>{dist(r.rssi)}</div>
+                    {/if}
+                  </td>
                   <td class="nowrap" title={new Date(d.last_seen).toLocaleString()}>{relTime(d.last_seen, now)}</td>
                   <td class="num hide-sm">{d.count}</td>
                   <td>
@@ -493,7 +558,36 @@
             {#if selected.kind}<dt>Type</dt><dd>{selected.kind}</dd>{/if}
             <dt>First heard</dt><dd>{new Date(selected.first_seen).toLocaleString()}</dd>
             <dt>Readings</dt><dd>{selected.count}</dd>
+            {#if selRssi !== null}
+              <dt>Distance</dt>
+              <dd title={distTitle}>
+                {dist(selRssi)}
+                <span class="muted">(estimate from median signal {selRssi.toFixed(1)} dB{agc ? ', AGC on' : ''})</span>
+              </dd>
+            {/if}
           </dl>
+          {#if isAdmin && selRssi !== null}
+            <details class="calib small-text">
+              <summary>Calibrate distance</summary>
+              <form onsubmit={calibrate}>
+                <label>
+                  This sensor is
+                  <input type="number" min="0.1" step="any" placeholder="e.g. 5" bind:value={calInput} aria-label="Known distance in metres" />
+                  m away
+                </label>
+                <label>
+                  Path loss exponent
+                  <input type="number" min="1" max="6" step="0.1" bind:value={expInput} aria-label="Path loss exponent" />
+                </label>
+                <button type="submit" class="small">Save</button>
+              </form>
+              <p class="muted">
+                Sets the level expected at 1 m (now {model.ref_db} dB) for all sensors, from this one's median signal.
+                Exponent: 2 in open air, about 3 through walls. Leave the distance empty to change only the exponent.
+              </p>
+              {#if calMsg}<p>{calMsg}</p>{/if}
+            </details>
+          {/if}
           {#if isAdmin}
             <form class="name" onsubmit={saveName}>
               <input placeholder="Name, e.g. Garden sensor" maxlength="64" bind:value={nameInput} aria-label="Device name" />
@@ -774,6 +868,30 @@
   dd {
     margin: 0;
     overflow-wrap: anywhere;
+  }
+  .dist {
+    font-size: 12px;
+    cursor: help;
+  }
+  .calib {
+    margin: 0 0 12px;
+  }
+  .calib summary {
+    cursor: pointer;
+    color: var(--muted);
+  }
+  .calib form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+    margin: 6px 0;
+  }
+  .calib input {
+    width: 5.5em;
+  }
+  .calib p {
+    margin: 4px 0;
   }
   .name {
     display: flex;

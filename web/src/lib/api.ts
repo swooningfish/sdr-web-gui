@@ -413,6 +413,15 @@ export interface Rtl433Info {
   mqtt: MqttStatus | null;
   /** Every verified burst is saved with its packet. */
   record_all_bursts: boolean;
+  distance: DistanceModel;
+}
+
+/** Log-distance path loss calibration for sensor range estimates. */
+export interface DistanceModel {
+  /** Signal level (dB) expected 1 m from a sensor. */
+  ref_db: number;
+  /** Path loss exponent: 2 in free space, 2.5–4 around buildings. */
+  exponent: number;
 }
 
 export type Demod = 'fm' | 'usb' | 'lsb';
@@ -789,6 +798,7 @@ export const api = {
   aprsTracks: (since: number) => req<Track[]>('GET', `/aprs/tracks?since=${Math.floor(since)}`),
   rtl433: () => req<Rtl433Info>('GET', '/decoders/rtl_433'),
   setRecordAllBursts: (on: boolean) => req<{ on: boolean }>('PUT', '/decoders/rtl_433/record-bursts', { on }),
+  setDistanceModel: (m: DistanceModel) => req<DistanceModel>('PUT', '/decoders/rtl_433/distance', m),
   setRtl433: (config: Rtl433Config) => req<{ config: Rtl433Config }>('PUT', '/decoders/rtl_433', config),
   adsb: () => req<AdsbInfo>('GET', '/adsb'),
   setAdsb: (config: { enabled: boolean }) => req('PUT', '/adsb', config),

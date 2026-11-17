@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use super::{AdminUser, ApiError, AppState, AuthUser};
 use crate::auth::{Role, Session};
-use crate::decoders::rtl433::{Rtl433Config, SpecError};
+use crate::decoders::rtl433::{DistanceModel, Rtl433Config, SpecError, DISTANCE_KEY};
 use crate::events::{self, Device, EventRow};
 
 /// Other people's sensor data (TPMS IDs especially) is only shown to admins
@@ -383,12 +383,34 @@ pub async fn delete_devices(
 
 pub async fn get_rtl433(State(state): State<AppState>, AuthUser(s): AuthUser) -> Result<Json<Value>, ApiError> {
     ism_user(&state, &s)?;
+    let distance = crate::db::get_setting::<DistanceModel>(&state.db, DISTANCE_KEY)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("distance model: {e:#}");
+            None
+        })
+        .unwrap_or_default();
     Ok(Json(json!({
         "config": state.rtl433.config(),
         "status": state.rtl433.status(),
         "mqtt": state.mqtt.as_ref().map(|m| m.status()),
         "record_all_bursts": state.rtl433.raw_store().record_all(),
+        "distance": distance,
     })))
+}
+
+/// Calibration for the distance shown next to each sensor's signal level.
+pub async fn set_distance(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Json(m): Json<DistanceModel>,
+) -> Result<Json<DistanceModel>, ApiError> {
+    m.validate().map_err(ApiError::bad_request)?;
+    crate::db::set_setting(&state.db, DISTANCE_KEY, &m)
+        .await
+        .map_err(ApiError::internal)?;
+    tracing::info!(by = %admin.user.username, ref_db = m.ref_db, exponent = m.exponent, "sensor distance model");
+    Ok(Json(m))
 }
 
 #[derive(Deserialize)]

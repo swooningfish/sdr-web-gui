@@ -1,4 +1,38 @@
-import type { Device, EventRow, Json } from './api';
+import type { Device, DistanceModel, EventRow, Json } from './api';
+
+export const DEFAULT_DISTANCE: DistanceModel = { ref_db: 0, exponent: 2 };
+
+/** Metres from a signal level, by the log-distance path loss model. */
+export function estimateDistance(rssi: number, m: DistanceModel): number {
+  return 10 ** ((m.ref_db - rssi) / (10 * m.exponent));
+}
+
+/** "~8 m", "~1.2 km"; deliberately coarse, since the estimate is. */
+export function formatDistance(metres: number): string {
+  if (!Number.isFinite(metres)) return '';
+  if (metres < 1) return '<1 m';
+  if (metres < 10) return `~${metres.toFixed(1).replace(/\.0$/, '')} m`;
+  if (metres < 100) return `~${Math.round(metres)} m`;
+  if (metres < 1000) return `~${Math.round(metres / 10) * 10} m`;
+  return `~${(metres / 1000).toFixed(1)} km`;
+}
+
+/** Reference level that puts a sensor heard at `rssi` at `metres` away. */
+export function calibrateRef(rssi: number, metres: number, exponent: number): number {
+  return rssi + 10 * exponent * Math.log10(metres);
+}
+
+/** Median signal level of the most recent `n` readings (one packet can be off). */
+export function medianRssi(events: EventRow[], n = 20): number | null {
+  const v = events
+    .slice(0, n)
+    .map((e) => e.data.rssi)
+    .filter((x): x is number => typeof x === 'number' && Number.isFinite(x))
+    .sort((a, b) => a - b);
+  if (!v.length) return null;
+  const mid = v.length >> 1;
+  return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+}
 
 /** Fields that identify the device or describe reception rather than data. */
 const META = new Set([

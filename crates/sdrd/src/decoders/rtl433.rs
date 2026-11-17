@@ -216,6 +216,37 @@ fn drop_legacy_flex(cfg: &mut Rtl433Config) -> bool {
 
 /// Setting: save every verified burst with its event.
 pub const RECORD_ALL_KEY: &str = "rtl433.record_all_bursts";
+pub const DISTANCE_KEY: &str = "rtl433.distance";
+
+/// Log-distance path loss model for guessing a sensor's range from its
+/// rtl_433 signal level: `d = 10^((ref_db - rssi) / (10 * exponent))` metres.
+/// rtl_433's level is relative to full scale, so it only holds for a fixed gain.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DistanceModel {
+    /// Signal level (dB) expected 1 m from a typical sensor.
+    pub ref_db: f64,
+    /// Path loss exponent: 2 in free space, roughly 2.5–4 around buildings.
+    pub exponent: f64,
+}
+
+impl Default for DistanceModel {
+    fn default() -> Self {
+        DistanceModel { ref_db: 0.0, exponent: 2.0 }
+    }
+}
+
+impl DistanceModel {
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.ref_db.is_finite() || !(-120.0..=30.0).contains(&self.ref_db) {
+            return Err("reference level must be between -120 and 30 dB".into());
+        }
+        if !self.exponent.is_finite() || !(1.0..=6.0).contains(&self.exponent) {
+            return Err("path loss exponent must be between 1 and 6".into());
+        }
+        Ok(())
+    }
+}
 
 pub async fn spawn(
     db: &sqlx::SqlitePool,
