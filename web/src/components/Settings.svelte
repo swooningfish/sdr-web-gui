@@ -14,6 +14,7 @@
   import Integrations from './Integrations.svelte';
   import Users from './Users.svelte';
   import SystemInfo from './SystemInfo.svelte';
+  import About from './About.svelte';
 
   import type { SettingsTab } from '../lib/route';
 
@@ -36,6 +37,7 @@
     { id: 'integrations', label: 'Integrations', admin: true },
     { id: 'users', label: 'Users', admin: true },
     { id: 'system', label: 'System', admin: true },
+    { id: 'about', label: 'Help & about', admin: true },
   ];
   const TABS = $derived(ALL_TABS.filter((t) => isAdmin || !t.admin));
 
@@ -82,6 +84,8 @@
       <Users {me} />
     {:else if tab === 'system'}
       <SystemInfo />
+    {:else if tab === 'about'}
+      <About />
     {/if}
   </div>
 </div>

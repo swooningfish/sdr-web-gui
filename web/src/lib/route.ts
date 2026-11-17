@@ -20,7 +20,7 @@ export type View = (typeof VIEWS)[number];
 export const SAT_TABS = ['passes', 'sstv'] as const;
 export type SatTab = (typeof SAT_TABS)[number];
 
-export const SETTINGS_TABS = ['receiver', 'decoders', 'rotation', 'passes', 'integrations', 'users', 'system'] as const;
+export const SETTINGS_TABS = ['receiver', 'decoders', 'rotation', 'passes', 'integrations', 'users', 'system', 'about'] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export interface Route {
