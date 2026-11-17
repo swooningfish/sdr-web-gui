@@ -318,8 +318,10 @@
                   checked={sel.has(d.id)}
                   aria-label="Select {stationName(d)}"
                   onclick={(e) => {
-                    e.preventDefault();
+                    // No preventDefault: the browser would undo the tick after
+                    // this handler. Sync the box to the set instead.
                     sel.toggle(d.id, e.shiftKey, order);
+                    e.currentTarget.checked = sel.has(d.id);
                   }}
                 />
               {/if}
@@ -457,7 +459,8 @@
     flex: none;
   }
   li.picked {
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    box-shadow: inset 3px 0 0 var(--accent);
   }
   .station {
     display: grid;

@@ -428,9 +428,12 @@
                         checked={sel.has(d.id)}
                         aria-label="Select {deviceLabel(d)}"
                         onclick={(e) => {
+                          // No preventDefault: the browser would undo the tick after
+                          // this handler. Sync the box to the set instead (Shift+click
+                          // can leave an already-picked row picked).
                           e.stopPropagation();
-                          e.preventDefault();
                           sel.toggle(d.id, e.shiftKey, order);
+                          e.currentTarget.checked = sel.has(d.id);
                         }}
                       />
                     </td>
@@ -662,8 +665,12 @@
     width: 1%;
     padding-right: 0;
   }
-  tr.picked td {
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  tbody tr.picked,
+  tbody tr.picked:hover {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  tr.picked td:first-child {
+    box-shadow: inset 3px 0 0 var(--accent);
   }
   button.sort {
     background: none;
