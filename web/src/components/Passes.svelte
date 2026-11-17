@@ -3,7 +3,7 @@
   import { onMount } from 'svelte';
   import { api, type Device, type EventRow, type Pass, type RadioState, type ScheduleInfo } from '../lib/api';
   import { unsupported } from '../lib/coverage';
-  import { formatMHz, relTime } from '../lib/format';
+  import { formatMHz, formatRate, relTime } from '../lib/format';
   import { compass, countdown, duration } from '../lib/passes';
   import { imageUrl } from '../lib/sstv';
   import SkyPlot from './SkyPlot.svelte';
@@ -46,8 +46,34 @@
     if (selected !== null) return st.passes.find((p) => p.aos_ms === selected) ?? null;
     return st.passes[0] ?? null;
   });
+  type PassRadio = { center_hz: number; sample_rate: number; gain_db: number | null; ppm: number; bias_tee: boolean; direct_sampling: number };
   const rec = (e: EventRow) =>
-    e.data as { id: string; aos_ms: number; los_ms: number; max_el_deg: number; test: boolean; audio?: string; seconds?: number };
+    e.data as {
+      id: string;
+      aos_ms: number;
+      los_ms: number;
+      max_el_deg: number;
+      test: boolean;
+      audio?: string;
+      seconds?: number;
+      record_hz?: number;
+      doppler?: boolean;
+      radio?: PassRadio;
+    };
+  /** What the radio was set to for a pass, for older logs only what's there. */
+  function radioLine(r: ReturnType<typeof rec>): string {
+    const parts: string[] = [];
+    if (r.record_hz) parts.push(`FM ${formatMHz(r.record_hz)}${r.doppler ? ' + Doppler' : ''}`);
+    const x = r.radio;
+    if (x) {
+      parts.push(`tuned ${formatMHz(x.center_hz)}`, formatRate(x.sample_rate));
+      parts.push(x.gain_db == null ? 'auto gain' : `gain ${x.gain_db.toFixed(1)} dB`);
+      if (x.ppm) parts.push(`${x.ppm > 0 ? '+' : ''}${x.ppm} ppm`);
+      if (x.bias_tee) parts.push('bias tee on');
+      if (x.direct_sampling) parts.push(`direct sampling (${x.direct_sampling === 1 ? 'I' : 'Q'})`);
+    }
+    return parts.join(' · ');
+  }
   /** SSTV images received during a pass (plus a minute either side). */
   const passImages = (e: EventRow) => {
     const r = rec(e);
@@ -265,6 +291,7 @@
               {#if isAdmin}<button type="button" class="small danger" onclick={() => remove(e)}>Delete</button>{/if}
             </span>
           </div>
+          {#if radioLine(r)}<p class="muted small-text radio-line">{radioLine(r)}</p>{/if}
           {#if r.audio}
             <audio controls preload="none" src="/api/passes/{e.id}/audio"></audio>
           {/if}
@@ -432,7 +459,8 @@
   .rec-head .badge.sstv {
     margin-left: 0;
   }
-  .gallery {
+  .gallery,
+  .radio-line {
     margin: 0;
   }
   .gallery a {

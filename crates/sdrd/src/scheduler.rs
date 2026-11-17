@@ -449,6 +449,8 @@ struct Active {
     pass: Pass,
     test: bool,
     recording: Option<PathBuf>,
+    /// Radio settings at the start of the pass.
+    radio: Option<RadioSettings>,
 }
 
 struct Run {
@@ -473,7 +475,7 @@ struct Run {
     active: Option<Active>,
     before_pass: Option<RadioSettings>,
     /// Recordings being finalised → the pass they belong to.
-    pending: HashMap<PathBuf, (SatConfig, Pass, bool)>,
+    pending: HashMap<PathBuf, Active>,
     tune_error: bool,
     /// AOS times of real passes stopped or skipped by hand (so they aren't
     /// started or restarted).
@@ -680,22 +682,25 @@ impl Run {
         self.passes.sort_by_key(|(_, p)| p.aos_ms);
     }
 
-    fn tune(&mut self, center_hz: u64, sample_rate: u32, why: &str) {
+    /// Returns the radio settings now in force, or `None` if it can't tune.
+    fn tune(&mut self, center_hz: u64, sample_rate: u32, why: &str) -> Option<RadioSettings> {
         let cur = self.radio.state().settings;
         if cur.center_hz == center_hz && cur.sample_rate == sample_rate {
-            return;
+            return Some(cur);
         }
         let patch = RadioPatch { center_hz: Some(center_hz), sample_rate: Some(sample_rate), ..Default::default() };
         match self.radio.configure(&patch) {
-            Ok(_) => {
+            Ok(set) => {
                 self.tune_error = false;
                 tracing::info!(center_hz, sample_rate, "scheduler: {why}");
+                Some(set)
             }
             Err(e) => {
                 if !self.tune_error {
                     tracing::warn!("scheduler can't tune: {e}");
                 }
                 self.tune_error = true;
+                None
             }
         }
     }
@@ -706,7 +711,24 @@ impl Run {
             self.before_pass = Some(self.radio.state().settings);
         }
         tracing::info!("{} pass{}: tuning for AOS", sat.name, if test { " (test)" } else { "" });
-        self.tune(sat.center_hz, sat.sample_rate, &format!("{} pass", sat.name));
+        let radio = self.tune(sat.center_hz, sat.sample_rate, &format!("{} pass", sat.name));
+        if sat.record {
+            match &radio {
+                Some(r) => tracing::info!(
+                    record_hz = sat.record_hz,
+                    doppler = !test,
+                    center_hz = r.center_hz,
+                    sample_rate = r.sample_rate,
+                    gain_db = ?r.gain_db,
+                    ppm = r.ppm,
+                    bias_tee = r.bias_tee,
+                    direct_sampling = r.direct_sampling,
+                    "{} pass: recording FM",
+                    sat.name
+                ),
+                None => tracing::warn!(record_hz = sat.record_hz, "{} pass: recording, but the radio didn't retune", sat.name),
+            }
+        }
         let recording = sat.record.then(|| {
             let path = self.passes_dir.join(format!(
                 "{}-{}{}.wav",
@@ -717,7 +739,7 @@ impl Run {
             self.record_ctl.send_replace(Some(RecordSpec { path: path.clone(), freq_hz: sat.record_hz, doppler: !test }));
             path
         });
-        self.active = Some(Active { sat, pass, test, recording });
+        self.active = Some(Active { sat, pass, test, recording, radio });
     }
 
     fn start_test(&mut self, secs: u32) {
@@ -748,12 +770,12 @@ impl Run {
         let Some(a) = self.active.take() else { return };
         tracing::info!("{} pass ended", a.sat.name);
         self.doppler_tx.send_replace(None);
-        match a.recording {
+        match a.recording.clone() {
             Some(path) => {
                 self.record_ctl.send_replace(None);
-                self.pending.insert(path, (a.sat, a.pass, a.test));
+                self.pending.insert(path, a);
             }
-            None => self.log_pass(&a.sat, &a.pass, a.test, None).await,
+            None => self.log_pass(&a, None).await,
         }
         if let Some(prev) = self.before_pass.take() {
             self.tune(prev.center_hz, prev.sample_rate, "restoring tuning after pass");
@@ -763,11 +785,12 @@ impl Run {
     }
 
     async fn recorded(&mut self, done: RecordDone) {
-        let Some((sat, pass, test)) = self.pending.remove(&done.path) else { return };
-        self.log_pass(&sat, &pass, test, Some(done)).await;
+        let Some(a) = self.pending.remove(&done.path) else { return };
+        self.log_pass(&a, Some(done)).await;
     }
 
-    async fn log_pass(&self, sat: &SatConfig, pass: &Pass, test: bool, rec: Option<RecordDone>) {
+    async fn log_pass(&self, a: &Active, rec: Option<RecordDone>) {
+        let (sat, pass, test) = (&a.sat, &a.pass, a.test);
         let mut data = Map::new();
         data.insert("model".into(), json!("Pass"));
         data.insert("id".into(), json!(sat.name));
@@ -779,6 +802,13 @@ impl Run {
             let name = r.path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
             data.insert("audio".into(), json!(name));
             data.insert("seconds".into(), json!((r.seconds * 10.0).round() / 10.0));
+        }
+        if sat.record {
+            data.insert("record_hz".into(), json!(sat.record_hz));
+            data.insert("doppler".into(), json!(!test));
+        }
+        if let Some(r) = &a.radio {
+            data.insert("radio".into(), json!(r));
         }
         let freq = sat.record.then_some(sat.record_hz);
         if self.events.send(DecodedEvent::new(PASSES, freq, data)).await.is_err() {
