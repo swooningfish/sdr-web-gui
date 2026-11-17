@@ -194,6 +194,21 @@ impl ScheduleConfig {
     }
 }
 
+/// One entry per NORAD id: a satellite can be listed more than once (say,
+/// for different downlinks), but there's only one TLE for it. Keeps the first
+/// position, with the name of an enabled entry if there is one.
+fn unique_sats(sats: &[SatConfig]) -> Vec<&SatConfig> {
+    let mut out: Vec<&SatConfig> = Vec::new();
+    for s in sats {
+        match out.iter_mut().find(|o| o.norad_id == s.norad_id) {
+            Some(o) if s.enabled && !o.enabled => *o = s,
+            Some(_) => {}
+            None => out.push(s),
+        }
+    }
+    out
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TleRecord {
     pub name: String,
@@ -535,7 +550,7 @@ impl Run {
         let cfg = self.cfg_rx.borrow().clone();
         self.sats.clear();
         let mut infos = Vec::new();
-        for s in &cfg.satellites {
+        for s in unique_sats(&cfg.satellites) {
             let mut info = TleInfo { norad_id: s.norad_id, name: s.name.clone(), ..Default::default() };
             if let Ok(Some(rec)) = db::get_setting::<TleRecord>(&self.db, &format!("tle.{}", s.norad_id)).await {
                 match Satellite::from_tle(&s.name, &rec.line1, &rec.line2) {
@@ -566,7 +581,7 @@ impl Run {
         let cfg = self.cfg_rx.borrow().clone();
         let now = db::now_ms();
         let mut changed = false;
-        for s in &cfg.satellites {
+        for s in unique_sats(&cfg.satellites) {
             let stale = self
                 .tles
                 .iter()
@@ -909,6 +924,15 @@ mod tests {
         let mut c = ScheduleConfig::default();
         c.satellites[0].sample_rate = 123;
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn one_tle_per_norad_id() {
+        let base = ScheduleConfig::default().satellites[0].clone();
+        let sat = |name: &str, norad_id, enabled| SatConfig { name: name.into(), norad_id, enabled, ..base.clone() };
+        let sats = [sat("ISS off", 25544, false), sat("Other", 1, true), sat("ISS", 25544, true)];
+        let u = unique_sats(&sats);
+        assert_eq!(u.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["ISS", "Other"]);
     }
 
     #[test]
