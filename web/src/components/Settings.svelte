@@ -2,6 +2,7 @@
   import type { RadioState, User } from '../lib/api';
   import SdrDevices from './SdrDevices.svelte';
   import AdsbSettings from './AdsbSettings.svelte';
+  import ExtraReceivers from './ExtraReceivers.svelte';
   import DecoderSettings from './DecoderSettings.svelte';
   import AprsSettings from './AprsSettings.svelte';
   import SstvSettings from './SstvSettings.svelte';
@@ -63,6 +64,7 @@
     {#if tab === 'receiver'}
       <SdrDevices {radio} isAdmin={true} />
       <AdsbSettings />
+      <ExtraReceivers />
     {:else if tab === 'decoders'}
       <DecoderSettings {radio} />
       <AprsSettings {radio} />

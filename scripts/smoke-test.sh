@@ -51,6 +51,10 @@ check "devices"                200 "$(code -b "$JAR" "$BASE/api/devices")"
 check "recent events"          200 "$(code -b "$JAR" "$BASE/api/events")"
 check "rtl_433 config"         200 "$(code -b "$JAR" "$BASE/api/decoders/rtl_433")"
 check "APRS config"            200 "$(code -b "$JAR" "$BASE/api/aprs")"
+check "extra receivers"        200 "$(code -b "$JAR" "$BASE/api/receivers")"
+check "extra receiver devices" 200 "$(code -b "$JAR" "$BASE/api/receivers/sensors/devices")"
+check "unknown extra receiver" 400 "$(code -b "$JAR" "$BASE/api/receivers/nope/devices")"
+check "extra receiver bad gain" 400 "$(code -X PUT -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json'   -d '{"gain_db":99,"ppm":0,"bias_tee":false}' "$BASE/api/receivers/aprs/settings")"
 check "APRS rejects 5 channels" 400 "$(code -X PUT -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
   -d '{"enabled":true,"channels":[{"label":"a","frequency_hz":144800000,"enabled":true},{"label":"b","frequency_hz":144800000,"enabled":true},{"label":"c","frequency_hz":144800000,"enabled":true},{"label":"d","frequency_hz":144800000,"enabled":true},{"label":"e","frequency_hz":144800000,"enabled":true}]}' \
   "$BASE/api/aprs")"

@@ -205,7 +205,9 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
      text (AES-ECB + HMAC, Public + admin secrets + #hashtag channels), DMs as hashes. Mesh
      tab: node map and list, channel messages (private ones admins only), packet log with
      repeats and CRC errors. Simulator nodes on both networks, incl. two private channels.
-   - Left: second dongle on 868 MHz, MQTT/HA for nodes, other regions, check against real
+   - Optional receiver of its own on 869.575 MHz (as for Sensors and APRS, Settings →
+     Receiver), falling back to the main receiver while it's not connected.
+   - Left: MQTT/HA for nodes, other regions, check against real
      transmitters (bit layout follows gr-lora_sdr and the firmware sources).
    - LoRa demodulator for the UK/EU 868 MHz presets (Meshtastic LongFast and the others;
      MeshCore's narrow EU/UK preset), on the main dongle or a second one kept on 868 MHz

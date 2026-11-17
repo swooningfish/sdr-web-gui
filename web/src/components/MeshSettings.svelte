@@ -54,7 +54,7 @@
     <form onsubmit={save}>
       <label class="check"><input type="checkbox" bind:checked={enabled} /> Enabled</label>
       <p class="muted small-text hint">
-        LoRa packets are decoded whenever the receiver is tuned near {formatMHz(info.status.tune_hz, 3)} MHz (a 1 MS/s
+        LoRa packets are decoded whenever the receiver is tuned near {formatMHz(info.status.tune_hz, 3)} (a 1 MS/s
         or wider capture there covers every preset). Each preset costs some CPU while it's in the band.
       </p>
       <fieldset>
@@ -62,7 +62,7 @@
         {#each info.presets as p (p.id)}
           <label class="check small-text">
             <input type="checkbox" checked={presets.includes(p.id)} onchange={(e) => toggle(p.id, e.currentTarget.checked)} />
-            {p.name} · {formatMHz(p.freq_hz, 3)} MHz · SF{p.sf}, {p.bw / 1000} kHz, CR 4/{4 + p.cr}
+            {p.name} · {formatMHz(p.freq_hz, 3)} · SF{p.sf}, {p.bw / 1000} kHz, CR 4/{4 + p.cr}
           </label>
         {/each}
       </fieldset>

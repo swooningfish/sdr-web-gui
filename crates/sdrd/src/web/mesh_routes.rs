@@ -12,14 +12,15 @@ pub async fn get(State(state): State<AppState>, AuthUser(s): AuthUser) -> Json<V
     let m = &state.mesh;
     let cfg = m.config();
     let admin = s.user.role == Role::Admin;
+    // Whether the receiver in use (main, or Mesh's own) hears any preset.
+    let st = m.radio_settings();
+    let tuned = PRESETS.iter().any(|p| crate::mesh::in_band(st.center_hz, st.sample_rate, p));
     Json(json!({
         "config": if admin { serde_json::to_value(&cfg).unwrap_or(Value::Null) } else { cfg.redacted() },
         "status": m.status(),
         "presets": PRESETS,
-        "main_tuned": PRESETS.iter().any(|p| {
-            let st = m.main_radio().state().settings;
-            crate::mesh::in_band(st.center_hz, st.sample_rate, p)
-        }),
+        "main_tuned": tuned,
+        "own_receiver": state.receivers.mesh.is_dedicated(),
         "tile_url": state.cfg.map_tile_url,
     }))
 }

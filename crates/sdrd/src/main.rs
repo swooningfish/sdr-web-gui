@@ -37,6 +37,7 @@ mod recorder;
 mod scan;
 mod scheduler;
 mod radio;
+mod receivers;
 mod web;
 
 use auth::Role;
@@ -98,11 +99,30 @@ async fn serve() -> Result<()> {
     let adsb_radio = radio::spawn(
         &cfg,
         radio::Role::Adsb,
-        registry,
+        registry.clone(),
         adsb_iq_tx.clone(),
         adsb_device,
         adsb_settings.radio(),
     )?;
+    // Extra receivers for Mesh, Sensors and APRS ("off": use the main one).
+    let mut extra = Vec::new();
+    for (u, tuning) in [
+        (receivers::Use::Mesh, receivers::mesh_tuning()),
+        (receivers::Use::Sensors, receivers::sensors_tuning(433_920_000)),
+        (receivers::Use::Aprs, receivers::aprs_tuning(&[144_800_000, 145_825_000])),
+    ] {
+        let device = db::get_setting::<String>(&db, &u.device_key()).await.ok().flatten();
+        let settings = db::get_setting::<receivers::ReceiverSettings>(&db, &u.settings_key())
+            .await
+            .ok()
+            .flatten()
+            .filter(|s| s.validate().is_ok())
+            .unwrap_or_default();
+        extra.push(receivers::spawn(&cfg, u, registry.clone(), &radio, &iq_tx, device, settings, tuning)?);
+    }
+    let [mesh_rx, sensors_rx, aprs_rx]: [receivers::AuxReceiver; 3] =
+        extra.try_into().map_err(|_| anyhow::anyhow!("extra receivers"))?;
+    let receivers = receivers::Receivers { mesh: mesh_rx, sensors: sensors_rx, aprs: aprs_rx };
     let (waterfall_tx, _) = broadcast::channel(8);
     dsp::waterfall::spawn(iq_tx.subscribe(), waterfall_tx.clone(), cfg.fft_size, cfg.fps);
 
@@ -113,14 +133,14 @@ async fn serve() -> Result<()> {
     let rtl433 = decoders::rtl433::spawn(
         &db,
         cfg.rtl433_path.clone(),
-        iq_tx.subscribe(),
-        radio.subscribe(),
+        receivers.sensors.feed(),
+        receivers.sensors.in_use(),
         events_tx.clone(),
     ).await?;
     let aprs = decoders::aprs::spawn(
         &db,
         cfg.direwolf_path.clone(),
-        iq_tx.subscribe(),
+        receivers.aprs.feed(),
         events_tx.clone(),
         doppler_rx.clone(),
     )
@@ -159,7 +179,22 @@ async fn serve() -> Result<()> {
         mqtt.clone(),
     )
     .await?;
-    let mesh = mesh::spawn(&db, radio.clone(), iq_tx.subscribe()).await?;
+    let mesh = mesh::spawn(&db, receivers.mesh.in_use(), receivers.mesh.feed()).await?;
+    // Keep each extra receiver on its decoder's band.
+    receivers.mesh.follow(receivers::mesh_tuning);
+    {
+        let rtl433 = rtl433.clone();
+        receivers.sensors.follow(move || receivers::sensors_tuning(rtl433.config().frequency_hz));
+    }
+    {
+        let aprs = aprs.clone();
+        receivers.aprs.follow(move || {
+            let cfg = aprs.config();
+            let on: Vec<u64> = cfg.channels.iter().filter(|c| c.enabled).map(|c| c.frequency_hz).collect();
+            let all: Vec<u64> = cfg.channels.iter().map(|c| c.frequency_hz).collect();
+            receivers::aprs_tuning(if on.is_empty() { &all } else { &on })
+        });
+    }
     let (event_feed, _) = broadcast::channel(256);
     tokio::spawn(events::run(
         db.clone(),
@@ -219,6 +254,7 @@ async fn serve() -> Result<()> {
         mqtt,
         adsb,
         mesh,
+        receivers,
         scan,
     };
     let app = web::router(state);

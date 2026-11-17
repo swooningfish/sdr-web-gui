@@ -162,7 +162,7 @@ export interface MeshInfo {
   config: MeshConfig;
   status: {
     enabled: boolean;
-    /** IQ from the main receiver is being decoded. */
+    /** IQ is being decoded (from the main receiver, or Mesh's own). */
     listening: boolean;
     presets: { preset: MeshPreset; enabled: boolean; in_band: boolean; packets: number; last_ms: number | null }[];
     tune_hz: number;
@@ -170,7 +170,10 @@ export interface MeshInfo {
     crc_errors: number;
   };
   presets: MeshPreset[];
+  /** The receiver in use (main, or Mesh's own) hears at least one preset. */
   main_tuned: boolean;
+  /** Decoding from a receiver of Mesh's own rather than the main one. */
+  own_receiver: boolean;
   tile_url: string;
 }
 
@@ -257,6 +260,34 @@ export interface AdsbRange {
 
 export interface AdsbDevice extends Omit<SdrDevice, 'supported'> {
   covers_1090: boolean;
+}
+
+/** Decoders that can have a receiver of their own. */
+export type ReceiverUse = 'mesh' | 'sensors' | 'aprs';
+
+export interface ReceiverSettings {
+  gain_db: number | null;
+  ppm: number;
+  bias_tee: boolean;
+}
+
+/** An extra receiver for Mesh, Sensors or APRS. */
+export interface ExtraReceiver {
+  use: ReceiverUse;
+  label: string;
+  /** Device id, or "off" to use the main receiver. */
+  selected: string | null;
+  /** Its decoder is fed from it rather than from the main receiver. */
+  dedicated: boolean;
+  state: RadioState;
+  settings: ReceiverSettings;
+  /** Where it's kept tuned, following its decoder's settings. */
+  tuning: { center_hz: number; sample_rate: number };
+}
+
+export interface ExtraReceiverDevice extends Omit<SdrDevice, 'supported'> {
+  /** Reaches the frequency this receiver is kept on. */
+  covers: boolean;
 }
 
 /** Something the station listens to on a fixed frequency. */
@@ -811,6 +842,11 @@ export const api = {
   selectAdsbDevice: (id: string) => req('POST', '/adsb/device', { id }),
   setAdsbReceiver: (s: AdsbReceiverSettings) => req('PUT', '/adsb/receiver', s),
   downloadAircraftDb: () => req('POST', '/adsb/database'),
+  receivers: () => req<{ receivers: ExtraReceiver[] }>('GET', '/receivers'),
+  receiverDevices: (use: ReceiverUse) =>
+    req<{ selected: string | null; devices: ExtraReceiverDevice[] }>('GET', `/receivers/${use}/devices`),
+  selectReceiver: (use: ReceiverUse, id: string) => req('POST', `/receivers/${use}/device`, { id }),
+  setReceiver: (use: ReceiverUse, s: ReceiverSettings) => req('PUT', `/receivers/${use}/settings`, s),
   mesh: () => req<MeshInfo>('GET', '/mesh'),
   setMesh: (config: MeshConfig) => req('PUT', '/mesh', config),
   meshNodes: () => req<{ now: number; nodes: MeshNode[] }>('GET', '/mesh/nodes'),

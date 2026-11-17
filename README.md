@@ -296,6 +296,7 @@ rtl_433 runs inside the container and is fed from sdrd's own IQ stream: sdrd cut
 around the rtl_433 frequency (433.92 MHz by default) out of whatever the dongle is tuned to.
 So it decodes whenever 433.92 MHz is inside the tuned band. With one dongle that means the ISM
 preset, or the ISM step of **rotation** (see [Passes and scheduling](#passes-and-scheduling)).
+With a spare dongle, see [Extra receivers](#extra-receivers-mesh-sensors-aprs).
 
 - **Sensors** tab: every device heard, latest readings, signal, a live feed, and per-device
   history with charts (1 h / 24 h / 7 days). Repeats of the same transmission are merged.
@@ -324,6 +325,20 @@ alongside ISS SSTV on 145.800.
 - APRS is public amateur traffic, so viewer accounts can see it.
 - The map uses OpenStreetMap's tile server. Set `SDRD_MAP_TILE_URL` to use another one (the
   Content-Security-Policy follows it).
+
+## Extra receivers (Mesh, Sensors, APRS)
+
+Mesh, Sensors (rtl_433) and APRS normally decode from the main receiver, so they only hear
+anything while it's tuned to their band. Under **Settings → Receiver → Mesh, Sensors and APRS
+receivers** each can be given a spare dongle (USB, rtl_tcp, or a simulated one) instead. It
+stays on that decoder's band and follows its settings, with its own gain, PPM and bias-T:
+
+- **Mesh**: 869.575 MHz at 1 MS/s, which covers every preset.
+- **Sensors**: the rtl_433 frequency plus 250 kHz (clear of the DC spike) at 1 MS/s.
+- **APRS**: between the enabled channels at 2 MS/s (144.800 and the ISS's 145.825 both fit).
+
+If that dongle drops out, the decoder goes back to the main receiver until it's back. A USB or
+rtl_tcp dongle can only be used by one receiver at a time; the simulated ones can be shared.
 
 ## Aircraft (ADS-B)
 
@@ -380,7 +395,10 @@ packets in red). Messages on private channels, their keys and their raw bytes ar
 admins only, and what a node sends on a private channel doesn't update the node list. Nodes
 and messages are kept as long as other events.
 
-Not yet: a second dongle kept on 869 MHz (like the ADS-B one), other regions' frequencies,
+A spare dongle can be kept on 869 MHz for Mesh: see
+[Extra receivers](#extra-receivers-mesh-sensors-aprs).
+
+Not yet: other regions' frequencies,
 MQTT / Home Assistant for tracked nodes, and testing against real transmitters (the
 demodulator is checked against its own transmitter and the simulator only).
 

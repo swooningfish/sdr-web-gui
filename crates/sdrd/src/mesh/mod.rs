@@ -24,7 +24,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::db;
 use crate::dsp::ddc::{self, Ddc};
-use crate::radio::{IqBlock, RadioHandle};
+use crate::radio::{IqBlock, RadioState};
 
 pub mod lora;
 pub mod meshcore;
@@ -324,7 +324,8 @@ pub struct MeshHandle {
     pool: SqlitePool,
     tracker: Arc<Mutex<Tracker>>,
     cfg_tx: Arc<watch::Sender<MeshConfig>>,
-    main: RadioHandle,
+    /// The receiver the capture comes from (the main one or Mesh's own).
+    radio: watch::Receiver<RadioState>,
     last_iq: Arc<AtomicI64>,
 }
 
@@ -342,7 +343,7 @@ impl MeshHandle {
 
     pub fn status(&self) -> Value {
         let now = db::now_ms();
-        let st = self.main.state().settings;
+        let st = self.radio.borrow().settings.clone();
         let cfg = self.config();
         let t = self.tracker.lock().unwrap();
         let presets: Vec<Value> = PRESETS
@@ -419,12 +420,17 @@ impl MeshHandle {
         Ok(())
     }
 
-    pub fn main_radio(&self) -> &RadioHandle {
-        &self.main
+    /// Settings of the receiver the capture comes from.
+    pub fn radio_settings(&self) -> crate::radio::RadioSettings {
+        self.radio.borrow().settings.clone()
     }
 }
 
-pub async fn spawn(pool: &SqlitePool, main: RadioHandle, iq: broadcast::Receiver<Arc<IqBlock>>) -> anyhow::Result<MeshHandle> {
+pub async fn spawn(
+    pool: &SqlitePool,
+    radio: watch::Receiver<RadioState>,
+    iq: broadcast::Receiver<Arc<IqBlock>>,
+) -> anyhow::Result<MeshHandle> {
     let mut cfg = db::get_setting::<MeshConfig>(pool, CFG_KEY).await.ok().flatten().unwrap_or_default();
     if cfg.channels().is_err() {
         tracing::warn!("mesh settings invalid; using defaults");
@@ -445,7 +451,7 @@ pub async fn spawn(pool: &SqlitePool, main: RadioHandle, iq: broadcast::Receiver
         let (cfg_rx, last) = (cfg_rx.clone(), last_iq.clone());
         std::thread::Builder::new().name("mesh-demod".into()).spawn(move || feeder(iq, cfg_rx, last, tx))?;
     }
-    let handle = MeshHandle { pool: pool.clone(), tracker, cfg_tx: Arc::new(cfg_tx), main, last_iq };
+    let handle = MeshHandle { pool: pool.clone(), tracker, cfg_tx: Arc::new(cfg_tx), radio, last_iq };
     tokio::spawn(ingest(handle.clone(), rx, cfg_rx));
     tokio::spawn(housekeeping(handle.clone()));
     Ok(handle)

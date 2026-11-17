@@ -5,9 +5,10 @@
 //! between a USB dongle, an rtl_tcp server and the simulator without a
 //! restart. `SDRD_SOURCE` only picks what to open when nothing was chosen yet.
 //!
-//! sdrd can run two receivers: the main one (spectrum, audio, decoders) and
-//! an optional second dongle kept on 1090 MHz for ADS-B. They share a
-//! [`Registry`], so the same dongle can't be opened by both.
+//! sdrd can run several receivers: the main one (spectrum, audio, decoders)
+//! and optional extra dongles, each kept on the band of one decoder: 1090 MHz
+//! for ADS-B, or Mesh, Sensors (rtl_433) or APRS (see [`crate::receivers`]).
+//! They share a [`Registry`], so the same dongle can't be opened by two.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -30,7 +31,7 @@ mod synthetic;
 
 /// Most rtl_tcp servers remembered in the device list.
 pub const MAX_TCP_SERVERS: usize = 8;
-/// Device id for "no receiver" (the ADS-B receiver only).
+/// Device id for "no receiver" (the extra receivers only).
 pub const OFF: &str = "off";
 
 /// Which of sdrd's receivers this is.
@@ -38,6 +39,9 @@ pub const OFF: &str = "off";
 pub enum Role {
     Main,
     Adsb,
+    Mesh,
+    Sensors,
+    Aprs,
 }
 
 impl Role {
@@ -46,12 +50,18 @@ impl Role {
         match self {
             Role::Main => "the main receiver",
             Role::Adsb => "ADS-B",
+            Role::Mesh => "Mesh",
+            Role::Sensors => "Sensors",
+            Role::Aprs => "APRS",
         }
     }
     fn thread(self) -> &'static str {
         match self {
             Role::Main => "radio",
             Role::Adsb => "radio-adsb",
+            Role::Mesh => "radio-mesh",
+            Role::Sensors => "radio-sensors",
+            Role::Aprs => "radio-aprs",
         }
     }
 }
@@ -211,7 +221,7 @@ pub struct DeviceInfo {
     pub active: bool,
     /// Why details are missing, e.g. the dongle is busy in another program.
     pub note: Option<String>,
-    /// The other receiver using it ("ADS-B", "the main receiver").
+    /// The other receiver using it ("ADS-B", "Mesh", "the main receiver").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used_by: Option<&'static str>,
 }
@@ -490,8 +500,8 @@ impl RadioHandle {
         Ok(next)
     }
 
-    /// Replace the settings outright (the ADS-B receiver, whose tuning is
-    /// fixed): kept even while no device is open, used when one is.
+    /// Replace the settings outright (an extra receiver, whose tuning
+    /// follows its decoder): kept even while no device is open, used when one is.
     pub fn force_settings(&self, s: RadioSettings) -> Result<(), String> {
         let mut desired = self.desired.lock().unwrap();
         // Validate through the same checks as a patch.
@@ -512,7 +522,7 @@ impl RadioHandle {
     /// Switch to another receiver (an id from [`RadioHandle::devices`]). The
     /// source kind follows from the id.
     pub fn select(&self, id: &str) -> Result<(), String> {
-        if id == OFF && self.role == Role::Adsb {
+        if id == OFF && self.role != Role::Main {
             return self.cmd_tx.send(Cmd::Select(id.into())).map_err(|_| "radio thread has stopped".to_string());
         }
         if let Some(r) = self.registry.holder(self.role, id) {
@@ -603,7 +613,7 @@ impl RadioHandle {
         }
 
         out.extend(synthetic::devices(st.device_id.as_deref()));
-        // Mark what the other receiver has open.
+        // Mark what the other receivers have open.
         for d in &mut out {
             if let Some(r) = self.registry.holder(self.role, &d.id) {
                 d.used_by = Some(r.label());
@@ -664,9 +674,9 @@ fn usable(cfg: &Config, id: &str) -> bool {
 /// The device to open at start-up: the one last chosen in the UI if it can
 /// still be opened, else what the environment says.
 fn initial_device(cfg: &Config, role: Role, saved: Option<String>) -> String {
-    if role == Role::Adsb {
+    if role != Role::Main {
         return saved
-            .or_else(|| cfg.adsb_device.clone())
+            .or_else(|| if role == Role::Adsb { cfg.adsb_device.clone() } else { None })
             .filter(|id| id == OFF || usable(cfg, id))
             .unwrap_or_else(|| OFF.into());
     }
@@ -707,7 +717,7 @@ pub fn spawn(
     let mut device = initial_device(cfg, role, saved_device);
     if let Some(r) = registry.holder(role, &device) {
         tracing::warn!(device = %device, "receiver is already used by {}; not opening it", r.label());
-        device = if role == Role::Adsb { OFF.into() } else { synthetic::DEVICES[0].id.into() };
+        device = if role != Role::Main { OFF.into() } else { synthetic::DEVICES[0].id.into() };
     }
     let (state_tx, state_rx) = watch::channel(RadioState {
         source: cfg.source.name(),

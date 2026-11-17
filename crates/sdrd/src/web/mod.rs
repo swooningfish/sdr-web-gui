@@ -36,6 +36,7 @@ mod auth_routes;
 mod bookmark_routes;
 mod fkey_routes;
 mod radio_routes;
+mod receiver_routes;
 mod repeater_routes;
 mod scan_routes;
 mod schedule_routes;
@@ -67,6 +68,8 @@ pub struct AppState {
     pub mqtt: Option<MqttHandle>,
     pub adsb: AdsbHandle,
     pub mesh: MeshHandle,
+    /// Extra receivers for Mesh, Sensors and APRS.
+    pub receivers: crate::receivers::Receivers,
     pub scan: crate::scan::ScanHandle,
 }
 
@@ -136,6 +139,10 @@ pub fn router(state: AppState) -> Router {
         .route("/adsb/device", post(adsb_routes::select_device))
         .route("/adsb/receiver", axum::routing::put(adsb_routes::set_receiver))
         .route("/adsb/database", post(adsb_routes::download_db))
+        .route("/receivers", get(receiver_routes::list))
+        .route("/receivers/{use}/devices", get(receiver_routes::devices))
+        .route("/receivers/{use}/device", post(receiver_routes::select_device))
+        .route("/receivers/{use}/settings", axum::routing::put(receiver_routes::set_settings))
         .route("/mesh", get(mesh_routes::get).put(mesh_routes::set_config))
         .route("/mesh/nodes", get(mesh_routes::nodes))
         .route("/mesh/nodes/delete", post(mesh_routes::delete_nodes))

@@ -104,6 +104,7 @@
       {#if info}
         <div class="pills small-text">
           <span class="pill"><span class="dot" class:ok={info.status.listening}></span>{info.status.listening ? 'Listening' : 'Not listening'}</span>
+          {#if info.own_receiver}<span class="pill" title="Settings → Receiver">Own receiver</span>{/if}
           <span class="pill">{info.status.nodes_24h.meshtastic} Meshtastic · {info.status.nodes_24h.meshcore} MeshCore nodes (24 h)</span>
           {#if info.status.crc_errors}<span class="pill" title="Packets heard but damaged">{info.status.crc_errors} CRC errors</span>{/if}
         </div>
@@ -118,11 +119,12 @@
       {:else if !info.main_tuned}
         <p class="hint small-text">
           <span>
-            Packets are decoded while the receiver is tuned near {formatMHz(info.status.tune_hz, 3)} MHz (UK/EU 868 MHz
-            mesh channels). Use a rotation profile there to check in now and then.
+            Packets are decoded while the receiver is tuned near {formatMHz(info.status.tune_hz, 3)} (UK/EU 868 MHz
+            mesh channels). Use a rotation profile there to check in now and then, or give Mesh a spare dongle of its own
+            under Settings → Receiver.
           </span>
           {#if isAdmin}
-            <button type="button" class="small primary" disabled={busy} onclick={tune}>Tune to {formatMHz(info.status.tune_hz, 3)} MHz</button>
+            <button type="button" class="small primary" disabled={busy} onclick={tune}>Tune to {formatMHz(info.status.tune_hz, 3)}</button>
           {/if}
         </p>
       {/if}
