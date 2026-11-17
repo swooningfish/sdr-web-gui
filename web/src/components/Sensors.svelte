@@ -242,6 +242,15 @@
     }
   }
 
+  async function setRecordAll(on: boolean) {
+    try {
+      await api.setRecordAllBursts(on);
+      if (info) info = { ...info, record_all_bursts: on };
+    } catch (e) {
+      fail(e);
+    }
+  }
+
   function burstDeleted(eventId: number) {
     history = history.map((e) => (e.id === eventId ? { ...e, burst: false } : e));
   }
@@ -334,6 +343,22 @@
                 <span class="dot" class:ok={info.mqtt.connected} class:bad={!info.mqtt.connected}></span>
                 MQTT
               </span>
+            {/if}
+            {#if isAdmin}
+              <label
+                class="pill rec-all"
+                class:on={info.record_all_bursts}
+                title="Save every sensor's radio burst (IQ and pulses) with its packet, once rtl_433 decodes the burst as that sensor. Saved bursts take space and go when their packets age out."
+              >
+                <input
+                  type="checkbox"
+                  checked={info.record_all_bursts}
+                  onchange={(e) => setRecordAll(e.currentTarget.checked)}
+                />
+                Record all bursts
+              </label>
+            {:else if info.record_all_bursts}
+              <span class="pill rec-all on">Recording all bursts</span>
             {/if}
           </div>
         {/if}
@@ -531,6 +556,7 @@
             deviceId={selected.id}
             {isAdmin}
             armed={burstArmed}
+            recordAll={info?.record_all_bursts ?? false}
             onArm={armBurst}
             onBurstDeleted={burstDeleted}
           />
@@ -590,6 +616,16 @@
     padding: 2px 9px;
     border: 1px solid var(--border);
     border-radius: 999px;
+  }
+  .rec-all {
+    cursor: pointer;
+  }
+  .rec-all input {
+    margin: 0;
+  }
+  .rec-all.on {
+    border-color: var(--warn);
+    color: var(--warn);
   }
   .filters {
     display: flex;

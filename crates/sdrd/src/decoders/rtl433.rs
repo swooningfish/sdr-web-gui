@@ -214,6 +214,9 @@ fn drop_legacy_flex(cfg: &mut Rtl433Config) -> bool {
     cfg.flex.len() != before
 }
 
+/// Setting: save every verified burst with its event.
+pub const RECORD_ALL_KEY: &str = "rtl433.record_all_bursts";
+
 pub async fn spawn(
     db: &sqlx::SqlitePool,
     path: String,
@@ -252,6 +255,10 @@ pub async fn spawn(
         raw: RawStore::default(),
     };
     let raw = worker.raw.clone();
+    match db::get_setting::<bool>(db, RECORD_ALL_KEY).await {
+        Ok(on) => raw.set_record_all(on.unwrap_or(false)),
+        Err(e) => tracing::warn!("ignoring stored burst recording setting: {e}"),
+    }
     std::thread::Builder::new()
         .name("rtl_433".into())
         .spawn(move || worker.run())?;

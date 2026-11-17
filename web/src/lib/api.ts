@@ -411,6 +411,8 @@ export interface Rtl433Info {
   config: Rtl433Config;
   status: Rtl433Status;
   mqtt: MqttStatus | null;
+  /** Every verified burst is saved with its packet. */
+  record_all_bursts: boolean;
 }
 
 export type Demod = 'fm' | 'usb' | 'lsb';
@@ -786,6 +788,7 @@ export const api = {
   deletePass: (id: number) => req('DELETE', `/passes/${id}`),
   aprsTracks: (since: number) => req<Track[]>('GET', `/aprs/tracks?since=${Math.floor(since)}`),
   rtl433: () => req<Rtl433Info>('GET', '/decoders/rtl_433'),
+  setRecordAllBursts: (on: boolean) => req<{ on: boolean }>('PUT', '/decoders/rtl_433/record-bursts', { on }),
   setRtl433: (config: Rtl433Config) => req<{ config: Rtl433Config }>('PUT', '/decoders/rtl_433', config),
   adsb: () => req<AdsbInfo>('GET', '/adsb'),
   setAdsb: (config: { enabled: boolean }) => req('PUT', '/adsb', config),

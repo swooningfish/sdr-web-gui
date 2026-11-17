@@ -387,7 +387,28 @@ pub async fn get_rtl433(State(state): State<AppState>, AuthUser(s): AuthUser) ->
         "config": state.rtl433.config(),
         "status": state.rtl433.status(),
         "mqtt": state.mqtt.as_ref().map(|m| m.status()),
+        "record_all_bursts": state.rtl433.raw_store().record_all(),
     })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordAllReq {
+    on: bool,
+}
+
+/// Save every sensor's bursts with their packets (kept across restarts).
+pub async fn set_record_all(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Json(req): Json<RecordAllReq>,
+) -> Result<Json<Value>, ApiError> {
+    crate::db::set_setting(&state.db, crate::decoders::rtl433::RECORD_ALL_KEY, &req.on)
+        .await
+        .map_err(ApiError::internal)?;
+    state.rtl433.raw_store().set_record_all(req.on);
+    tracing::info!(by = %admin.user.username, on = req.on, "record all bursts");
+    Ok(Json(json!({ "on": req.on })))
 }
 
 pub async fn set_rtl433(

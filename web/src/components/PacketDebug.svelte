@@ -12,6 +12,7 @@
     deviceId,
     isAdmin,
     armed,
+    recordAll,
     onArm,
     onBurstDeleted,
   }: {
@@ -21,6 +22,8 @@
     isAdmin: boolean;
     /** The device's next burst will be saved with its event. */
     armed: boolean;
+    /** Every burst is being saved, so there's nothing to arm. */
+    recordAll: boolean;
     onArm: (on: boolean) => void;
     onBurstDeleted: (eventId: number) => void;
   } = $props();
@@ -61,7 +64,7 @@
       return;
     }
     const key = ev.burst ? `saved:${ev.id}` : `mem:${id}:${ev.ts}`;
-    if (sig && sigKey === key) {
+    if (sig && sigKey === key && (ev.burst || sig.ts === ev.ts)) {
       sigState = 'ok';
       return;
     }
@@ -90,6 +93,16 @@
       /* stays listed; nothing else to do */
     }
   }
+
+  const stamp = (ms: number) =>
+    new Date(ms).toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
 
   const canCopy = typeof navigator !== 'undefined' && !!navigator.clipboard;
   let copied = $state(false);
@@ -173,7 +186,9 @@
 <details class="debug" {open} ontoggle={toggled}>
   <summary>
     <h3>Packet debug</h3>
-    <span class="muted small-text">{latest ? 'last packet received' : 'packet picked from history'}</span>
+    <span class="muted small-text"
+      >{latest ? 'last packet received' : 'packet picked from history'}{event ? ` · ${stamp(event.ts)}` : ''}</span
+    >
   </summary>
   {#if !event}
     <p class="muted small-text">No packets in this period.</p>
@@ -190,9 +205,14 @@
     <div class="sig-head">
       <h4>Radio signal</h4>
       {#if saved}<span class="badge">saved</span>{/if}
+      {#if sigState === 'ok' && sig}<span class="muted small-text">captured {stamp(sig.ts)}</span>{/if}
       <span class="grow"></span>
       {#if isAdmin}
-        {#if armed}
+        {#if recordAll}
+          <span class="small-text waiting" title="Turn off “Record all bursts” at the top of the page to log just one"
+            >Recording every burst</span
+          >
+        {:else if armed}
           <span class="small-text waiting" title="Only a burst that rtl_433 decodes as this sensor again is saved"
             >Waiting for this sensor's next burst…</span
           >
@@ -217,7 +237,8 @@
     {:else if sigState === 'gone'}
       <p class="muted small-text">
         Only each device's latest packet keeps its signal (until sdrd restarts), unless it was saved with
-        "Log next burst".
+        "Log next burst".{#if sig && sigKey.startsWith(`mem:${deviceId}:`)}
+          This device's latest signal was captured {stamp(sig.ts)}.{/if}
       </p>
     {:else}
       <p class="muted small-text">No radio signal was captured for this packet.</p>

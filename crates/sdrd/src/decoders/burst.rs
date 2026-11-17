@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::PI;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use num_complex::Complex32;
@@ -409,6 +410,8 @@ fn runs(levels: &[bool], us: f64, min: usize) -> (Vec<i32>, bool) {
 pub struct RawStore {
     latest: Arc<Mutex<HashMap<String, Arc<RawSignal>>>>,
     armed: Arc<Mutex<HashSet<String>>>,
+    /// Save every device's bursts, not just armed ones.
+    all: Arc<AtomicBool>,
 }
 
 impl RawStore {
@@ -443,6 +446,24 @@ impl RawStore {
     /// True (once) if the device's next burst was to be saved.
     pub fn take_armed(&self, key: &str) -> bool {
         self.armed.lock().unwrap().remove(key)
+    }
+
+    pub fn set_record_all(&self, on: bool) {
+        self.all.store(on, Ordering::Relaxed);
+    }
+
+    pub fn record_all(&self) -> bool {
+        self.all.load(Ordering::Relaxed)
+    }
+
+    /// The device's next burst is to be saved (armed, or recording all).
+    pub fn wants(&self, key: &str) -> bool {
+        self.record_all() || self.is_armed(key)
+    }
+
+    /// Like `take_armed`, but always true while recording all.
+    pub fn take(&self, key: &str) -> bool {
+        self.take_armed(key) || self.record_all()
     }
 }
 
@@ -542,6 +563,17 @@ mod tests {
         s.arm("k", true);
         s.arm("k", false);
         assert!(!s.is_armed("k"));
+    }
+
+    #[test]
+    fn record_all_keeps_wanting() {
+        let s = RawStore::default();
+        assert!(!s.wants("k"));
+        s.set_record_all(true);
+        assert!(s.wants("k") && s.take("k") && s.take("k"));
+        assert!(!s.is_armed("k")); // a device isn't shown as armed
+        s.set_record_all(false);
+        assert!(!s.take("k"));
     }
 
     #[test]

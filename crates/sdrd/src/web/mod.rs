@@ -123,6 +123,7 @@ pub fn router(state: AppState) -> Router {
         .route("/dashboard/order", axum::routing::put(sensors::set_dashboard_order))
         .route("/events", get(sensors::recent_events))
         .route("/decoders/rtl_433", get(sensors::get_rtl433).put(sensors::set_rtl433))
+        .route("/decoders/rtl_433/record-bursts", axum::routing::put(sensors::set_record_all))
         .route("/decoders/rtl_433/check", post(sensors::check_spec))
         .route("/aprs", get(aprs_routes::get_config).put(aprs_routes::set_config))
         .route("/aprs/tracks", get(aprs_routes::tracks))

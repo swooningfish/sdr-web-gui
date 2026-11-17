@@ -473,7 +473,7 @@ pub async fn run(
         if let Some((t, last, waiting)) = recent.get_mut(&key) {
             if *last == fp && now.duration_since(*t) < window {
                 if let (Some(sig), Some(w)) = (ev.signal.as_ref().filter(|s| s.verified), waiting.as_mut()) {
-                    if raw.take_armed(&key) {
+                    if raw.take(&key) {
                         let (device, row) = &mut **w;
                         log_burst(&db, &feed, device, row, sig).await;
                         *waiting = None;
@@ -490,9 +490,9 @@ pub async fn run(
             Ok((device, mut row)) => {
                 tracing::debug!(device = %device.key, "event");
                 let mut waiting = None;
-                if raw.is_armed(&device.key) {
+                if raw.wants(&device.key) {
                     match ev.signal.as_ref().filter(|s| s.verified) {
-                        Some(sig) if raw.take_armed(&device.key) => {
+                        Some(sig) if raw.take(&device.key) => {
                             save_and_flag(&db, &device, &mut row, sig).await;
                         }
                         Some(_) => {}
