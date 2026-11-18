@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 
 use super::{AdminUser, ApiError, AppState, AuthUser};
 use crate::auth::Role;
+use crate::mesh::observer::ObserverConfig;
 use crate::mesh::{MeshConfig, PRESETS};
 
 /// Status and settings for the Mesh tab (channel keys for admins only).
@@ -91,4 +92,26 @@ pub async fn messages(
 pub async fn packets(State(state): State<AppState>, AuthUser(s): AuthUser) -> Json<Value> {
     let admin = s.user.role == Role::Admin;
     Json(json!({ "packets": state.mesh.packets(admin) }))
+}
+
+/// MeshCore observer (LetsMesh) settings, identity and connection state.
+pub async fn get_observer(State(state): State<AppState>, _admin: AdminUser) -> Json<Value> {
+    Json(state.mesh.observer.info())
+}
+
+pub async fn set_observer(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Json(cfg): Json<ObserverConfig>,
+) -> Result<Json<Value>, ApiError> {
+    let cfg = state.mesh.observer.set_config(cfg).await.map_err(ApiError::bad_request)?;
+    tracing::info!(
+        by = %admin.user.username,
+        enabled = cfg.enabled,
+        broker = %cfg.broker,
+        iata = %cfg.iata,
+        name = %cfg.name,
+        "mesh observer settings changed"
+    );
+    Ok(Json(state.mesh.observer.info()))
 }

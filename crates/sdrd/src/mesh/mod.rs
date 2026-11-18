@@ -29,6 +29,7 @@ use crate::radio::{IqBlock, RadioState};
 pub mod lora;
 pub mod meshcore;
 pub mod meshtastic;
+pub mod observer;
 pub mod proto;
 
 const CFG_KEY: &str = "mesh";
@@ -327,6 +328,8 @@ pub struct MeshHandle {
     /// The receiver the capture comes from (the main one or Mesh's own).
     radio: watch::Receiver<RadioState>,
     last_iq: Arc<AtomicI64>,
+    /// Sends the MeshCore packets we hear to an analyzer (LetsMesh).
+    pub observer: observer::ObserverHandle,
 }
 
 impl MeshHandle {
@@ -451,7 +454,8 @@ pub async fn spawn(
         let (cfg_rx, last) = (cfg_rx.clone(), last_iq.clone());
         std::thread::Builder::new().name("mesh-demod".into()).spawn(move || feeder(iq, cfg_rx, last, tx))?;
     }
-    let handle = MeshHandle { pool: pool.clone(), tracker, cfg_tx: Arc::new(cfg_tx), radio, last_iq };
+    let observer = observer::spawn(pool, radio.clone()).await?;
+    let handle = MeshHandle { pool: pool.clone(), tracker, cfg_tx: Arc::new(cfg_tx), radio, last_iq, observer };
     tokio::spawn(ingest(handle.clone(), rx, cfg_rx));
     tokio::spawn(housekeeping(handle.clone()));
     Ok(handle)
@@ -568,6 +572,9 @@ async fn ingest(h: MeshHandle, mut rx: mpsc::UnboundedReceiver<Rx>, cfg_rx: watc
             let mut t = h.tracker.lock().unwrap();
             handle_frame(&mut t, &r, &mt, &mc)
         };
+        if entry.crc_ok && entry.proto == Proto::Meshcore {
+            h.observer.offer(r.ts_ms, &r.frame.payload, r.frame.snr_db);
+        }
         if let Some(m) = msg {
             let res = sqlx::query(
                 "INSERT INTO mesh_messages (ts_ms, proto, channel, private, from_key, from_name, text, snr, hops) \
