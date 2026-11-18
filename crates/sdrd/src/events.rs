@@ -660,7 +660,7 @@ mod tests {
         assert_eq!(d1.id, d2.id);
         assert_eq!(d2.count, 2);
         assert_eq!(d2.kind.as_deref(), Some("TPMS"));
-        assert_eq!(device_events(&db, d1.id, None, None, 10).await.unwrap().len(), 2);
+        assert_eq!(device_events(&db, d1.id, None, None, None, 10).await.unwrap().len(), 2);
         assert_eq!(e2.device_id, d1.id);
         update_device(&db, d1.id, Some(Some("Car FL".into())), Some(true)).await.unwrap();
         let d = get_device(&db, d1.id).await.unwrap().unwrap();
@@ -694,7 +694,7 @@ mod tests {
         let (meta, iq) = get_burst(&db, e2.id).await.unwrap().unwrap();
         assert_eq!(iq.len(), sig.iq_samples * 2);
         assert!(meta.contains("g001_433.92M_250k.cs8"));
-        let evs = device_events(&db, d1.id, None, None, 10).await.unwrap();
+        let evs = device_events(&db, d1.id, None, None, None, 10).await.unwrap();
         assert_eq!(evs.iter().filter(|e| e.burst).count(), 1);
         assert!(get_event(&db, e2.id).await.unwrap().unwrap().0.burst);
 

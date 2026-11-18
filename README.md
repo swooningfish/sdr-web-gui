@@ -379,7 +379,7 @@ What can be read:
 
 - **Meshtastic:** the radio header (from, to, hops), then anything on a channel we have the key
   for: the default channels (LongFast and the other preset names on the default key) always,
-  private channels once an admin adds their name and PSK (Settings → Decoders). Text, position,
+  private channels once an admin adds their name and PSK (Settings → Decoders → Mesh). Text, position,
   node info (names, hardware, role) and telemetry (battery, voltage, channel use, uptime,
   environment) are decoded; other ports are named. Direct messages on firmware 2.5+ use
   public-key encryption: shown as encrypted, with who sent them to whom.
@@ -387,6 +387,12 @@ What can be read:
   messages on Public and on channels an admin adds (a secret, or a `#hashtag` channel whose key
   comes from its name), acks; direct messages, requests and responses show only the 1-byte
   hashes of sender and recipient (with the node's name when only one known node matches).
+- **Found automatically** (Settings → Decoders → Mesh, on by default): a packet no key opens
+  is tried against common MeshCore hashtags (`#test`, `#uk`, towns, counties) plus every `#tag`
+  mentioned in a message we could read, and against Meshtastic's default and other simple keys
+  (`AQ==` to `Cg==`), which read a renamed channel whatever its name. Channels found are listed
+  there with an **Add** button and their messages are shown to everyone; channels with a real
+  secret can't be found.
 
 The **Mesh** tab has the nodes on a map and in a list (SNR, hops, battery, last heard; click
 one for its details), the channel messages, and a packet log with every packet heard

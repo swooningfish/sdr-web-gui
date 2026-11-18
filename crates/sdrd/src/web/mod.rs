@@ -150,6 +150,7 @@ pub fn router(state: AppState) -> Router {
         .route("/mesh/nodes/delete", post(mesh_routes::delete_nodes))
         .route("/mesh/messages", get(mesh_routes::messages))
         .route("/mesh/packets", get(mesh_routes::packets))
+        .route("/mesh/discovered/forget", post(mesh_routes::forget_discovered))
         .route("/mesh/observer", get(mesh_routes::get_observer).put(mesh_routes::set_observer))
         .route("/sstv", get(sstv_routes::get_config).put(sstv_routes::set_config))
         .route("/schedule", get(schedule_routes::get).put(schedule_routes::set_config))

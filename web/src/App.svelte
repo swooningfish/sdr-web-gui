@@ -26,7 +26,7 @@
   import Sstv from './components/Sstv.svelte';
   import Passes from './components/Passes.svelte';
   import ConfirmHost from './components/ConfirmHost.svelte';
-  import { parseRoute, routeHash, routeTitle, type SatTab, type SettingsTab, type View } from './lib/route';
+  import { parseRoute, routeHash, routeTitle, type DecoderTab, type SatTab, type SettingsTab, type View } from './lib/route';
 
   let user = $state<User | null>(null);
   let checking = $state(true);
@@ -34,6 +34,7 @@
   let wsUp = $state(false);
   let view = $state<View>('spectrum');
   let settingsTab = $state<SettingsTab>('receiver');
+  let decoderTab = $state<DecoderTab>('ism');
   /** Which part of the Satellites page is showing. */
   let satTab = $state<SatTab>('passes');
   let waterfall = $state<ReturnType<typeof Waterfall> | undefined>();
@@ -65,12 +66,13 @@
     const r = parseRoute(location.hash);
     if (!r) {
       // Not a page: put back the one that's showing.
-      if (user) history.replaceState(null, '', routeHash(view, satTab, settingsTab));
+      if (user) history.replaceState(null, '', routeHash(view, satTab, settingsTab, decoderTab));
       return;
     }
     view = r.view;
     if (r.satTab) satTab = r.satTab;
     if (r.settingsTab) settingsTab = r.settingsTab;
+    if (r.decoderTab) decoderTab = r.decoderTab;
   }
   applyRoute();
 
@@ -90,13 +92,13 @@
       view = 'spectrum';
       redirected = true;
     }
-    const hash = routeHash(view, satTab, settingsTab);
+    const hash = routeHash(view, satTab, settingsTab, decoderTab);
     document.title = routeTitle(view);
     if (location.hash === hash) return;
     // A missing, unknown, shortened (`#satellites`) or refused hash is
     // corrected in place: stacking it would make Back bounce straight here.
     const r = parseRoute(location.hash);
-    const same = r && routeHash(r.view, r.satTab ?? satTab, r.settingsTab ?? settingsTab) === hash;
+    const same = r && routeHash(r.view, r.satTab ?? satTab, r.settingsTab ?? settingsTab, r.decoderTab ?? decoderTab) === hash;
     if (r && !same && !redirected) history.pushState(null, '', hash);
     else history.replaceState(null, '', hash);
   });
@@ -425,6 +427,7 @@
         active={view === 'mesh'}
         onsettings={() => {
           settingsTab = 'decoders';
+          decoderTab = 'mesh';
           view = 'settings';
         }}
       />
@@ -447,7 +450,7 @@
         }} />
     </div>
     {#if view === 'settings' && isAdmin}
-      <Settings {radio} me={user} bind:tab={settingsTab} />
+      <Settings {radio} me={user} bind:tab={settingsTab} bind:decoderTab />
     {:else if view === 'profile'}
       <Profile {user} onlogout={logout} />
     {/if}

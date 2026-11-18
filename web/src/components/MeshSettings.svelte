@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type MeshChannelKey, type MeshInfo } from '../lib/api';
-  import { formatMHz } from '../lib/format';
+  import { api, type MeshChannelKey, type MeshFoundChannel, type MeshInfo } from '../lib/api';
+  import { formatMHz, relTime } from '../lib/format';
 
   let info = $state<MeshInfo | null>(null);
   let enabled = $state(true);
+  let auto = $state(true);
   let presets = $state<string[]>([]);
   let mt = $state<MeshChannelKey[]>([]);
   let mc = $state<MeshChannelKey[]>([]);
@@ -15,6 +16,7 @@
   function fill(i: MeshInfo) {
     info = i;
     enabled = i.config.enabled;
+    auto = i.config.auto_channels ?? true;
     presets = [...i.config.presets];
     mt = i.config.meshtastic_channels.map((c) => ({ name: c.name, key: c.key ?? '' }));
     mc = i.config.meshcore_channels.map((c) => ({ name: c.name, key: c.key ?? '' }));
@@ -28,6 +30,25 @@
     presets = on ? [...presets.filter((p) => p !== id), id] : presets.filter((p) => p !== id);
   }
 
+  const list = (f: MeshFoundChannel) => (f.proto === 'meshcore' ? mc : mt);
+  const kept = (f: MeshFoundChannel) => list(f).some((c) => c.name.trim() === f.name);
+  const canKeep = (f: MeshFoundChannel) => f.named && !kept(f) && list(f).length < 16;
+
+  function keep(f: MeshFoundChannel) {
+    list(f).push({ name: f.name, key: f.key });
+    saved = false;
+  }
+
+  async function forget(f: MeshFoundChannel) {
+    err = null;
+    try {
+      await api.forgetMeshChannel(f.proto, f.name);
+      if (info) info.discovered = info.discovered.filter((x) => !(x.proto === f.proto && x.name === f.name));
+    } catch (e) {
+      err = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   async function save(e: SubmitEvent) {
     e.preventDefault();
     err = null;
@@ -35,7 +56,7 @@
     busy = true;
     const clean = (l: MeshChannelKey[]) => l.filter((c) => c.name.trim()).map((c) => ({ name: c.name.trim(), key: (c.key ?? '').trim() }));
     try {
-      await api.setMesh({ enabled, presets, meshtastic_channels: clean(mt), meshcore_channels: clean(mc) });
+      await api.setMesh({ enabled, presets, meshtastic_channels: clean(mt), meshcore_channels: clean(mc), auto_channels: auto });
       fill(await api.mesh());
       saved = true;
     } catch (e) {
@@ -100,6 +121,43 @@
         <button type="button" class="small" disabled={mc.length >= 16} onclick={() => mc.push({ name: '', key: '' })}>Add channel</button>
       </fieldset>
 
+      <fieldset>
+        <legend>Find channels automatically</legend>
+        <label class="check small-text"><input type="checkbox" bind:checked={auto} /> Look for public channels nobody added</label>
+        <p class="muted small-text hint">
+          Packets no key opens are tried against a list of common MeshCore hashtags (<span class="mono">#test</span>,
+          <span class="mono">#uk</span>, towns and counties) plus any <span class="mono">#tag</span> mentioned in a
+          message, and against Meshtastic's default key and the other simple keys (<span class="mono">AQ==</span> to
+          <span class="mono">Cg==</span>). What they find is shown to everyone like the default channels. Channels with
+          a real secret can't be found this way.
+        </p>
+        {#if info.discovered.length}
+          <ul class="found">
+            {#each info.discovered as f (f.proto + f.name + f.key)}
+              <li>
+                <span class="proto">{f.proto === 'meshcore' ? 'MeshCore' : 'Meshtastic'}</span>
+                <span class="mono fname">{f.name}</span>
+                {#if f.key}<span class="mono muted">{f.key}</span>{/if}
+                <span class="muted small-text">{f.packets} packet{f.packets === 1 ? '' : 's'}, last {relTime(f.last_ms)}</span>
+                <span class="actions">
+                  {#if kept(f)}
+                    <span class="muted small-text">added</span>
+                  {:else if canKeep(f)}
+                    <button type="button" class="small" onclick={() => keep(f)}>Add</button>
+                  {:else if !f.named}
+                    <span class="muted small-text" title="The key is known but not the name, so it can only be read while this is on">name unknown</span>
+                  {/if}
+                  <button type="button" class="small" onclick={() => forget(f)} aria-label="Forget {f.name}">Forget</button>
+                </span>
+              </li>
+            {/each}
+          </ul>
+          <p class="muted small-text hint">Add puts a channel in the lists above so it's read even with this off; press Save to keep it.</p>
+        {:else}
+          <p class="muted small-text hint">Nothing found yet.</p>
+        {/if}
+      </fieldset>
+
       <div class="save"><button type="submit" class="primary" disabled={busy}>Save</button></div>
       {#if err}<p class="error">{err}</p>{/if}
       {#if saved}<p class="success">Saved</p>{/if}
@@ -158,6 +216,34 @@
   }
   .mono {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .found {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 4px;
+  }
+  .found li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 10px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .found .proto {
+    min-width: 6.5em;
+  }
+  .found .fname {
+    font-weight: 600;
+  }
+  .found .actions {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
   .save {
     margin-top: 6px;

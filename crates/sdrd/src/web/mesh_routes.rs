@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use super::{AdminUser, ApiError, AppState, AuthUser};
 use crate::auth::Role;
 use crate::mesh::observer::ObserverConfig;
-use crate::mesh::{MeshConfig, PRESETS};
+use crate::mesh::{MeshConfig, Proto, PRESETS};
 
 /// Status and settings for the Mesh tab (channel keys for admins only).
 pub async fn get(State(state): State<AppState>, AuthUser(s): AuthUser) -> Json<Value> {
@@ -23,6 +23,8 @@ pub async fn get(State(state): State<AppState>, AuthUser(s): AuthUser) -> Json<V
         "main_tuned": tuned,
         "own_receiver": state.receivers.mesh.is_dedicated(),
         "tile_url": state.cfg.map_tile_url,
+        // Public channels (hashtags, simple keys): their keys are no secret.
+        "discovered": m.discovered(),
     }))
 }
 
@@ -39,6 +41,7 @@ pub async fn set_config(
         presets = ?cfg.presets,
         meshtastic_channels = cfg.meshtastic_channels.len(),
         meshcore_channels = cfg.meshcore_channels.len(),
+        auto_channels = cfg.auto_channels,
         "mesh settings changed"
     );
     Ok(Json(json!({ "ok": true })))
@@ -114,4 +117,19 @@ pub async fn set_observer(
         "mesh observer settings changed"
     );
     Ok(Json(state.mesh.observer.info()))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgetReq {
+    proto: Proto,
+    name: String,
+}
+
+/// Take a channel off the discovered list (it comes back if heard again
+/// while discovery is on).
+pub async fn forget_discovered(State(state): State<AppState>, AdminUser(admin): AdminUser, Json(r): Json<ForgetReq>) -> Json<Value> {
+    state.mesh.forget_discovered(r.proto, &r.name);
+    tracing::info!(by = %admin.user.username, name = %r.name, "discovered mesh channel forgotten");
+    Json(json!({ "ok": true }))
 }

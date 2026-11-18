@@ -277,6 +277,31 @@ pub fn decode(raw: &[u8], channels: &[Channel]) -> Option<Packet> {
     Some(Packet { header, channel: None, private: false, content: Content::Encrypted { pki } })
 }
 
+/// Try one channel's key whatever the packet's channel hash says (channel
+/// discovery). Only content that parses cleanly counts: random bytes can
+/// pass for a `Data` message now and then.
+pub fn decode_as(raw: &[u8], ch: &Channel) -> Option<Packet> {
+    let header = parse_header(raw)?;
+    let mut plain = raw[16..].to_vec();
+    crypt(&ch.key, &header, &mut plain);
+    let (port, payload) = data(&plain)?;
+    let content = match port {
+        1 => {
+            let text = std::str::from_utf8(&payload).ok()?;
+            if text.is_empty() || text.chars().any(|c| c.is_control() && c != '\n') {
+                return None;
+            }
+            Content::Text { text: text.to_string() }
+        }
+        3 | 4 | 67 => match content(port, &payload) {
+            Content::Other { .. } => return None,
+            c => c,
+        },
+        _ => return None,
+    };
+    Some(Packet { content, channel: Some(ch.name.clone()), private: ch.private, header })
+}
+
 /// Build an on-air packet (simulator).
 pub fn encode(h: &Header, ch: &Channel, port: u32, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(16 + payload.len() + 8);

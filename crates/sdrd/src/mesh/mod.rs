@@ -26,6 +26,7 @@ use crate::db;
 use crate::dsp::ddc::{self, Ddc};
 use crate::radio::{IqBlock, RadioState};
 
+pub mod discover;
 pub mod lora;
 pub mod meshcore;
 pub mod meshtastic;
@@ -33,10 +34,11 @@ pub mod observer;
 pub mod proto;
 
 const CFG_KEY: &str = "mesh";
+const DISCOVERED_KEY: &str = "mesh_discovered";
 /// Packets kept in the in-memory log.
 const LOG_LEN: usize = 500;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Proto {
     Meshtastic,
@@ -106,6 +108,13 @@ pub struct MeshConfig {
     pub meshtastic_channels: Vec<ChannelKey>,
     #[serde(default)]
     pub meshcore_channels: Vec<ChannelKey>,
+    /// Try likely public channels on packets no key opens ([`discover`]).
+    #[serde(default = "yes")]
+    pub auto_channels: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for MeshConfig {
@@ -115,6 +124,7 @@ impl Default for MeshConfig {
             presets: PRESETS.iter().map(|p| p.id.to_string()).collect(),
             meshtastic_channels: Vec::new(),
             meshcore_channels: Vec::new(),
+            auto_channels: true,
         }
     }
 }
@@ -180,6 +190,7 @@ impl MeshConfig {
             "presets": self.presets,
             "meshtastic_channels": self.meshtastic_channels.iter().map(|c| json!({ "name": c.name })).collect::<Vec<_>>(),
             "meshcore_channels": self.meshcore_channels.iter().map(|c| json!({ "name": c.name })).collect::<Vec<_>>(),
+            "auto_channels": self.auto_channels,
         })
     }
 }
@@ -264,6 +275,9 @@ struct Tracker {
     seen: HashMap<u64, i64>,
     counts: HashMap<&'static str, (u64, i64)>,
     crc_errors: u64,
+    /// Look for public channels nobody added (the setting).
+    auto: bool,
+    discover: discover::Discovery,
 }
 
 impl Tracker {
@@ -409,6 +423,17 @@ impl MeshHandle {
         .await?)
     }
 
+    /// Public channels found on their own, most recently heard first.
+    pub fn discovered(&self) -> Vec<discover::Found> {
+        let mut v = self.tracker.lock().unwrap().discover.found.clone();
+        v.sort_by_key(|f| std::cmp::Reverse(f.last_ms));
+        v
+    }
+
+    pub fn forget_discovered(&self, proto: Proto, name: &str) {
+        self.tracker.lock().unwrap().discover.forget(proto, name);
+    }
+
     pub async fn delete_nodes(&self, keys: &[String]) -> anyhow::Result<()> {
         {
             let mut t = self.tracker.lock().unwrap();
@@ -446,6 +471,8 @@ pub async fn spawn(
             t.nodes.insert(n.key.clone(), n);
         }
     }
+    let saved = db::get_setting::<discover::Saved>(pool, DISCOVERED_KEY).await.ok().flatten().unwrap_or_default();
+    t.discover = discover::Discovery::new(saved);
     let tracker = Arc::new(Mutex::new(t));
     let (cfg_tx, cfg_rx) = watch::channel(cfg);
     let last_iq = Arc::new(AtomicI64::new(0));
@@ -567,9 +594,14 @@ fn feeder(mut rx: broadcast::Receiver<Arc<IqBlock>>, cfg_rx: watch::Receiver<Mes
 
 async fn ingest(h: MeshHandle, mut rx: mpsc::UnboundedReceiver<Rx>, cfg_rx: watch::Receiver<MeshConfig>) {
     while let Some(r) = rx.recv().await {
-        let (mt, mc) = cfg_rx.borrow().channels().unwrap_or_default();
+        let (mt, mc, auto) = {
+            let c = cfg_rx.borrow();
+            let (mt, mc) = c.channels().unwrap_or_default();
+            (mt, mc, c.enabled && c.auto_channels)
+        };
         let (entry, msg) = {
             let mut t = h.tracker.lock().unwrap();
+            t.auto = auto;
             handle_frame(&mut t, &r, &mt, &mc)
         };
         if entry.crc_ok && entry.proto == Proto::Meshcore {
@@ -645,10 +677,18 @@ fn handle_frame(t: &mut Tracker, r: &Rx, mt: &[meshtastic::Channel], mc: &[meshc
 
 fn meshtastic_frame(t: &mut Tracker, p: &Preset, f: &lora::Frame, now: i64, chans: &[meshtastic::Channel], e: &mut LogEntry) -> Option<Message> {
     use meshtastic::Content;
-    let Some(pk) = meshtastic::decode(&f.payload, chans) else {
+    let Some(mut pk) = meshtastic::decode(&f.payload, chans) else {
         e.kind = "too short".into();
         return None;
     };
+    if t.auto && pk.content == (Content::Encrypted { pki: false }) {
+        if let Some(found) = t.discover.meshtastic(&f.payload, pk.header.channel_hash, now) {
+            pk = found;
+        }
+    }
+    if let Content::Text { text } = &pk.content {
+        t.discover.learn(text);
+    }
     let h = &pk.header;
     let from = meshtastic::node_id(h.from);
     let key = format!("mt:{from}");
@@ -741,10 +781,18 @@ fn meshtastic_frame(t: &mut Tracker, p: &Preset, f: &lora::Frame, now: i64, chan
 
 fn meshcore_frame(t: &mut Tracker, p: &Preset, f: &lora::Frame, now: i64, chans: &[meshcore::Channel], e: &mut LogEntry) -> Option<Message> {
     use meshcore::Content;
-    let Some(pk) = meshcore::decode(&f.payload, chans) else {
+    let Some(mut pk) = meshcore::decode(&f.payload, chans) else {
         e.kind = "too short".into();
         return None;
     };
+    if let (true, "group text", Content::Encrypted { channel_hash: Some(hash), .. }) = (t.auto, pk.payload_type, &pk.content) {
+        if let Some(found) = t.discover.meshcore(&f.payload, *hash, now) {
+            pk = found;
+        }
+    }
+    if let Content::GroupText { text, .. } = &pk.content {
+        t.discover.learn(text);
+    }
     let hops = pk.path.len() as u8;
     e.hops = Some(hops);
     e.kind = pk.payload_type.to_string();
@@ -837,6 +885,15 @@ async fn housekeeping(h: MeshHandle) {
     let mut tick = tokio::time::interval(Duration::from_secs(30));
     loop {
         tick.tick().await;
+        let found = {
+            let mut t = h.tracker.lock().unwrap();
+            std::mem::take(&mut t.discover.dirty).then(|| t.discover.saved())
+        };
+        if let Some(saved) = found {
+            if let Err(e) = db::set_setting(&h.pool, DISCOVERED_KEY, &saved).await {
+                tracing::warn!("saving discovered mesh channels: {e}");
+            }
+        }
         let dirty: Vec<Node> = {
             let mut t = h.tracker.lock().unwrap();
             let keys: Vec<String> = t.dirty.drain().collect();

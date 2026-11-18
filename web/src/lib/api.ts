@@ -156,6 +156,22 @@ export interface MeshConfig {
   presets: string[];
   meshtastic_channels: MeshChannelKey[];
   meshcore_channels: MeshChannelKey[];
+  /** Try likely public channels on packets no key opens. */
+  auto_channels: boolean;
+}
+
+/** A public channel found without being added. */
+export interface MeshFoundChannel {
+  proto: MeshProto;
+  name: string;
+  /** Meshtastic PSK as the apps show it ("AQ=="); empty for MeshCore. */
+  key: string;
+  hash: number;
+  /** The name is known, not just the key. */
+  named: boolean;
+  first_ms: number;
+  last_ms: number;
+  packets: number;
 }
 
 export interface MeshInfo {
@@ -175,6 +191,7 @@ export interface MeshInfo {
   /** Decoding from a receiver of Mesh's own rather than the main one. */
   own_receiver: boolean;
   tile_url: string;
+  discovered: MeshFoundChannel[];
 }
 
 export interface MeshNode {
@@ -907,6 +924,7 @@ export const api = {
   meshNodes: () => req<{ now: number; nodes: MeshNode[] }>('GET', '/mesh/nodes'),
   deleteMeshNodes: (keys: string[]) => req('POST', '/mesh/nodes/delete', { keys }),
   meshMessages: (limit = 300) => req<{ messages: MeshMessage[] }>('GET', `/mesh/messages?limit=${limit}`),
+  forgetMeshChannel: (proto: MeshProto, name: string) => req('POST', '/mesh/discovered/forget', { proto, name }),
   meshPackets: () => req<{ packets: MeshPacket[] }>('GET', '/mesh/packets'),
   checkSpec: (spec: string) => req<{ ok: boolean; message?: string }>('POST', '/decoders/rtl_433/check', { spec }),
 };

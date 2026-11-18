@@ -17,17 +17,26 @@
   import SystemInfo from './SystemInfo.svelte';
   import About from './About.svelte';
 
-  import type { SettingsTab } from '../lib/route';
+  import type { DecoderTab, SettingsTab } from '../lib/route';
 
   let {
     radio,
     me,
     tab = $bindable('receiver'),
+    decoderTab = $bindable('ism'),
   }: {
     radio: RadioState | null;
     me: User;
     tab?: SettingsTab;
+    decoderTab?: DecoderTab;
   } = $props();
+
+  const DECODER_TABS: { id: DecoderTab; label: string }[] = [
+    { id: 'ism', label: 'ISM (rtl_433)' },
+    { id: 'aprs', label: 'APRS' },
+    { id: 'sstv', label: 'SSTV' },
+    { id: 'mesh', label: 'Mesh' },
+  ];
 
   const isAdmin = $derived(me.role === 'admin');
   const ALL_TABS: { id: SettingsTab; label: string; admin: boolean }[] = [
@@ -69,10 +78,28 @@
       <AdsbSettings />
       <ExtraReceivers />
     {:else if tab === 'decoders'}
-      <DecoderSettings {radio} />
-      <AprsSettings {radio} />
-      <SstvSettings {radio} />
-      <MeshSettings />
+      <div class="subtabs" role="tablist" aria-label="Decoders">
+        {#each DECODER_TABS as t (t.id)}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={decoderTab === t.id}
+            class:active={decoderTab === t.id}
+            onclick={() => (decoderTab = t.id)}>{t.label}</button
+          >
+        {/each}
+      </div>
+      <div class="single">
+        {#if decoderTab === 'ism'}
+          <DecoderSettings {radio} />
+        {:else if decoderTab === 'aprs'}
+          <AprsSettings {radio} />
+        {:else if decoderTab === 'sstv'}
+          <SstvSettings {radio} />
+        {:else}
+          <MeshSettings />
+        {/if}
+      </div>
     {:else if tab === 'rotation'}
       <RotationSettings {radio} />
     {:else if tab === 'passes'}
@@ -120,6 +147,28 @@
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
     gap: 16px;
     align-items: start;
+    min-width: 0;
+  }
+  .subtabs {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+  }
+  .subtabs button {
+    background: transparent;
+    border-color: transparent;
+  }
+  .subtabs button.active {
+    background: var(--surface-2);
+    border-color: var(--border);
+    font-weight: 600;
+  }
+  .single {
+    grid-column: 1 / -1;
+    max-width: 820px;
     min-width: 0;
   }
   @media (max-width: 760px) {
