@@ -597,6 +597,32 @@ export interface RepeaterConfig {
   radius_miles: number;
 }
 
+export interface ObserverConfig {
+  enabled: boolean;
+  broker: string;
+  iata: string;
+  name: string;
+  owner: string;
+  email: string;
+}
+
+export interface ObserverInfo {
+  config: ObserverConfig;
+  /** This observer's MeshCore public key (hex). */
+  public_key: string;
+  brokers: { id: string; name: string; host: string }[];
+  status: {
+    connected: boolean;
+    server: string | null;
+    error: string | null;
+    connected_ms: number | null;
+    sent: number;
+    last_sent_ms: number | null;
+  };
+  /** Why nothing is sent although it's on. */
+  paused: string | null;
+}
+
 /** [time ms, azimuth°, elevation°] */
 export type TrackPoint = [number, number, number];
 
@@ -800,6 +826,8 @@ export const api = {
   setRepeaterConfig: (c: Omit<RepeaterConfig, 'has_token'> & { token?: string }) =>
     req<RepeaterConfig>('PUT', '/repeaters/config', c),
   refreshRepeaters: () => req<{ count: number }>('POST', '/repeaters/refresh'),
+  meshObserver: () => req<ObserverInfo>('GET', '/mesh/observer'),
+  setMeshObserver: (c: ObserverConfig) => req<ObserverInfo>('PUT', '/mesh/observer', c),
   setRotation: (enabled: boolean) => req<{ rotation: boolean }>('PUT', '/schedule/rotation', { enabled }),
   bookmarks: () => req<Bookmark[]>('GET', '/bookmarks'),
   addBookmark: (b: BookmarkInput) => req<{ id: number }>('POST', '/bookmarks', b),

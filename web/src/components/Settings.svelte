@@ -11,6 +11,7 @@
   import ScheduleSettings from './ScheduleSettings.svelte';
   import RotationSettings from './RotationSettings.svelte';
   import RepeaterSettings from './RepeaterSettings.svelte';
+  import MeshObserver from './MeshObserver.svelte';
   import Integrations from './Integrations.svelte';
   import Users from './Users.svelte';
   import SystemInfo from './SystemInfo.svelte';
@@ -80,6 +81,7 @@
     {:else if tab === 'integrations'}
       <Integrations />
       <RepeaterSettings />
+      <MeshObserver />
     {:else if tab === 'users'}
       <Users {me} />
     {:else if tab === 'system'}

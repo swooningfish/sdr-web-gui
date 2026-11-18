@@ -398,6 +398,30 @@ and messages are kept as long as other events.
 A spare dongle can be kept on 869 MHz for Mesh: see
 [Extra receivers](#extra-receivers-mesh-sensors-aprs).
 
+### MeshCore observer (LetsMesh)
+
+sdrd can act as a MeshCore **observer**: it sends every MeshCore packet it hears to the
+[LetsMesh analyzer](https://analyzer.letsmesh.net/), which maps coverage and the paths packets
+take. An admin turns it on under **Settings → Integrations → MeshCore observer**, picking:
+
+- the server (LetsMesh EU for the UK, or US);
+- the **area code**: the IATA code of the nearest airport, e.g. `LHR`;
+- the observer name LetsMesh shows;
+- optionally an owner public key (e.g. your companion's) and an email, which go in the login so
+  LetsMesh can link the observer to you.
+
+There is no account or password. On first start sdrd makes a MeshCore identity of its own (an
+Ed25519 key pair, kept in the database); the settings page shows its public key as the
+observer ID. It logs in as `v1_<public key>` with a token signed by that key, over WebSockets
+and TLS on port 443, renewed daily. Packets go to `meshcore/<area>/<public key>/packets`, and an
+online/offline status (retained) to `.../status`.
+
+What is sent: the packet bytes as they were on air (so private channels and direct messages
+stay encrypted, and nothing sdrd decrypted is shared), the time and the SNR. RSSI is sent as
+`Unknown`: an SDR has no calibrated signal level. Damaged packets (CRC errors) are skipped, and
+nothing is sent while the Mesh receiver is simulated or replayed. The observer name and area
+code are public on LetsMesh.
+
 Not yet: other regions' frequencies,
 MQTT / Home Assistant for tracked nodes, and testing against real transmitters (the
 demodulator is checked against its own transmitter and the simulator only).
@@ -566,7 +590,7 @@ one line (**Compact**), and you drag and pinch-zoom the spectrum with your finge
 
 Admins get **Settings**, split into tabs: Receiver (SDR devices), Decoders (rtl_433, APRS,
 SSTV), Rotation (profiles), Passes (location, satellites, auto-switch, TLEs, test pass),
-Integrations (MQTT / Home Assistant, RepeaterBook), Users and System (read-only server
+Integrations (MQTT / Home Assistant, RepeaterBook, MeshCore observer), Users and System (read-only server
 settings). Everyone manages their bookmarks and function keys from the receiver.
 
 **RepeaterBook** (Integrations) fills *Bookmarks → Repeaters* with repeaters within a radius
