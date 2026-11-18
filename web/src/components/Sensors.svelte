@@ -1,6 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, ApiError, type Device, type DevicePatch, type EventRow, type RadioState, type Rtl433Info } from '../lib/api';
+  import {
+    api,
+    ApiError,
+    type Device,
+    type DevicePatch,
+    type DeviceSeries,
+    type EventRow,
+    type RadioState,
+    type Rtl433Info,
+  } from '../lib/api';
   import {
     CHART_FIELDS,
     DEFAULT_DISTANCE,
@@ -19,7 +28,7 @@
   import { unsupported } from '../lib/coverage';
   import { formatMHz, formatRate, relTime } from '../lib/format';
   import { Selection } from '../lib/selection.svelte';
-  import { indeterminate } from '../lib/actions';
+  import { indeterminate, nearEnd } from '../lib/actions';
   import { confirmAsk } from '../lib/confirm.svelte';
 
   let { isAdmin, radio }: { isAdmin: boolean; radio: RadioState | null } = $props();
@@ -35,7 +44,15 @@
   let kind = $state<'all' | 'tpms' | 'other'>('all');
   let trackedOnly = $state(false);
   let selectedId = $state<number | null>(null);
+  /** The selected device's packets in the range, newest first, loaded a page at a time. */
   let history = $state<EventRow[]>([]);
+  let histMore = $state(false);
+  let histLoading = $state(false);
+  /** Every packet in the range, for charts over short ranges. */
+  let chartEvents = $state<EventRow[]>([]);
+  /** Averaged readings for charts over long ranges (null = use chartEvents). */
+  let averaged = $state<DeviceSeries | null>(null);
+  let chartsLoading = $state(false);
   /** Packet picked from the history for the debug view; null = the latest. */
   let inspectId = $state<number | null>(null);
   /** The selected device's next burst will be saved ("log next burst"). */
@@ -43,15 +60,52 @@
   const inspected = $derived(
     (inspectId !== null ? history.find((e) => e.id === inspectId) : undefined) ?? history[0] ?? null,
   );
+  let now = $state(Date.now());
+  const DAY = 24 * 3600_000;
   const RANGES = [
     { label: '1 h', ms: 3600_000 },
-    { label: '24 h', ms: 24 * 3600_000 },
-    { label: '7 days', ms: 7 * 24 * 3600_000 },
+    { label: '24 h', ms: DAY },
+    { label: '7 days', ms: 7 * DAY },
+    { label: '30 days', ms: 30 * DAY },
+    { label: '4 months', ms: 122 * DAY },
   ];
-  let rangeMs = $state(24 * 3600_000);
+  /** Ranges longer than this chart averages instead of every packet. */
+  const RAW_MAX = 8 * DAY;
+  const HISTORY_PAGE = 100;
+  /** How far back the date pickers go (tracked sensors keep about 5 years). */
+  const YEARS_BACK = 5;
+  /** A preset range ending now, or null for the dates picked below. */
+  let rangeMs = $state<number | null>(DAY);
+  let customFrom = $state('');
+  let customTo = $state('');
+  /** "2026-11-18" for a local date. */
+  const isoDay = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const today = $derived(isoDay(new Date(now)));
+  const earliest = $derived.by(() => {
+    const d = new Date(now);
+    d.setFullYear(d.getFullYear() - YEARS_BACK);
+    return isoDay(d);
+  });
+  /** Local midnight at the start of a picked day. */
+  const dayStart = (s: string) => {
+    const [y, m, d] = s.split('-').map(Number);
+    return new Date(y, m - 1, d).getTime();
+  };
+  /**
+   * The time window shown: presets slide with the clock; picked dates run from
+   * the start of the first day to the end of the last. `live` = it reaches now,
+   * so new packets belong in it.
+   */
+  const win = $derived.by(() => {
+    if (rangeMs !== null) return { from: now - rangeMs, to: now, live: true };
+    const from = customFrom ? dayStart(customFrom) : now - DAY;
+    const end = customTo ? dayStart(customTo) + DAY : now;
+    return { from, to: Math.min(end, Math.max(now, from + 1)), live: end >= now };
+  });
+  const span = $derived(win.to - win.from);
   let nameInput = $state('');
   let busy = $state(false);
-  let now = $state(Date.now());
 
   const selected = $derived(devices.find((d) => d.id === selectedId) ?? null);
   const shown = $derived.by(() => {
@@ -138,6 +192,8 @@
   );
   const dist = (rssi: number) => formatDistance(estimateDistance(rssi, model));
   const selRssi = $derived(medianRssi(history));
+  /** Every field the charts can show, for the averaged series request. */
+  const CHART_KEYS = [...new Set(CHART_FIELDS.map((f) => f.key))];
   let calInput = $state('');
   let expInput = $state('');
   let calMsg = $state<string | null>(null);
@@ -177,7 +233,16 @@
   }
 
   const charts = $derived(
-    CHART_FIELDS.map((f) => ({ ...f, points: series(history, f.key) })).filter((c) => c.points.length > 0),
+    CHART_FIELDS.map((f) => ({
+      ...f,
+      points: averaged ? (averaged.fields[f.key] ?? []) : series(chartEvents, f.key),
+    })).filter((c) => c.points.length > 0),
+  );
+  /** "6 h", "2 days": how much each averaged point covers. */
+  const stepText = (ms: number) =>
+    ms >= 2 * DAY ? `${Math.round(ms / DAY)} days` : ms >= 2 * 3600_000 ? `${Math.round(ms / 3600_000)} h` : `${Math.max(1, Math.round(ms / 60_000))} min`;
+  const csvHref = $derived(
+    selectedId === null ? '' : api.deviceCsvUrl(selectedId, win.from, win.live ? undefined : win.to),
   );
 
   /** Called by App for every live event from the WebSocket. */
@@ -194,7 +259,13 @@
     }
     if (selectedId === device.id) {
       now = Date.now(); // keep the newest point inside the chart's time range
-      history = again ? history.map((e) => (e.id === event.id ? event : e)) : [event, ...history];
+      if (again) {
+        history = history.map((e) => (e.id === event.id ? event : e));
+        chartEvents = chartEvents.map((e) => (e.id === event.id ? event : e));
+      } else if (win.live) {
+        history = [event, ...history];
+        if (!averaged) chartEvents = [event, ...chartEvents];
+      }
       if (event.burst) burstArmed = false;
     }
   }
@@ -278,16 +349,64 @@
     await loadHistory();
   }
 
+  /** Bumped on every reload so answers for an old device or range are dropped. */
+  let loadSeq = 0;
+
+  /** Reload the charts and the first page of the history for the current range. */
   async function loadHistory() {
     const id = selectedId;
     if (id === null) return;
+    const seq = ++loadSeq;
+    now = Date.now();
+    const w = win;
     history = [];
+    histMore = true;
+    chartEvents = [];
+    averaged = null;
     inspectId = null;
+    chartsLoading = true;
+    const until = w.live ? undefined : w.to;
+    const charts =
+      w.to - w.from > RAW_MAX
+        ? api.deviceSeries(id, { since: w.from, until, fields: CHART_KEYS, buckets: 600 }).then((s) => {
+            if (seq === loadSeq) averaged = s;
+          })
+        : api
+            .deviceEvents(id, { since: w.from, before: until, limit: 10_000 })
+            .then((h) => {
+              if (seq === loadSeq) chartEvents = h;
+            });
     try {
-      const h = await api.deviceEvents(id, { since: Date.now() - rangeMs, limit: 10_000 });
-      if (selectedId === id) history = h;
+      await Promise.all([charts, loadMore(seq)]);
     } catch (e) {
       fail(e);
+    } finally {
+      if (seq === loadSeq) chartsLoading = false;
+    }
+  }
+
+  /** The next page of the history (endless scroll). */
+  async function loadMore(seq = loadSeq) {
+    const id = selectedId;
+    if (id === null || histLoading || !histMore) return;
+    histLoading = true;
+    const last = history.at(-1);
+    try {
+      const page = await api.deviceEvents(id, {
+        since: win.from,
+        before: last ? last.ts : win.live ? undefined : win.to,
+        beforeId: last?.id,
+        limit: HISTORY_PAGE,
+      });
+      if (seq !== loadSeq) return;
+      const seen = new Set(history.map((e) => e.id));
+      history = [...history, ...page.filter((e) => !seen.has(e.id))];
+      histMore = page.length === HISTORY_PAGE;
+    } catch (e) {
+      if (seq === loadSeq) histMore = false;
+      fail(e);
+    } finally {
+      histLoading = false;
     }
   }
 
@@ -317,6 +436,24 @@
 
   function setRange(ms: number) {
     rangeMs = ms;
+    loadHistory();
+  }
+
+  /** Switch to picked dates, starting from the range shown now. */
+  function pickDates() {
+    if (rangeMs === null) return;
+    customFrom = isoDay(new Date(win.from));
+    customTo = today;
+    rangeMs = null;
+    loadHistory();
+  }
+
+  function setDates() {
+    if (!customFrom || !customTo) return;
+    // Keep within what's kept, and the right way round.
+    if (customFrom < earliest) customFrom = earliest;
+    if (customTo > today) customTo = today;
+    if (customFrom > customTo) [customFrom, customTo] = [customTo, customFrom];
     loadHistory();
   }
 
@@ -363,6 +500,11 @@
   }
 
   const time = (ms: number) => new Date(ms).toLocaleTimeString();
+  /** History rows span days to years: add the date to anything not from today. */
+  const histTime = (ms: number) =>
+    new Date(ms).toDateString() === new Date(now).toDateString()
+      ? time(ms)
+      : new Date(ms).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'medium' });
 </script>
 
 {#if denied}
@@ -621,23 +763,53 @@
                 >{r.label}</button
               >
             {/each}
+            <button type="button" class="small" class:active={rangeMs === null} onclick={pickDates}>Dates…</button>
           </div>
+          {#if rangeMs === null}
+            <div class="dates">
+              <label
+                >From <input
+                  type="date"
+                  bind:value={customFrom}
+                  min={earliest}
+                  max={customTo || today}
+                  onchange={setDates}
+                /></label
+              >
+              <label
+                >To <input type="date" bind:value={customTo} min={customFrom || earliest} max={today} onchange={setDates} /></label
+              >
+            </div>
+          {/if}
+          {#if averaged && charts.length > 0}
+            <p class="muted small-text">Each point is the average over {stepText(averaged.step_ms)}.</p>
+          {/if}
           {#each charts as c (c.key)}
-            <TimeChart title={c.label} unit={c.unit} digits={c.digits} points={c.points} from={now - rangeMs} to={now} />
+            <TimeChart title={c.label} unit={c.unit} digits={c.digits} points={c.points} from={win.from} to={win.to} />
           {:else}
-            <p class="muted small-text">No numeric readings to chart in this period.</p>
+            <p class="muted small-text">
+              {chartsLoading ? 'Loading readings…' : 'No numeric readings to chart in this period.'}
+            </p>
           {/each}
-          <h3>History</h3>
+          <div class="hist-head">
+            <h3>History</h3>
+            <span class="muted small-text"
+              >{history.length}{histMore ? '+' : ''} packet{history.length === 1 ? '' : 's'}</span
+            >
+            <a class="small-button" href={csvHref} download title="Every packet in this range, oldest first"
+              >Export CSV</a
+            >
+          </div>
           <div class="history">
             <table>
               <tbody>
-                {#each history.slice(0, 200) as ev (ev.id)}
+                {#each history as ev (ev.id)}
                   <tr
                     class:inspect={inspectId === ev.id}
                     title="Show this packet in Packet debug"
                     onclick={() => (inspectId = inspectId === ev.id ? null : ev.id)}
                   >
-                    <td class="nowrap muted" title={new Date(ev.ts).toLocaleString()}>{time(ev.ts)}</td>
+                    <td class="nowrap muted" title={new Date(ev.ts).toLocaleString()}>{histTime(ev.ts)}</td>
                     <td>
                       {readings(ev.data).join(' · ')}
                       {#if ev.burst}<span class="iq" title="Radio burst saved with this packet">IQ</span>{/if}
@@ -646,6 +818,15 @@
                 {/each}
               </tbody>
             </table>
+            {#if histMore}
+              <div class="more muted small-text" use:nearEnd={() => loadMore()}>
+                {histLoading ? 'Loading…' : ''}
+              </div>
+            {:else if history.length > 0}
+              <p class="more muted small-text">Start of this range</p>
+            {:else if !histLoading}
+              <p class="more muted small-text">No packets in this range.</p>
+            {/if}
           </div>
           <PacketDebug
             event={inspected}
@@ -911,8 +1092,46 @@
   }
   .range {
     display: flex;
+    flex-wrap: wrap;
     gap: 4px;
     margin: 14px 0 10px;
+  }
+  .dates {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin: 0 0 10px;
+    font-size: 13px;
+  }
+  .dates input {
+    margin-left: 4px;
+  }
+  .hist-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin: 16px 0 6px;
+  }
+  .hist-head h3 {
+    margin: 0;
+  }
+  .small-button {
+    margin-left: auto;
+    padding: 4px 10px;
+    font-size: 13px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: inherit;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .small-button:hover {
+    border-color: var(--accent);
+  }
+  .more {
+    min-height: 1px;
+    margin: 6px 0;
+    text-align: center;
   }
   .range .active {
     background: var(--accent);

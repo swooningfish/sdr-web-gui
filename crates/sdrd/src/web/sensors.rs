@@ -34,6 +34,8 @@ fn not_found() -> ApiError {
 pub struct ListQuery {
     limit: Option<i64>,
     before: Option<i64>,
+    /// With `before`: page after this event (events sharing its time stay apart).
+    before_id: Option<i64>,
     since: Option<i64>,
     decoder: Option<String>,
 }
@@ -74,10 +76,188 @@ pub async fn device_events(
     // Enough for a week of a sensor that reports every couple of minutes.
     let limit = q.limit.unwrap_or(200).clamp(1, 10_000);
     Ok(Json(
-        events::device_events(&state.db, id, q.since, q.before, limit)
+        events::device_events(&state.db, id, q.since, q.before, q.before_id, limit)
             .await
             .map_err(ApiError::internal)?,
     ))
+}
+
+#[derive(Deserialize)]
+pub struct SeriesQuery {
+    since: i64,
+    until: Option<i64>,
+    /// Points per field, at most.
+    buckets: Option<i64>,
+    /// Comma-separated data fields, e.g. `temperature_C,humidity`.
+    fields: String,
+}
+
+/// Averaged readings for charts over ranges too long to send every packet.
+pub async fn device_series(
+    State(state): State<AppState>,
+    AuthUser(s): AuthUser,
+    Path(id): Path<i64>,
+    Query(q): Query<SeriesQuery>,
+) -> Result<Json<Value>, ApiError> {
+    device_by_id(&state, &s, id).await?;
+    let until = q.until.unwrap_or_else(crate::db::now_ms);
+    if until <= q.since {
+        return Err(ApiError::bad_request("until must be after since"));
+    }
+    let fields: Vec<String> = q.fields.split(',').filter(|f| !f.is_empty()).map(str::to_string).collect();
+    let plain = |f: &String| f.len() <= 64 && f.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    if fields.is_empty() || fields.len() > 20 || !fields.iter().all(plain) {
+        return Err(ApiError::bad_request("fields: 1–20 names of letters, digits and _"));
+    }
+    let buckets = q.buckets.unwrap_or(500).clamp(10, 2000);
+    let step = ((until - q.since) / buckets).max(1000);
+    let rows = events::device_series(&state.db, id, q.since, until, step, &fields)
+        .await
+        .map_err(ApiError::internal)?;
+    let mut out = serde_json::Map::new();
+    for (i, f) in fields.iter().enumerate() {
+        let pts: Vec<Value> = rows
+            .iter()
+            .filter_map(|(t, v)| v[i].map(|x| json!({ "t": t + step / 2, "v": x })))
+            .collect();
+        if !pts.is_empty() {
+            out.insert(f.clone(), pts.into());
+        }
+    }
+    Ok(Json(json!({ "step_ms": step, "fields": out })))
+}
+
+#[derive(Deserialize)]
+pub struct CsvQuery {
+    since: Option<i64>,
+    until: Option<i64>,
+}
+
+/// "2026-11-18 09:30:05" (UTC), which spreadsheets read as a date and time.
+fn utc_text(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let (days, sod) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}", sod / 3600, sod / 60 % 60, sod % 60)
+}
+
+/// One CSV cell. Text a spreadsheet would run as a formula gets a leading '
+/// (anyone can transmit a packet).
+fn csv_cell(out: &mut String, v: &str) {
+    let v = if v.starts_with(['=', '+', '-', '@', '\t', '\r']) { format!("'{v}") } else { v.to_string() };
+    if v.contains([',', '"', '\n', '\r']) {
+        out.push('"');
+        out.push_str(&v.replace('"', "\"\""));
+        out.push('"');
+    } else {
+        out.push_str(&v);
+    }
+}
+
+fn csv_row(e: &EventRow, keys: &[String]) -> String {
+    let num = |v: Option<String>| v.unwrap_or_default();
+    let mut out = format!(
+        "{},{},{},{},{}",
+        utc_text(e.ts),
+        e.ts,
+        num(e.freq_hz.map(|f| f.to_string())),
+        num(e.rssi.map(|f| f.to_string())),
+        num(e.snr.map(|f| f.to_string())),
+    );
+    let data: serde_json::Map<String, Value> = serde_json::from_str(&e.data).unwrap_or_default();
+    for k in keys {
+        out.push(',');
+        match data.get(k) {
+            None | Some(Value::Null) => {}
+            Some(Value::String(s)) => csv_cell(&mut out, s),
+            Some(Value::Number(n)) => out.push_str(&n.to_string()),
+            Some(Value::Bool(b)) => out.push_str(if *b { "true" } else { "false" }),
+            Some(v) => csv_cell(&mut out, &v.to_string()),
+        }
+    }
+    out.push_str("\r\n");
+    out
+}
+
+/// Rows written to the CSV per database query.
+const CSV_PAGE: i64 = 2000;
+
+/// A device's readings as CSV, oldest first, streamed (years of a sensor run
+/// to millions of rows).
+pub async fn device_csv(
+    State(state): State<AppState>,
+    AuthUser(s): AuthUser,
+    Path(id): Path<i64>,
+    Query(q): Query<CsvQuery>,
+) -> Result<Response, ApiError> {
+    let d = device_by_id(&state, &s, id).await?;
+    let since = q.since.unwrap_or(0);
+    let until = q.until.unwrap_or(i64::MAX);
+    // rssi and snr already have columns of their own.
+    let mut keys = events::data_keys(&state.db, id, since, until)
+        .await
+        .map_err(ApiError::internal)?;
+    keys.retain(|k| k != "rssi" && k != "snr");
+    let keys = std::sync::Arc::new(keys);
+    let mut head = String::from("time_utc,ts_ms,freq_hz,rssi,snr");
+    for k in keys.iter() {
+        head.push(',');
+        csv_cell(&mut head, k);
+    }
+    head.push_str("\r\n");
+
+    let db = state.db.clone();
+    // State: (header still to send, last event sent as (ts, id), no more pages).
+    let start = (Some(head), (since.saturating_sub(1), i64::MAX), false);
+    let body = futures_util::stream::unfold(start, move |(head, after, done)| {
+        let db = db.clone();
+        let keys = keys.clone();
+        async move {
+            if let Some(h) = head {
+                return Some((Ok(bytes::Bytes::from(h)), (None, after, false)));
+            }
+            if done {
+                return None;
+            }
+            match events::events_after(&db, id, after, until, CSV_PAGE).await {
+                Ok(page) => {
+                    let last = page.last().map(|e| (e.ts, e.id))?;
+                    let chunk: String = page.iter().map(|e| csv_row(e, &keys)).collect();
+                    Some((Ok(bytes::Bytes::from(chunk)), (None, last, page.len() < CSV_PAGE as usize)))
+                }
+                Err(e) => {
+                    tracing::warn!("CSV export of device {id}: {e:#}");
+                    Some((Err(std::io::Error::other(e.to_string())), (None, after, true)))
+                }
+            }
+        }
+    });
+
+    let name = d.name.clone().unwrap_or_else(|| format!("{} {}", d.model, d.dev_id.clone().unwrap_or_default()));
+    let name: String = name
+        .trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .collect();
+    let file = format!("{}-{}.csv", name.trim_matches('_'), &utc_text(crate::db::now_ms())[..10]);
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
+            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{file}\"")),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        axum::body::Body::from_stream(body),
+    )
+        .into_response())
 }
 
 pub async fn recent_events(

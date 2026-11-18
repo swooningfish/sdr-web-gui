@@ -41,7 +41,9 @@
     const max = Math.ceil(hi / step) * step;
     const ticks: number[] = [];
     for (let v = min; v <= max + step / 2; v += step) ticks.push(+v.toFixed(10));
-    return { min, max, ticks };
+    // Averaged readings can span less than one unit: label to the step's precision.
+    const places = Math.max(digits, Math.ceil(-Math.log10(step) - 1e-9));
+    return { min, max, ticks, places };
   });
 
   const x = (t: number) => M.left + ((t - from) / Math.max(1, to - from)) * plotW;
@@ -70,9 +72,15 @@
   });
 
   const longRange = $derived(to - from > 36 * 3600_000);
-  // Over 12 h the same clock time appears on two days, so add the weekday.
+  const DAY = 24 * 3600_000;
+  // Over 12 h the same clock time appears on two days, so add the weekday;
+  // over weeks the month, and over most of a year the year.
   const fmtTick = (t: number) =>
-    longRange
+    to - from > 300 * DAY
+      ? new Date(t).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
+      : to - from > 14 * DAY
+        ? new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+        : longRange
       ? new Date(t).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' })
       : to - from > 12 * 3600_000
         ? new Date(t).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })
@@ -124,7 +132,7 @@
         {#each yScale.ticks as v (v)}
           <line class="grid" x1={M.left} x2={M.left + plotW} y1={y(v)} y2={y(v)} />
           <text class="axis" x={M.left - 6} y={y(v)} text-anchor="end" dominant-baseline="middle"
-            >{+v.toFixed(Math.max(0, digits))}</text
+            >{+v.toFixed(Math.max(0, yScale.places))}</text
           >
         {/each}
         {#each xTicks as t, i (i)}

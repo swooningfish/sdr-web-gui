@@ -15,6 +15,7 @@ pub async fn get(State(state): State<AppState>, _admin: AdminUser) -> Json<Value
         "version": env!("CARGO_PKG_VERSION"),
         "source": state.radio.state().source,
         "event_retention_days": c.event_retention_days,
+        "sensor_retention_days": c.sensor_retention_days,
         "ism_viewers": c.ism_viewers,
         "audio_viewers": c.audio_viewers,
         "audio_max_listeners": c.audio_max_listeners,

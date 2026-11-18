@@ -38,6 +38,8 @@
       <dt>Viewers see sensors</dt><dd>{yes(sys.ism_viewers)} <span class="muted">(<code>SDRD_ISM_VIEWERS</code>)</span></dd>
       <dt>Event history</dt>
       <dd>{sys.event_retention_days} days <span class="muted">(SSTV images and pass recordings are kept)</span></dd>
+      <dt>Tracked sensor history</dt>
+      <dd>{sys.sensor_retention_days} days <span class="muted">(<code>SDRD_SENSOR_RETENTION_DAYS</code>)</span></dd>
       <dt>Sign-in lasts</dt><dd>{sys.session_hours} h</dd>
       <dt>Behind a proxy</dt><dd>{yes(sys.trust_proxy)}</dd>
       <dt>Map tiles</dt><dd><code>{sys.map_tiles}</code></dd>

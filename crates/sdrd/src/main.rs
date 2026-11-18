@@ -209,6 +209,7 @@ async fn serve() -> Result<()> {
         let db = db.clone();
         let mesh = mesh.clone();
         let days = cfg.event_retention_days;
+        let sensor_days = cfg.sensor_retention_days;
         tokio::spawn(async move {
             let mut t = tokio::time::interval(Duration::from_secs(3600));
             loop {
@@ -218,7 +219,7 @@ async fn serve() -> Result<()> {
                     Ok(_) => {}
                     Err(e) => tracing::warn!("session purge failed: {e}"),
                 }
-                match events::purge(&db, days).await {
+                match events::purge(&db, days, sensor_days).await {
                     Ok((e, d)) if e + d > 0 => tracing::info!("purged {e} old events and {d} devices"),
                     Ok(_) => {}
                     Err(e) => tracing::warn!("event purge failed: {e}"),

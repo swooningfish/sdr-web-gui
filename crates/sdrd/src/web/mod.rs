@@ -111,6 +111,8 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(sensors::update_device).delete(sensors::delete_device),
         )
         .route("/devices/{id}/events", get(sensors::device_events))
+        .route("/devices/{id}/series", get(sensors::device_series))
+        .route("/devices/{id}/events.csv", get(sensors::device_csv))
         .route("/devices/{id}/raw", get(sensors::device_raw))
         .route("/devices/{id}/raw.cs8", get(sensors::device_raw_iq))
         .route(

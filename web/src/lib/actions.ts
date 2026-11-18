@@ -1,3 +1,26 @@
+/**
+ * `use:nearEnd={fn}` on a sentinel at the bottom of a scrolling list: calls `fn` when it
+ * comes within 200px of view inside its scroll container (endless scroll).
+ */
+export function nearEnd(node: HTMLElement, fn: () => void) {
+  let cb = fn;
+  let root: HTMLElement | null = node.parentElement;
+  while (root && !/(auto|scroll)/.test(getComputedStyle(root).overflowY)) root = root.parentElement;
+  const io = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && cb(), {
+    root,
+    rootMargin: '0px 0px 200px 0px',
+  });
+  io.observe(node);
+  return {
+    update(f: () => void) {
+      cb = f;
+    },
+    destroy() {
+      io.disconnect();
+    },
+  };
+}
+
 /** `use:indeterminate={bool}`: the "some selected" state of a select-all checkbox. */
 export function indeterminate(node: HTMLInputElement, on: boolean) {
   node.indeterminate = on;

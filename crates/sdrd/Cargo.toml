@@ -20,6 +20,7 @@ axum = { version = "0.8", features = ["ws", "macros"] }
 bytes = "1"
 ctr = "0.9"
 flate2 = "1"
+futures-util = { version = "0.3", default-features = false }
 hex = "0.4"
 hmac = "0.12"
 num-complex = "0.4"

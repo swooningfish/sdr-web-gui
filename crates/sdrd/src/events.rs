@@ -263,25 +263,107 @@ pub async fn delete_device(db: &SqlitePool, id: i64) -> Result<bool> {
     Ok(r.rows_affected() > 0)
 }
 
-/// Newest first, between `since` (inclusive) and `before` (exclusive).
+/// Newest first, from `since` (inclusive) to before the event at
+/// (`before`, `before_id`) (exclusive; a missing id means all of that time).
 pub async fn device_events(
     db: &SqlitePool,
     device_id: i64,
     since: Option<i64>,
     before: Option<i64>,
+    before_id: Option<i64>,
     limit: i64,
 ) -> Result<Vec<EventRow>> {
     Ok(sqlx::query_as(
         "SELECT id, device_id, ts, freq_hz, rssi, snr, data, rx, \
          EXISTS(SELECT 1 FROM bursts b WHERE b.event_id = events.id) AS burst FROM events \
-         WHERE device_id = ? AND ts >= ? AND ts < ? ORDER BY ts DESC LIMIT ?",
+         WHERE device_id = ? AND ts >= ? AND (ts, id) < (?, ?) ORDER BY ts DESC, id DESC LIMIT ?",
     )
     .bind(device_id)
     .bind(since.unwrap_or(0))
     .bind(before.unwrap_or(i64::MAX))
+    .bind(before_id.unwrap_or(i64::MIN))
     .bind(limit)
     .fetch_all(db)
     .await?)
+}
+
+/// Oldest first, after the event at `after` (ts, id) and before `until`; for
+/// paging through a long export.
+pub async fn events_after(
+    db: &SqlitePool,
+    device_id: i64,
+    after: (i64, i64),
+    until: i64,
+    limit: i64,
+) -> Result<Vec<EventRow>> {
+    Ok(sqlx::query_as(
+        "SELECT id, device_id, ts, freq_hz, rssi, snr, data, NULL AS rx, 0 AS burst FROM events \
+         WHERE device_id = ? AND (ts, id) > (?, ?) AND ts < ? ORDER BY ts, id LIMIT ?",
+    )
+    .bind(device_id)
+    .bind(after.0)
+    .bind(after.1)
+    .bind(until)
+    .bind(limit)
+    .fetch_all(db)
+    .await?)
+}
+
+/// Every data field a device reported between `since` and `until`, sorted.
+pub async fn data_keys(db: &SqlitePool, device_id: i64, since: i64, until: i64) -> Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT DISTINCT j.key FROM events e, json_each(e.data) j \
+         WHERE e.device_id = ? AND e.ts >= ? AND e.ts < ? AND json_valid(e.data) ORDER BY j.key",
+    )
+    .bind(device_id)
+    .bind(since)
+    .bind(until)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().map(|(k,)| k).collect())
+}
+
+/// Average of each numeric field per `step` ms between `since` and `until`,
+/// for charts over long ranges: (bucket start, one average per field).
+/// `fields` must already be checked to be plain names (letters, digits, _).
+pub async fn device_series(
+    db: &SqlitePool,
+    device_id: i64,
+    since: i64,
+    until: i64,
+    step: i64,
+    fields: &[String],
+) -> Result<Vec<(i64, Vec<Option<f64>>)>> {
+    use sqlx::Row;
+    let cols: String = fields
+        .iter()
+        .map(|f| {
+            format!(
+                ", AVG(CASE WHEN json_type(data, '$.{f}') IN ('integer', 'real') \
+                 THEN json_extract(data, '$.{f}') END)"
+            )
+        })
+        .collect();
+    let sql = format!(
+        "SELECT (ts - ?1) / ?2 AS b{cols} FROM events \
+         WHERE device_id = ?3 AND ts >= ?1 AND ts < ?4 AND json_valid(data) GROUP BY b ORDER BY b"
+    );
+    let rows = sqlx::query(&sql)
+        .bind(since)
+        .bind(step)
+        .bind(device_id)
+        .bind(until)
+        .fetch_all(db)
+        .await?;
+    rows.iter()
+        .map(|r| {
+            let b: i64 = r.try_get(0)?;
+            let vals = (1..=fields.len())
+                .map(|i| r.try_get::<Option<f64>, _>(i))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((since + b * step, vals))
+        })
+        .collect()
 }
 
 pub async fn recent_events(db: &SqlitePool, decoder: Option<&str>, limit: i64) -> Result<Vec<EventRow>> {
@@ -298,21 +380,35 @@ pub async fn recent_events(db: &SqlitePool, decoder: Option<&str>, limit: i64) -
 }
 
 /// Delete events older than `days`, and untracked devices not heard since.
-/// SSTV images and pass recordings are kept until deleted by hand.
-pub async fn purge(db: &SqlitePool, days: i64) -> Result<(u64, u64)> {
-    let cutoff = db::now_ms() - days * 86_400_000;
+/// Tracked sensors keep their readings for `sensor_days` instead, for
+/// long-range charts. SSTV images and pass recordings are kept until deleted
+/// by hand.
+pub async fn purge(db: &SqlitePool, days: i64, sensor_days: i64) -> Result<(u64, u64)> {
+    let now = db::now_ms();
+    let cutoff = now - days * 86_400_000;
+    let sensor_cutoff = now - sensor_days * 86_400_000;
     let e = sqlx::query(
-        "DELETE FROM events WHERE ts < ? \
-         AND device_id NOT IN (SELECT id FROM devices WHERE decoder IN ('sstv', 'passes'))",
+        "DELETE FROM events WHERE ts < ?1 \
+         AND device_id NOT IN (SELECT id FROM devices WHERE decoder IN ('sstv', 'passes') \
+             OR (decoder = ?2 AND tracked = 1))",
     )
     .bind(cutoff)
+    .bind(crate::decoders::rtl433::NAME)
+    .execute(db)
+    .await?;
+    let s = sqlx::query(
+        "DELETE FROM events WHERE ts < ?1 \
+         AND device_id IN (SELECT id FROM devices WHERE decoder = ?2 AND tracked = 1)",
+    )
+    .bind(sensor_cutoff)
+    .bind(crate::decoders::rtl433::NAME)
     .execute(db)
     .await?;
     let d = sqlx::query("DELETE FROM devices WHERE last_seen < ? AND tracked = 0 AND decoder NOT IN ('sstv', 'passes')")
         .bind(cutoff)
         .execute(db)
         .await?;
-    Ok((e.rows_affected(), d.rows_affected()))
+    Ok((e.rows_affected() + s.rows_affected(), d.rows_affected()))
 }
 
 /// (id, device_id, ts, freq_hz, rssi, snr, data, rx, burst, decoder)

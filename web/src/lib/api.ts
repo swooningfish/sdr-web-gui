@@ -683,10 +683,18 @@ export interface SstvInfo {
   status: { enabled: boolean; channels: SstvChannelStatus[] };
 }
 
+export interface DeviceSeries {
+  /** Width of each averaged bucket. */
+  step_ms: number;
+  /** Per field, bucket midpoints oldest first; fields without readings are left out. */
+  fields: Record<string, { t: number; v: number }[]>;
+}
+
 export interface SystemInfo {
   version: string;
   source: string;
   event_retention_days: number;
+  sensor_retention_days: number;
   ism_viewers: boolean;
   audio_viewers: boolean;
   audio_max_listeners: number;
@@ -763,10 +771,29 @@ export const api = {
     req<{ id: number }>('POST', '/users', { username, password, role }),
   deleteUser: (id: number) => req('DELETE', `/users/${id}`),
   devices: (decoder?: string) => req<Device[]>('GET', `/devices${decoder ? `?decoder=${decoder}` : ''}`),
-  deviceEvents: (id: number, opts: { limit?: number; since?: number } = {}) => {
+  /** Newest first; page back with `before` / `beforeId` from the last row. */
+  deviceEvents: (
+    id: number,
+    opts: { limit?: number; since?: number; before?: number; beforeId?: number } = {},
+  ) => {
     const q = new URLSearchParams({ limit: String(opts.limit ?? 200) });
     if (opts.since !== undefined) q.set('since', String(Math.floor(opts.since)));
+    if (opts.before !== undefined) q.set('before', String(Math.floor(opts.before)));
+    if (opts.beforeId !== undefined) q.set('before_id', String(opts.beforeId));
     return req<EventRow[]>('GET', `/devices/${id}/events?${q}`);
+  },
+  /** Readings averaged into at most `buckets` points per field, for long ranges. */
+  deviceSeries: (id: number, opts: { since: number; until?: number; fields: string[]; buckets?: number }) => {
+    const q = new URLSearchParams({ since: String(Math.floor(opts.since)), fields: opts.fields.join(',') });
+    if (opts.until !== undefined) q.set('until', String(Math.floor(opts.until)));
+    if (opts.buckets !== undefined) q.set('buckets', String(opts.buckets));
+    return req<DeviceSeries>('GET', `/devices/${id}/series?${q}`);
+  },
+  /** Download link for a device's readings as CSV (until omitted = up to now). */
+  deviceCsvUrl: (id: number, since: number, until?: number) => {
+    const q = new URLSearchParams({ since: String(Math.floor(since)) });
+    if (until !== undefined) q.set('until', String(Math.floor(until)));
+    return `/api/devices/${id}/events.csv?${q}`;
   },
   deviceRaw: (id: number) => req<RawSignal>('GET', `/devices/${id}/raw`),
   burstLog: (id: number) => req<{ armed: boolean }>('GET', `/devices/${id}/burst-log`),

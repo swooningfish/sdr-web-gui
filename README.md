@@ -690,6 +690,7 @@ All settings are `SDRD_*` environment variables. See [.env.example](.env.example
 | `SDRD_TRUST_PROXY` | `false` | Trust `X-Forwarded-*` headers (set by compose behind Caddy) |
 | `SDRD_MQTT_HOST` | (off) | MQTT broker; also `_PORT`, `_USER`, `_PASSWORD`, `_PREFIX`, `_DISCOVERY_PREFIX` |
 | `SDRD_EVENT_RETENTION_DAYS` | `30` | Delete older events and untracked devices |
+| `SDRD_SENSOR_RETENTION_DAYS` | `1830` | Keep tracked sensors' readings this long (5 years) for long-range charts and CSV export |
 | `SDRD_ISM_VIEWERS` | `false` | Let viewer accounts see sensors / TPMS |
 | `SDRD_AUDIO_MAX_LISTENERS` | `4` | Concurrent live-audio listeners (0 turns live audio off) |
 | `SDRD_AUDIO_VIEWERS` | `false` | Let viewer accounts listen to live audio |

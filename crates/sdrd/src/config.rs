@@ -73,6 +73,8 @@ pub struct Config {
     pub map_tile_url: String,
     /// Days to keep decoded events (and untracked devices).
     pub event_retention_days: i64,
+    /// Days to keep the readings of tracked sensors (rtl_433 devices).
+    pub sensor_retention_days: i64,
     /// Let viewer accounts see ISM/TPMS devices (other people's data).
     pub ism_viewers: bool,
     /// Let viewer accounts listen to live audio.
@@ -202,6 +204,7 @@ impl Config {
             map_tile_url: var("SDRD_MAP_TILE_URL")
                 .unwrap_or_else(|| "https://tile.openstreetmap.org/{z}/{x}/{y}.png".into()),
             event_retention_days: parse("SDRD_EVENT_RETENTION_DAYS", 30)?,
+            sensor_retention_days: parse("SDRD_SENSOR_RETENTION_DAYS", 1830)?,
             ism_viewers: parse_bool("SDRD_ISM_VIEWERS", false)?,
             audio_viewers: parse_bool("SDRD_AUDIO_VIEWERS", false)?,
             audio_max_listeners: parse("SDRD_AUDIO_MAX_LISTENERS", 4)?,
@@ -228,6 +231,9 @@ impl Config {
         }
         if !(1..=3650).contains(&cfg.event_retention_days) {
             bail!("SDRD_EVENT_RETENTION_DAYS must be between 1 and 3650");
+        }
+        if !(1..=3650).contains(&cfg.sensor_retention_days) {
+            bail!("SDRD_SENSOR_RETENTION_DAYS must be between 1 and 3650");
         }
         if let Some(a) = &cfg.rtltcp_addr {
             if crate::radio::parse_tcp_addr(a).is_none() {
