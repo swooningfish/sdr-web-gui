@@ -57,10 +57,24 @@ const EDGE: f64 = 0.03;
 const MEAN_DB: f32 = 5.0;
 /// ... or its max-hold this far.
 const MAX_DB: f32 = 12.0;
-/// Bursty signals are remembered this long after last heard (ms) ...
+/// ... and above the max-hold of the noise around it by this much.
+const MAX_OVER_NOISE_DB: f32 = 8.0;
+/// A frame whose median level is this many times the usual is an impulse
+/// or gain hiccup (×2 = 3 dB across the whole band).
+const IMPULSE_RISE: f32 = 2.0;
+/// A signal is on for at least this many frames (150 ms), unless strong.
+const MIN_ON_FRAMES: usize = 3;
+/// Anything narrower than this sitting on the centre is the DC spike / hump.
+const DC_MAX_HZ: f64 = 80_000.0;
+/// Bursty signals named with confidence are remembered this long after
+/// last heard (ms) ...
 const HOLD_BURSTY_MS: u64 = 120_000;
-/// ... others this long.
+/// ... other named ones this long ...
 const HOLD_MS: u64 = 15_000;
+/// ... and ones that couldn't be named (or only weakly) this long.
+const HOLD_UNSURE_MS: u64 = 4_000;
+/// Share a remembered signal needs to count as named with confidence.
+const SURE_SHARE: f32 = 0.6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -486,35 +500,59 @@ impl Classifier {
         let nf = self.frames.len();
         let frame_s = self.period as f32 / self.sample_rate as f32;
         let bin_hz = self.bin_hz();
+        let k0 = (n as f64 * EDGE).ceil() as usize;
+        let k1 = n - k0;
+        let db = |v: f32| 10.0 * v.log10();
+
+        // Frames where the whole band jumped at once (an impulse, a gain
+        // hiccup): no signal does that, so they're left out.
+        let level: Vec<f32> = self
+            .frames
+            .iter()
+            .map(|f| {
+                let mut v: Vec<f32> = f[k0..k1].iter().step_by(4).copied().collect();
+                let m = v.len() / 2;
+                *v.select_nth_unstable_by(m, f32::total_cmp).1
+            })
+            .collect();
+        let typical = {
+            let mut v = level.clone();
+            let m = v.len() / 2;
+            *v.select_nth_unstable_by(m, f32::total_cmp).1
+        };
+        let clean: Vec<bool> = level.iter().map(|&l| l < typical * IMPULSE_RISE).collect();
+        let used = clean.iter().filter(|&&c| c).count().max(1);
+
         let mut mean = vec![0f32; n];
         let mut max = vec![0f32; n];
-        for f in &self.frames {
+        for (f, _) in self.frames.iter().zip(&clean).filter(|(_, &c)| c) {
             for k in 0..n {
                 mean[k] += f[k];
                 max[k] = max[k].max(f[k]);
             }
         }
-        mean.iter_mut().for_each(|v| *v /= nf as f32);
-        let db = |v: f32| 10.0 * v.log10();
+        mean.iter_mut().for_each(|v| *v /= used as f32);
         let mean_db: Vec<f32> = mean.iter().map(|&v| db(v)).collect();
         let max_db: Vec<f32> = max.iter().map(|&v| db(v)).collect();
 
-        let k0 = (n as f64 * EDGE).ceil() as usize;
-        let k1 = n - k0;
         let floor = noise_floor(&mean_db[k0..k1]);
         let floor_db = |k: usize| floor[k - k0];
         let floor_lin: Vec<f32> = (0..n)
             .map(|k| if (k0..k1).contains(&k) { 10f32.powf(floor_db(k) / 10.0) } else { 1.0 })
             .collect();
+        // How high the noise itself reaches in max-hold, per region: real
+        // dongles' noise is spikier than Gaussian, so a fixed margin isn't enough.
+        let max_floor = noise_floor(&max_db[k0..k1]);
 
         // Bins above the floor, grouped into regions.
         let hot: Vec<bool> = (0..n)
             .map(|k| {
                 (k0..k1).contains(&k)
-                    && (mean_db[k] - floor_db(k) > MEAN_DB || max_db[k] - floor_db(k) > MAX_DB)
+                    && (mean_db[k] - floor_db(k) > MEAN_DB
+                        || (max_db[k] - floor_db(k) > MAX_DB && max_db[k] - max_floor[k - k0] > MAX_OVER_NOISE_DB))
             })
             .collect();
-        let regions = merge_regions(runs(&hot, 2));
+        let regions = merge_regions(runs(&hot, (1_000.0 / bin_hz).round().max(2.0) as usize));
 
         let dc = n / 2;
         // Level over a region per frame (dB above its floor), and when it's on.
@@ -531,7 +569,7 @@ impl Classifier {
             let p90 = sorted[(sorted.len() * 9 / 10).min(sorted.len() - 1)];
             let noise_thr = 3.0 + 9.0 / ((nb as f32) * FFTS_PER_FRAME as f32).sqrt();
             let thr = noise_thr.min(0.5 * p90).max(1.5);
-            let on = series.iter().map(|&v| v > thr).collect();
+            let on = series.iter().zip(&clean).map(|(&v, &c)| c && v > thr).collect();
             (series, on)
         };
 
@@ -595,19 +633,22 @@ impl Classifier {
             peaks = keep_peaks;
         }
 
-        // A weak sliver right next to a far stronger signal is part of it
-        // (FM sidebands poking above the noise), not a signal of its own.
+        // A weaker, narrower piece close beside a strong signal is part of it
+        // (FM stereo/RDS sidebands, the skirts of a broadcast, splatter),
+        // not a signal of its own. A neighbour of similar width (the next
+        // channel) stays separate.
         let peak_of = |a: usize, b: usize| (a..=b).map(|k| mean_db[k] - floor_db(k)).fold(f32::MIN, f32::max);
-        let sliver = (1_500.0 / bin_hz).ceil() as usize;
-        let mut i = 0;
-        while i < joined.len() {
-            let (a, b) = (joined[i].0, joined[i].1);
-            if b - a + 1 <= sliver {
-                let pk = peak_of(a, b);
+        loop {
+            let mut merged = false;
+            let mut i = 0;
+            while i < joined.len() {
+                let (a, b) = (joined[i].0, joined[i].1);
+                let (w, pk) = (b - a + 1, peak_of(a, b));
                 let absorbs = |j: usize| {
                     let (na, nb) = (joined[j].0, joined[j].1);
+                    let nw = nb - na + 1;
                     let gap = if na > b { na - b - 1 } else { a - nb - 1 };
-                    peak_of(na, nb) >= pk + 20.0 && gap <= 2.max((nb - na + 1) / 2)
+                    peak_of(na, nb) >= pk + 10.0 && w * 2 <= nw && gap <= 2.max(nw / 2)
                 };
                 let into = if i > 0 && absorbs(i - 1) {
                     Some(i - 1)
@@ -620,10 +661,14 @@ impl Classifier {
                     joined[j].0 = joined[j].0.min(a);
                     joined[j].1 = joined[j].1.max(b);
                     joined.remove(i);
+                    merged = true;
                     continue;
                 }
+                i += 1;
             }
-            i += 1;
+            if !merged {
+                break;
+            }
         }
 
         let mut out = Vec::new();
@@ -631,7 +676,7 @@ impl Classifier {
             let nb = b - a + 1;
             let (series, on) = gate(a, b);
             let on_count = on.iter().filter(|&&o| o).count();
-            if on_count == 0 || (nb == 1 && on_count < 2) {
+            if on_count == 0 {
                 continue;
             }
 
@@ -651,15 +696,24 @@ impl Classifier {
             let hi = ex.iter().rposition(|&v| v > cut).unwrap_or(ip);
             let (oa, ob) = (a + lo, a + hi);
             let occ = ob - oa + 1;
-            // The dongle's DC spike: a narrow steady line at the very centre.
-            if occ <= 3 && (oa..=ob).contains(&dc) {
-                continue;
-            }
-            // Weak and a bin or two wide: more likely noise than a signal.
-            if peak < if occ <= 3 { 8.0 } else { 5.0 } {
-                continue;
-            }
             let bw = occ as f64 * bin_hz;
+            // The dongle's own DC spike and the hump of noise around it,
+            // centred on the tuned frequency. (A real signal right on the
+            // centre is lost with it: tune a little off, as the presets do.)
+            // The DC hump is always there, peaks right on the centre, sits
+            // evenly round it and doesn't change shape; a transmission on the
+            // centre frequency comes and goes, or moves with its modulation.
+            let mid_off = ((oa + ob) as f64 / 2.0 - dc as f64).abs() * bin_hz;
+            let peak_off = (a + ip).abs_diff(dc) as f64 * bin_hz;
+            let dc_like = (oa..=ob).contains(&dc)
+                && on_count * 10 >= nf * 9
+                && bw < DC_MAX_HZ
+                && peak_off <= (2.0 * bin_hz).max(1_000.0)
+                && mid_off < (0.3 * bw).max(3_000.0);
+            // Weak and narrow, or only a flicker: more likely noise than a signal.
+            if peak < if occ <= 4 { 10.0 } else { 6.0 } || (on_count < MIN_ON_FRAMES && peak < 20.0) {
+                continue;
+            }
 
             // Ripple across the middle 60 % of the occupied band.
             let ripple_db = (occ >= 10).then(|| {
@@ -702,6 +756,9 @@ impl Classifier {
             } else {
                 0.0
             };
+            if dc_like && shape_var < 0.15 {
+                continue;
+            }
 
             // Transmissions: runs of on frames.
             let changes = on.windows(2).filter(|w| w[0] != w[1]).count();
@@ -838,7 +895,14 @@ impl Classifier {
             t.features = f;
         }
         self.tracks.retain(|t| {
-            let hold = if t.bursty() { HOLD_BURSTY_MS } else { HOLD_MS };
+            let (class, share) = t.best();
+            let hold = if class.is_none() || share < SURE_SHARE {
+                HOLD_UNSURE_MS
+            } else if t.bursty() {
+                HOLD_BURSTY_MS
+            } else {
+                HOLD_MS
+            };
             now_ms.saturating_sub(t.last_ms) <= hold
         });
     }
@@ -1009,13 +1073,79 @@ mod tests {
 
     /// Run the simulator at `center_hz` for `secs`, returning the last report.
     fn run(center_hz: u64, rate: u32, secs: f64) -> Report {
+        run_with(center_hz, rate, secs, None)
+    }
+
+    /// Spoils the simulator's clean samples the way a real dongle does: a
+    /// DC offset with a hump of low-frequency noise round it, impulses
+    /// (USB, switching supplies) and the gain wobbling.
+    struct Dongle {
+        rng: u64,
+        /// Two low-pass stages for I and Q.
+        lf: [f32; 4],
+        n: u64,
+    }
+
+    impl Dongle {
+        fn new() -> Self {
+            Dongle { rng: 0x2545_F491_4F6C_DD1D, lf: [0.0; 4], n: 0 }
+        }
+
+        fn uniform(&mut self) -> f32 {
+            self.rng ^= self.rng >> 12;
+            self.rng ^= self.rng << 25;
+            self.rng ^= self.rng >> 27;
+            (self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40) as f32 / (1u64 << 24) as f32
+        }
+
+        fn gauss(&mut self) -> f32 {
+            let (u, v) = (self.uniform().max(1e-7), self.uniform());
+            (-2.0 * u.ln()).sqrt() * (std::f32::consts::TAU * v).cos()
+        }
+
+        fn spoil(&mut self, data: &mut [u8], rate: u32) {
+            // Two-pole low-pass noise: a hump about 14 dB up, ~±20 kHz wide
+            // at its foot, as an RTL-SDR shows round DC.
+            let a = (-std::f32::consts::TAU * 10_000.0 / rate as f32).exp();
+            let k = 0.02 * (1.0 - a * a).sqrt();
+            let mut impulse = 0;
+            for pair in data.chunks_exact_mut(2) {
+                self.n += 1;
+                let t = self.n as f32 / rate as f32;
+                self.lf[0] = a * self.lf[0] + k * self.gauss();
+                self.lf[1] = a * self.lf[1] + k * self.gauss();
+                self.lf[2] = a * self.lf[2] + (1.0 - a) * self.lf[0] * 3.0;
+                self.lf[3] = a * self.lf[3] + (1.0 - a) * self.lf[1] * 3.0;
+                // An impulse a few times a second, 20 samples long.
+                if impulse == 0 && self.uniform() < 3.0 / rate as f32 {
+                    impulse = 20;
+                }
+                let (mut di, mut dq) = (0.012 + self.lf[2], -0.008 + self.lf[3]);
+                if impulse > 0 {
+                    impulse -= 1;
+                    di += 0.6 * self.gauss();
+                    dq += 0.6 * self.gauss();
+                }
+                let g = 1.0 + 0.15 * (std::f32::consts::TAU * 0.7 * t).sin();
+                for (b, d) in pair.iter_mut().zip([di, dq]) {
+                    let v = (*b as f32 - 127.5) / 127.5 * g + d;
+                    *b = crate::radio::to_cu8(v);
+                }
+            }
+        }
+    }
+
+    fn run_with(center_hz: u64, rate: u32, secs: f64, mut dongle: Option<Dongle>) -> Report {
         let mut gen = crate::radio::synth_for_tests();
         let mut c = Classifier::new();
         let mut last = None;
         let block_s = 0.05;
         let steps = (secs / block_s).round() as usize;
         for i in 0..steps {
-            let data = gen(center_hz, rate, block_s);
+            let mut data = gen(center_hz, rate, block_s);
+            if let Some(d) = dongle.as_mut() {
+                d.spoil(&mut data, rate);
+            }
             let block = IqBlock { center_hz, sample_rate: rate, data };
             if let Some(r) = c.process(&block, (i as f64 * block_s * 1000.0) as u64) {
                 last = Some(r);
@@ -1156,6 +1286,65 @@ mod tests {
             assert_eq!(around.len(), 1, "after {secs} s:
 {}", dump(&r));
             assert_eq!(around[0].class, Some(Class::Data), "{}", dump(&r));
+        }
+    }
+
+    #[test]
+    fn a_real_dongles_noise_is_not_signals() {
+        // Nothing on air: the DC hump, impulses and gain wobble aren't signals.
+        for secs in [5.0, 20.0] {
+            let r = run_with(150_000_000, 1_024_000, secs, Some(Dongle::new()));
+            assert!(r.signals.is_empty(), "after {secs} s:\n{}", dump(&r));
+        }
+    }
+
+    #[test]
+    fn ism_band_through_a_real_dongle() {
+        let r = run_with(434_000_000, 1_024_000, 20.0, Some(Dongle::new()));
+        expect(&r, 434_200_000, 3_000, Class::Data);
+        expect(&r, 434_450_000, 1_000, Class::Carrier);
+        // The SRD, its four spurs, the steady carrier and the sensors: no more.
+        assert!(r.signals.len() <= 8, "{}", dump(&r));
+        assert!(r.signals.iter().all(|s| s.class != Some(Class::Cw)), "{}", dump(&r));
+        assert!(near(&r, 434_000_000, 5_000).is_none(), "DC hump labelled:\n{}", dump(&r));
+    }
+
+    #[test]
+    fn fm_stations_are_one_signal_each() {
+        // 96.1 and 101.3, both with RDS. Sidebands, pilot and
+        // RDS mustn't come out as separate data or CW.
+        for centre in [96_000_000u64, 101_200_000] {
+            let station = if centre == 96_000_000 { 96_100_000 } else { 101_300_000 };
+            let r = run_with(centre, 1_024_000, 15.0, Some(Dongle::new()));
+            let around: Vec<_> = r.signals.iter().filter(|s| s.hz.abs_diff(station) < 200_000).collect();
+            assert_eq!(around.len(), 1, "{}", dump(&r));
+            assert_eq!(around[0].class, Some(Class::BroadcastFm), "{}", dump(&r));
+        }
+    }
+
+    /// Labels for a real recording, to tune against:
+    ///
+    /// ```text
+    /// rtl_sdr -f 434000000 -s 1024000 -n 30720000 ism.cu8
+    /// SDRD_CLASSIFY_FILE=ism.cu8 SDRD_CLASSIFY_CENTER=434000000 SDRD_CLASSIFY_RATE=1024000 \
+    ///   cargo test classify_a_recording -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn classify_a_recording() {
+        let var = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("set {k}"));
+        let data = std::fs::read(var("SDRD_CLASSIFY_FILE")).expect("recording");
+        let center_hz: u64 = var("SDRD_CLASSIFY_CENTER").parse().expect("centre Hz");
+        let rate: u32 = var("SDRD_CLASSIFY_RATE").parse().expect("rate");
+        let mut c = Classifier::new();
+        let block = (rate as usize / 20) * 2;
+        for (i, chunk) in data.chunks(block).enumerate() {
+            let b = IqBlock { center_hz, sample_rate: rate, data: chunk.to_vec() };
+            if let Some(r) = c.process(&b, i as u64 * 50) {
+                if i % 100 == 99 {
+                    println!("--- {:.1} s: {} signals\n{}", i as f64 / 20.0, r.signals.len(), dump(&r));
+                }
+            }
         }
     }
 
