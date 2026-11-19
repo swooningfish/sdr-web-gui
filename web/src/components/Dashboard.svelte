@@ -79,7 +79,26 @@
   function metrics(d: Device, h: EventRow[]) {
     return HEADLINE.filter((f) => typeof d.last_data[f.key] === 'number')
       .slice(0, 3)
-      .map((f) => ({ ...f, value: d.last_data[f.key] as number, points: series(h, f.key) }));
+      .map((f) => {
+        const points = series(h, f.key);
+        return { ...f, value: d.last_data[f.key] as number, points, range: extremes(points) };
+      });
+  }
+
+  /** Lowest and highest reading in the window, with when each happened. */
+  function extremes(points: { t: number; v: number }[]) {
+    if (points.length < 2) return null;
+    let lo = points[0];
+    let hi = points[0];
+    for (const p of points) {
+      if (p.v < lo.v) lo = p;
+      if (p.v > hi.v) hi = p;
+    }
+    return { lo, hi };
+  }
+
+  function at(t: number): string {
+    return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
   /** Chart start: the oldest reading, so a new sensor isn't squashed into the
@@ -171,6 +190,16 @@
                 <div class="metric">
                   <div class="value">
                     <span class="num">{m.value.toFixed(m.digits)}</span><span class="unit">{m.unit}</span>
+                    {#if m.range}
+                      <span class="range small-text">
+                        <span title="Highest in the last {spanLabel(from)}, at {at(m.range.hi.t)}"
+                          ><span class="hi" aria-label="High">▲</span> {m.range.hi.v.toFixed(m.digits)}</span
+                        >
+                        <span title="Lowest in the last {spanLabel(from)}, at {at(m.range.lo.t)}"
+                          ><span class="lo" aria-label="Low">▼</span> {m.range.lo.v.toFixed(m.digits)}</span
+                        >
+                      </span>
+                    {/if}
                   </div>
                   <div class="label small-text">{m.label} · last {spanLabel(from)}</div>
                   <Sparkline label={m.label} unit={m.unit} digits={m.digits} points={m.points} {from} to={now} />
@@ -288,6 +317,20 @@
   .unit {
     color: var(--muted);
     font-size: 15px;
+  }
+  .range {
+    margin-left: auto;
+    display: flex;
+    gap: 10px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .range .hi {
+    color: var(--bad);
+  }
+  .range .lo {
+    color: var(--accent);
   }
   .label {
     color: var(--muted);
