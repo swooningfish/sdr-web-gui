@@ -37,12 +37,99 @@
   const shownNodes = $derived(nodes.filter((n) => proto === 'all' || n.proto === proto));
   /** Channels heard, as "proto|name". */
   const channels = $derived([...new Set(messages.map((m) => `${m.proto}|${m.channel ?? ''}`))].sort());
-  const shownMessages = $derived(
-    messages
-      .filter((m) => (proto === 'all' || m.proto === proto) && (channel === 'all' || `${m.proto}|${m.channel ?? ''}` === channel))
-      .slice()
-      .reverse(),
+  /** Messages arrive newest first. */
+  const filteredMessages = $derived(
+    messages.filter((m) => (proto === 'all' || m.proto === proto) && (channel === 'all' || `${m.proto}|${m.channel ?? ''}` === channel)),
   );
+
+  // Message order: newest at the top (a feed) or at the bottom (a chat). Remembered per browser.
+  const ORDER_PREF = 'sdr.mesh.order';
+  let order = $state<'top' | 'bottom'>(
+    (() => {
+      try {
+        return localStorage.getItem(ORDER_PREF) === 'bottom' ? 'bottom' : 'top';
+      } catch {
+        return 'top';
+      }
+    })(),
+  );
+  function setOrder(o: 'top' | 'bottom') {
+    order = o;
+    stick = true;
+    try {
+      localStorage.setItem(ORDER_PREF, o);
+    } catch {
+      /* per-browser convenience only */
+    }
+  }
+  const shownMessages = $derived(order === 'top' ? filteredMessages : filteredMessages.slice().reverse());
+
+  // Keep the newest message in view while the reader is already at that end.
+  let msgBox = $state<HTMLDivElement | null>(null);
+  let stick = true;
+  function onMsgScroll() {
+    if (!msgBox) return;
+    stick = order === 'top' ? msgBox.scrollTop < 40 : msgBox.scrollHeight - msgBox.scrollTop - msgBox.clientHeight < 40;
+  }
+  $effect(() => {
+    void shownMessages;
+    void channel;
+    if (!msgBox || !stick) return;
+    msgBox.scrollTop = order === 'top' ? 0 : msgBox.scrollHeight;
+  });
+
+  /** Split text into plain runs and MeshCore @[name] mentions. */
+  function parts(text: string): { mention?: string; text: string }[] {
+    const out: { mention?: string; text: string }[] = [];
+    const re = /@\[([^\]\n]{1,64})\]/g;
+    let last = 0;
+    for (let m = re.exec(text); m; m = re.exec(text)) {
+      if (m.index > last) out.push({ text: text.slice(last, m.index) });
+      out.push({ mention: m[1], text: m[0] });
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) out.push({ text: text.slice(last) });
+    return out;
+  }
+
+  /** The node a name refers to: same network first, then the most recently heard. */
+  function findNode(name: string, p: MeshMessage['proto']): MeshNode | null {
+    const k = name.trim().toLowerCase();
+    const hits = nodes.filter((n) => n.long_name?.toLowerCase() === k || n.short_name?.toLowerCase() === k);
+    hits.sort((a, b) => Number(b.proto === p) - Number(a.proto === p) || b.last_ms - a.last_ms);
+    return hits[0] ?? null;
+  }
+
+  // Contact card, opened from a sender name or an @mention.
+  let card = $state<{ name: string; proto: MeshMessage['proto']; key: string | null; x: number; y: number } | null>(null);
+  const cardNode = $derived(card ? (card.key ? nodes.find((n) => n.key === card!.key) : null) ?? findNode(card.name, card.proto) : null);
+  const cardMessages = $derived(
+    card
+      ? messages.filter((m) =>
+          cardNode ? m.from_key === cardNode.key || (m.from_key === null && m.from_name === nodeName(cardNode)) : m.from_name === card!.name,
+        )
+      : [],
+  );
+  const cardMentions = $derived(
+    card ? messages.filter((m) => m.text.toLowerCase().includes(`@[${(cardNode ? nodeName(cardNode) : card!.name).toLowerCase()}]`)).length : 0,
+  );
+  function openCard(e: MouseEvent, name: string, p: MeshMessage['proto'], key: string | null) {
+    e.stopPropagation();
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const w = Math.min(320, window.innerWidth - 32);
+    const x = Math.max(16, Math.min(r.left, window.innerWidth - w - 16));
+    const below = r.bottom + 6;
+    card = card && card.name === name && card.key === key ? null : { name, proto: p, key, x, y: below };
+  }
+  function closeCard() {
+    card = null;
+  }
+  function cardOnMap() {
+    if (!cardNode) return;
+    selected = cardNode.key;
+    view = 'nodes';
+    card = null;
+  }
   const shownPackets = $derived(packets.filter((p) => (proto === 'all' || p.proto === proto) && (showRepeats || !p.repeat)));
   const presetName = (id: string) => info?.presets.find((p) => p.id === id)?.name ?? id;
 
@@ -231,31 +318,49 @@
     </div>
   {:else if view === 'messages'}
     <section class="panel">
-      <div class="seg wrap" role="group" aria-label="Channel">
-        <button type="button" class="small" class:active={channel === 'all'} onclick={() => (channel = 'all')}>All channels</button>
-        {#each channels as c (c)}
-          {@const [p, name] = c.split('|')}
-          <button type="button" class="small" class:active={channel === c} onclick={() => (channel = c)}>
-            <span class="key {p}"></span>{name || 'unknown'}
-          </button>
-        {/each}
+      <div class="msg-bar">
+        <div class="seg wrap" role="group" aria-label="Channel">
+          <button type="button" class="small" class:active={channel === 'all'} onclick={() => { channel = 'all'; stick = true; }}>All channels</button>
+          {#each channels as c (c)}
+            {@const [p, name] = c.split('|')}
+            <button type="button" class="small" class:active={channel === c} onclick={() => { channel = c; stick = true; }}>
+              <span class="key {p}"></span>{name || 'unknown'}
+            </button>
+          {/each}
+        </div>
+        <div class="seg" role="group" aria-label="Message order">
+          <button type="button" class="small" class:active={order === 'top'} aria-pressed={order === 'top'} onclick={() => setOrder('top')}>Newest at top</button>
+          <button type="button" class="small" class:active={order === 'bottom'} aria-pressed={order === 'bottom'} onclick={() => setOrder('bottom')}>Newest at bottom</button>
+        </div>
       </div>
       {#if shownMessages.length === 0}
         <p class="muted small-text">No channel messages yet. Direct messages are end-to-end encrypted: they show in the packet log.</p>
       {:else}
-        <ol class="messages">
-          {#each shownMessages as m (m.id)}
-            <li>
-              <div class="meta small-text muted">
-                <span class="key {m.proto}" title={PROTO_NAMES[m.proto]}></span>
-                <strong class="from">{m.from_name ?? 'unknown'}</strong>
-                in {m.channel ?? '?'}{#if m.private}<span class="tag" title="Private channel: admins only">private</span>{/if}
-                · {clock(m.ts_ms)}{m.hops !== null ? ` · ${m.hops === 0 ? 'direct' : `${m.hops} hop${m.hops === 1 ? '' : 's'}`}` : ''}{m.snr !== null ? ` · ${fmtSnr(m.snr)} dB` : ''}
-              </div>
-              <div class="text">{m.text}</div>
-            </li>
-          {/each}
-        </ol>
+        <div class="msg-scroll" bind:this={msgBox} onscroll={() => { onMsgScroll(); card = null; }}>
+          <ol class="messages">
+            {#each shownMessages as m (m.id)}
+              <li>
+                <div class="meta small-text muted">
+                  <span class="key {m.proto}" title={PROTO_NAMES[m.proto]}></span>
+                  {#if m.from_name}
+                    <button type="button" class="from" onclick={(e) => openCard(e, m.from_name!, m.proto, m.from_key)}>{m.from_name}</button>
+                  {:else}
+                    <strong class="from">unknown</strong>
+                  {/if}
+                  in {m.channel ?? '?'}{#if m.private}<span class="tag" title="Private channel: admins only">private</span>{/if}
+                  · {clock(m.ts_ms)}{m.hops !== null ? ` · ${m.hops === 0 ? 'direct' : `${m.hops} hop${m.hops === 1 ? '' : 's'}`}` : ''}{m.snr !== null ? ` · ${fmtSnr(m.snr)} dB` : ''}
+                </div>
+                <div class="text">
+                  {#each parts(m.text) as part, i (i)}
+                    {#if part.mention}
+                      <button type="button" class="mention" class:known={!!findNode(part.mention, m.proto)} title="Show contact" onclick={(e) => openCard(e, part.mention!, m.proto, null)}>@{part.mention}</button>
+                    {:else}{part.text}{/if}
+                  {/each}
+                </div>
+              </li>
+            {/each}
+          </ol>
+        </div>
       {/if}
     </section>
   {:else}
@@ -303,6 +408,48 @@
     </section>
   {/if}
 </div>
+
+<svelte:window
+  onclick={(e) => {
+    if (card && !(e.target as HTMLElement).closest('.contact')) closeCard();
+  }}
+  onkeydown={(e) => {
+    if (e.key === 'Escape') closeCard();
+  }}
+  onresize={closeCard}
+  onscroll={closeCard}
+/>
+
+{#if card}
+  {@const n = cardNode}
+  <div class="contact panel small-text" role="dialog" aria-label="Contact {card.name}" style="left: {card.x}px; top: {card.y}px;">
+    <div class="contact-head">
+      <span class="avatar {n?.proto ?? card.proto}">{(n ? nodeName(n) : card.name).replace(/[^\p{L}\p{N}]/gu, '').slice(0, 2).toUpperCase() || '?'}</span>
+      <div class="who">
+        <strong>{n ? nodeName(n) : card.name}</strong>
+        <span class="muted">{PROTO_NAMES[n?.proto ?? card.proto]}{n?.role ? ` · ${n.role}` : ''}</span>
+      </div>
+      <button type="button" class="close" aria-label="Close" onclick={closeCard}>×</button>
+    </div>
+    {#if n}
+      <dl>
+        <dt>ID</dt><dd class="mono">{n.id}</dd>
+        {#if n.hw}<dt>Hardware</dt><dd>{n.hw}</dd>{/if}
+        <dt>Last heard</dt><dd>{relTime(n.last_ms, now)}</dd>
+        <dt>Signal</dt><dd>{n.snr === null ? '–' : `${fmtSnr(n.snr)} dB`}{n.hops !== null ? ` · ${n.hops === 0 ? 'direct' : `${n.hops} hop${n.hops === 1 ? '' : 's'}`}` : ''}</dd>
+        {#if n.battery !== null}<dt>Battery</dt><dd>{battery(n)}</dd>{/if}
+        {#if n.lat !== null}<dt>Position</dt><dd>{n.lat.toFixed(4)}, {n.lon?.toFixed(4)}</dd>{/if}
+      </dl>
+    {:else}
+      <p class="muted">Not heard as a node yet: only seen by name in messages.</p>
+    {/if}
+    <p class="muted stats">
+      {cardMessages.length} message{cardMessages.length === 1 ? '' : 's'} sent · mentioned {cardMentions} time{cardMentions === 1 ? '' : 's'}
+      {#if cardMessages.length}· last {relTime(cardMessages[0].ts_ms, now)}{/if}
+    </p>
+    {#if n}<button type="button" class="small" onclick={cardOnMap}>Node details{n.lat !== null ? ' and map' : ''}</button>{/if}
+  </div>
+{/if}
 
 <style>
   .mesh {
@@ -518,6 +665,96 @@
   }
   .messages .from {
     color: var(--text);
+    font-weight: 700;
+  }
+  button.from {
+    all: unset;
+    cursor: pointer;
+    color: var(--text);
+    font-weight: 700;
+  }
+  button.from:hover,
+  button.from:focus-visible {
+    text-decoration: underline;
+  }
+  .msg-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0 12px;
+  }
+  .msg-scroll {
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+  .mention {
+    all: unset;
+    cursor: pointer;
+    display: inline-block;
+    padding: 0 7px;
+    margin: 0 1px;
+    border-radius: 999px;
+    font-size: 0.92em;
+    line-height: 1.5;
+    background: color-mix(in srgb, var(--muted) 20%, transparent);
+    color: var(--text);
+  }
+  .mention.known {
+    background: color-mix(in srgb, #7a4fd0 28%, transparent);
+  }
+  .mention:hover,
+  .mention:focus-visible {
+    outline: 1px solid #7a4fd0;
+  }
+  .contact {
+    position: fixed;
+    z-index: 50;
+    width: min(320px, calc(100vw - 32px));
+    padding: 12px;
+    box-shadow: 0 8px 28px rgb(0 0 0 / 35%);
+  }
+  .contact-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .avatar {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    font-weight: 700;
+    color: #fff;
+    background: #7a4fd0;
+  }
+  .avatar.meshtastic {
+    background: #2e9d5b;
+  }
+  .who {
+    display: grid;
+    min-width: 0;
+    flex: 1;
+  }
+  .who strong {
+    overflow-wrap: anywhere;
+  }
+  .close {
+    all: unset;
+    cursor: pointer;
+    font-size: 20px;
+    line-height: 1;
+    padding: 0 4px;
+    color: var(--muted);
+  }
+  .contact dl {
+    margin: 0 0 8px;
+  }
+  .contact .stats {
+    margin: 0 0 8px;
   }
   .messages .text {
     margin-top: 2px;
