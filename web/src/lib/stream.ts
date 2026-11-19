@@ -1,5 +1,6 @@
 import { FRAME_AUDIO, parseAudioFrame, type AudioFrame } from './audio';
 import { api, ApiError, type Device, type EventRow, type RadioState } from './api';
+import type { SignalsMsg } from './signals';
 
 export interface WaterfallFrame {
   bins: Uint8Array;
@@ -20,6 +21,8 @@ export interface StreamHandlers {
   onAudioStatus: (kind: string, message: string | null) => void;
   /** Decoded Morse (`cw`), RDS (`rds`), AFC or digital voice for our listener. */
   onDecoded: (msg: DecodedMsg) => void;
+  /** Signal labels from the classifier, about once a second. */
+  onSignals: (msg: SignalsMsg) => void;
   onConnection: (connected: boolean) => void;
   onAuthLost: () => void;
 }
@@ -213,6 +216,7 @@ export class Stream {
           const m = JSON.parse(ev.data);
           if (m.type === 'radio') this.h.onRadio(m.state as RadioState);
           else if (m.type === 'event') this.h.onEvent(m.device as Device, m.event as EventRow);
+          else if (m.type === 'signals') this.h.onSignals(m as SignalsMsg);
           else if (typeof m.type === 'string' && m.type.startsWith('audio_')) this.h.onAudioStatus(m.type, m.message ?? null);
           else if (m.type === 'cw' || m.type === 'rds' || m.type === 'afc' || m.type === 'digital' || m.type === 'dab')
             this.h.onDecoded(m as DecodedMsg);

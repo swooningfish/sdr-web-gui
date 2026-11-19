@@ -8,6 +8,16 @@
   import { ALL_GROUPS, GROUPS, STRIP_H, drawStrip, type BandGroup } from '../lib/bandplan';
   import { colourOf, type Bookmark } from '../lib/bookmarks.svelte';
   import { fullRange, zoomLabel, zoomLimits } from '../lib/zoom';
+  import {
+    CLASS_INFO,
+    CLASS_MODES,
+    evidence,
+    heardAgo,
+    labelAll,
+    signalAt,
+    type Labelled,
+    type SignalsMsg,
+  } from '../lib/signals';
   import MiniMap from './MiniMap.svelte';
 
   let {
@@ -22,6 +32,7 @@
     directSampling = 0,
     sampleRates = [],
     onrate,
+    signals = null,
   }: {
     canTune?: boolean;
     ontune?: (hz: number) => void;
@@ -40,11 +51,17 @@
     /** Sample rates the receiver offers, and a way to change it. */
     sampleRates?: number[];
     onrate?: (rate: number) => void;
+    /** Signal labels from the classifier. */
+    signals?: SignalsMsg | null;
   } = $props();
 
   const SPEC_CSS_H = 200;
   const WF_ROWS = 400;
   const FLAGS_H = 20;
+  /** Signal label lanes at the top of the waterfall (CSS px). */
+  const LABEL_LANES = 3;
+  const LABEL_LANE_H = 16;
+  const LABELS_H = 4 + LABEL_LANES * LABEL_LANE_H;
   const TICK_STEPS = [
     100, 200, 500, 1e3, 2e3, 5e3, 10e3, 25e3, 50e3, 100e3, 200e3, 250e3, 500e3, 1e6, 2e6, 5e6, 10e6, 20e6, 50e6,
   ];
@@ -56,6 +73,7 @@
   let specCanvas: HTMLCanvasElement;
   let wfCanvas: HTMLCanvasElement;
   let bandCanvas = $state<HTMLCanvasElement | undefined>();
+  let labelCanvas: HTMLCanvasElement;
 
   let floorDb = $state(-100);
   let ceilDb = $state(-20);
@@ -96,6 +114,9 @@
   const enabledBands = $derived(new Set(bandGroups));
   const showBands = $derived(bandGroups.length > 0);
   let showMap = $state<boolean>(load('sdr.minimap', true));
+  // Signal labels (M9), remembered per browser.
+  let showSignals = $state<boolean>(load('sdr.signals', true));
+  const labelled = $derived<Labelled[]>(showSignals ? labelAll(signals, bookmarks) : []);
 
   // ------------------------------------------------------------- the view
   //
@@ -283,6 +304,7 @@
       drawQueued = false;
       drawSpectrum();
       drawBands();
+      drawLabels();
     });
   }
 
@@ -299,6 +321,51 @@
     if (!bandCanvas || !info) return;
     const ctx = bandCanvas.getContext('2d')!;
     drawStrip(ctx, vStart, span, dpr, enabledBands, hover?.hz ?? null);
+  }
+
+  /** Signal labels along the top of the waterfall: a bar over each signal's
+   * width and a chip naming it; chips that would overlap drop a lane. */
+  function drawLabels() {
+    if (!labelCanvas) return;
+    const ctx = labelCanvas.getContext('2d')!;
+    const W = labelCanvas.width;
+    ctx.clearRect(0, 0, W, labelCanvas.height);
+    if (!info || !labelled.length) return;
+    const xOf = (hz: number) => ((hz - vStart) / span) * W;
+    const laneH = LABEL_LANE_H * dpr;
+    const lanes: number[] = [];
+    ctx.font = `600 ${10.5 * dpr}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.textBaseline = 'middle';
+    for (const s of [...labelled].sort((a, b) => a.lo_hz - b.lo_hz)) {
+      let x0 = xOf(s.lo_hz);
+      let x1 = xOf(s.hi_hz);
+      if (x1 < 0 || x0 > W) continue;
+      if (x1 - x0 < 4 * dpr) {
+        const c = (x0 + x1) / 2;
+        x0 = c - 2 * dpr;
+        x1 = c + 2 * dpr;
+      }
+      const colour = s.label ? CLASS_INFO[s.label].colour : '#64748b';
+      ctx.globalAlpha = s.active ? 1 : 0.5;
+      ctx.fillStyle = colour;
+      ctx.fillRect(x0, 0, x1 - x0, 2 * dpr);
+      const text = s.label ? `${CLASS_INFO[s.label].short} ${Math.round(s.share * 100)}%` : '?';
+      const tw = ctx.measureText(text).width + 9 * dpr;
+      const start = Math.min(Math.max(0, x0), W - tw);
+      let lane = lanes.findIndex((end) => start > end + 4 * dpr);
+      if (lane === -1) lane = lanes.length;
+      if (lane >= LABEL_LANES) continue; // too crowded: the bar still shows
+      lanes[lane] = start + tw;
+      const y = 4 * dpr + lane * laneH;
+      const h = laneH - 3 * dpr;
+      ctx.fillStyle = 'rgba(5,8,15,0.78)';
+      ctx.fillRect(start, y, tw, h);
+      ctx.fillStyle = colour;
+      ctx.fillRect(start, y, 2 * dpr, h);
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillText(text, start + 5 * dpr, y + h / 2 + 0.5 * dpr);
+    }
+    ctx.globalAlpha = 1;
   }
 
   /** Diagonal hatching for parts of the view the radio isn't sampling. */
@@ -398,6 +465,15 @@
       ctx.moveTo(xx, 0);
       ctx.lineTo(xx, plotH);
       ctx.stroke();
+    }
+
+    // Signals on now: faintly shaded in their class colour.
+    for (const s of labelled) {
+      if (!s.active || s.hi_hz < start || s.lo_hz > end) continue;
+      const x0 = xOf(s.lo_hz);
+      const x1 = Math.max(x0 + 2 * dpr, xOf(s.hi_hz));
+      ctx.fillStyle = (s.label ? CLASS_INFO[s.label].colour : '#64748b') + '22';
+      ctx.fillRect(x0, 0, x1 - x0, plotH);
     }
 
     // Known-channel markers; labels that would overlap drop to the next line.
@@ -791,6 +867,9 @@
     hover = { frac, hz, db: avg && bin >= 0 && bin < info.bins ? avg[bin] : NaN };
   }
 
+  /** The labelled signal under the cursor, for the "what's this?" card. */
+  const hoverSig = $derived(hover && !drag?.moved ? signalAt(labelled, hover.hz, hzPerPx) : null);
+
   function onClick() {
     if (justDragged) {
       justDragged = false;
@@ -853,6 +932,7 @@
     void sub?.mode;
     void bookmarks;
     void bandGroups;
+    void labelled;
     void vStart;
     void span;
     void winDrag;
@@ -879,6 +959,8 @@
         bandCanvas.width = specCanvas.width;
         bandCanvas.height = Math.floor(STRIP_H * dpr);
       }
+      labelCanvas.width = specCanvas.width;
+      labelCanvas.height = Math.floor(LABELS_H * dpr);
       queueDraw();
     };
     const ro = new ResizeObserver(resize);
@@ -948,6 +1030,9 @@
       </label>
       <button type="button" class="small" onclick={autoLevel}>Auto</button>
       <label class="check"><input type="checkbox" bind:checked={peakHold} /> Peak</label>
+      <label class="check" title="Label the signals: carrier, CW, voice, digital voice, data, broadcast"
+        ><input type="checkbox" bind:checked={showSignals} onchange={() => save('sdr.signals', showSignals)} /> Signals</label
+      >
       <select
         bind:value={palette}
         aria-label="Waterfall colours"
@@ -1082,6 +1167,62 @@
     <canvas class="spectrum" bind:this={specCanvas} style:height="{SPEC_CSS_H}px"></canvas>
     <div class="wfbox" class:sharp={zoom >= 4}>
       <canvas class="waterfall" bind:this={wfCanvas} width="1024" height={WF_ROWS} style:transform={wfTransform}></canvas>
+      <canvas class="labels" bind:this={labelCanvas} style:height="{LABELS_H}px" aria-hidden="true"></canvas>
+      {#if labelled.length}
+        <p class="sr-only">
+          Signals: {labelled
+            .map((s) => `${formatMHz(s.hz, 4)} ${s.label ? CLASS_INFO[s.label].label : 'unidentified'}`)
+            .join('; ')}
+        </p>
+      {/if}
+      {#if hoverSig && hover}
+        {@const s = hoverSig}
+        {@const others = s.ranked.filter((r) => r.cls !== s.label && r.share >= 0.1).slice(0, 2)}
+        {@const mode = s.context.bookmarks[0]?.mode ?? (s.label ? CLASS_MODES[s.label][0] : null)}
+        <div
+          class="sigcard"
+          class:flip={hover.frac > 0.55}
+          style:left="{hover.frac * 100}%"
+          style:--c={s.label ? CLASS_INFO[s.label].colour : '#64748b'}
+          data-testid="signal-card"
+        >
+          <div class="sig-head">
+            <strong>{s.label ? CLASS_INFO[s.label].label : 'Unidentified signal'}</strong>
+            {#if s.label}<span class="sig-pct">{Math.round(s.share * 100)}%</span>{/if}
+          </div>
+          <div class="sig-sub">{formatMHz(s.hz, 4)} · {heardAgo(s, signals?.ts ?? s.last_ms)}</div>
+          <p class="sig-about">
+            {s.label ? `Looks like ${CLASS_INFO[s.label].about}.` : "Doesn't fit any of the classes well."}
+          </p>
+          <ul>
+            {#each evidence(s) as e (e)}<li>{e}</li>{/each}
+          </ul>
+          {#if s.context.bookmarks.length}
+            <div class="sig-ctx">
+              <span class="muted">Bookmark</span>
+              {s.context.bookmarks
+                .slice(0, 2)
+                .map((b) => `${b.name} (${b.mode.toUpperCase()})`)
+                .join(', ')}
+            </div>
+          {/if}
+          {#if s.context.markers.length}
+            <div class="sig-ctx"><span class="muted">Channel</span> {s.context.markers.join(', ')}</div>
+          {/if}
+          {#if s.context.plan}
+            <div class="sig-ctx"><span class="muted">Band plan</span> {s.context.plan}</div>
+          {/if}
+          {#if others.length}
+            <div class="sig-ctx">
+              <span class="muted">Or</span>
+              {others.map((r) => `${CLASS_INFO[r.cls].label} ${Math.round(r.share * 100)}%`).join(', ')}
+            </div>
+          {/if}
+          {#if mode}
+            <div class="sig-ctx"><span class="muted">Listen as</span> {mode.toUpperCase()}</div>
+          {/if}
+        </div>
+      {/if}
     </div>
   </div>
 </div>
@@ -1258,6 +1399,69 @@
   }
   .wfbox.sharp .waterfall {
     image-rendering: pixelated;
+  }
+  .labels {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  /* "What's this?" for the signal under the cursor. */
+  .sigcard {
+    position: absolute;
+    top: 10px;
+    z-index: 2;
+    width: max-content;
+    max-width: min(300px, 80%);
+    margin-left: 14px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--c);
+    border-radius: 6px;
+    background: rgba(10, 15, 26, 0.94);
+    color: #e2e8f0;
+    font-size: 12px;
+    line-height: 1.4;
+    pointer-events: none;
+  }
+  .sigcard.flip {
+    margin-left: -14px;
+    transform: translateX(-100%);
+  }
+  .sig-head {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    font-size: 13px;
+  }
+  .sig-head strong {
+    color: var(--c);
+  }
+  .sig-pct,
+  .sig-sub,
+  .sigcard .muted {
+    color: #94a3b8;
+  }
+  .sig-sub {
+    font-variant-numeric: tabular-nums;
+  }
+  .sig-about {
+    margin: 4px 0;
+  }
+  .sigcard ul {
+    margin: 0 0 4px;
+    padding-left: 16px;
+  }
+  .sig-ctx {
+    margin-top: 2px;
   }
   .flags {
     position: relative;

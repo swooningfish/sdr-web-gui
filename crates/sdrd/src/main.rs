@@ -125,6 +125,11 @@ async fn serve() -> Result<()> {
     let receivers = receivers::Receivers { mesh: mesh_rx, sensors: sensors_rx, aprs: aprs_rx };
     let (waterfall_tx, _) = broadcast::channel(8);
     dsp::waterfall::spawn(iq_tx.subscribe(), waterfall_tx.clone(), cfg.fft_size, cfg.fps);
+    // Signal labels, worked out while anyone is watching the spectrum.
+    let (signals_tx, _) = tokio::sync::watch::channel(Arc::<str>::from(""));
+    if cfg.classifier {
+        dsp::classify::spawn(iq_tx.subscribe(), waterfall_tx.clone(), signals_tx.clone());
+    }
 
     // Decoders → events → SQLite, WebSocket clients and MQTT.
     let (events_tx, events_rx) = tokio::sync::mpsc::channel(1024);
@@ -243,6 +248,7 @@ async fn serve() -> Result<()> {
         cfg: Arc::new(cfg.clone()),
         radio,
         waterfall_tx,
+        signals_tx,
         limiter: Arc::new(Mutex::new(auth::RateLimiter::new(Duration::from_secs(15 * 60)))),
         rtl433,
         aprs,

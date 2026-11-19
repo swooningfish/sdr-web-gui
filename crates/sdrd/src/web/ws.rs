@@ -1,5 +1,5 @@
 //! WebSocket stream: binary waterfall / SSTV / audio frames plus JSON status
-//! messages. Clients send JSON only to control live audio:
+//! messages (radio state, events, signal labels from [`crate::dsp::classify`]). Clients send JSON only to control live audio:
 //!
 //! - `{"type":"audio","freq_hz":145800000,"mode":"nfm","squelch_db":-60}`
 //!   starts listening, or retunes the listener (`squelch_db` may be null;
@@ -121,6 +121,11 @@ async fn client(mut socket: WebSocket, state: AppState, token_hash: String, ism:
     if socket.send(Message::Text(initial.into())).await.is_err() {
         return;
     }
+    let mut signals = state.signals_tx.subscribe();
+    let latest = signals.borrow_and_update().clone();
+    if !latest.is_empty() && socket.send(Message::Text((&*latest).into())).await.is_err() {
+        return;
+    }
     let mut listener: Option<Listener> = None;
 
     // Re-check the session periodically so logout / user deletion / password
@@ -172,6 +177,11 @@ async fn client(mut socket: WebSocket, state: AppState, token_hash: String, ism:
                 if changed.is_err() { break; }
                 let msg = radio_msg(&radio.borrow_and_update());
                 if socket.send(Message::Text(msg.into())).await.is_err() { break; }
+            }
+            changed = signals.changed() => {
+                if changed.is_err() { break; }
+                let msg = signals.borrow_and_update().clone();
+                if !msg.is_empty() && socket.send(Message::Text((&*msg).into())).await.is_err() { break; }
             }
             incoming = socket.recv() => match incoming {
                 None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,

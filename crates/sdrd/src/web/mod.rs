@@ -54,6 +54,8 @@ pub struct AppState {
     pub cfg: Arc<Config>,
     pub radio: RadioHandle,
     pub waterfall_tx: broadcast::Sender<Bytes>,
+    /// Latest signal labels (JSON), empty when there are none yet.
+    pub signals_tx: tokio::sync::watch::Sender<Arc<str>>,
     pub limiter: Arc<Mutex<RateLimiter>>,
     pub rtl433: Rtl433Handle,
     pub aprs: AprsHandle,

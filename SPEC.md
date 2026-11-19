@@ -180,10 +180,36 @@ Key crates: `tokio`, `axum`, `rustfft`, `sqlx` (SQLite), `rumqttc`, `sgp4`,
    - Simulator: ten aircraft around London (airliners, a heavy on approach, a business jet,
      a light aircraft, helicopter, glider, balloon, drone, and one taxiing at Heathrow) with
      real squitters on 1090 MHz, at addresses that aren't in the aircraft database.
-9. **Signal classifier** (next) — label signals on the spectrum as voice / data / broadcast /
-   carrier / CW / digital mode etc. using a small on-device model (CPU on the Pi 5); labels
-   on the waterfall and a "what's this?" readout on hover. Uses bookmarks and band plans
-   (M7) as context and for training/validation data.
+9. **Signal classifier** ✅ — labels the signals in the main receiver's capture as carrier,
+   CW, voice, digital voice, data, broadcast FM or OFDM (`crates/sdrd/src/dsp/classify.rs`).
+   - Frames: 20 short spectra a second (Hann, bins ~250 Hz), only the first three FFTs of
+     each frame period computed, so it costs a fraction of the waterfall. Runs only while a
+     WebSocket client is connected; `SDRD_CLASSIFIER=false` turns it off.
+   - Detection every second over the last 3 s: average and max-hold against a noise floor
+     taken per block (low percentile, capped near the whole capture's floor so a DAB
+     multiplex filling most of it isn't mistaken for noise; the outer 3 % and the DC spike
+     are ignored). Pieces that key on and off together within 25 kHz join (OOK sidelobes,
+     wide FSK's two tones); weak slivers next to a signal 20 dB stronger join it (FM
+     sidebands).
+   - Features: occupied bandwidth (−26 dB), SNR, duty, on/off changes per second, level
+     spread, ripple across the top, frame-to-frame change of rms width (speech), centre
+     drift, typical length of completed transmissions and the longest seen, and whether a
+     narrow line keys with a much stronger signal (a spur or harmonic of it).
+   - Model: soft rules per class (each condition a 0–1 ramp with a floor, multiplied),
+     normalised to shares; below a minimum fit or share the signal is left unidentified.
+     Shares are smoothed per tracked signal (matched by frequency overlap); bursty signals
+     are remembered for 2 minutes, others 15 s. Hand-set rather than trained: there is no
+     labelled set of real captures yet. The simulator's emitters are the validation set
+     (`cargo test classify`): CW beacon, M17, repeater, APRS, SRD and spurs, Nexus OOK,
+     Doppler carrier, broadcast FM, DAB, LoRa and ADS-B, plus SSTV staying unidentified.
+   - Browser (`web/src/lib/signals.ts`): band plan segment, band group and mode, and the
+     nearest bookmark's mode, multiply the shares (re-ranking only; they can't name a signal
+     the classifier gave up on). Labels along the top of the waterfall, signals on now
+     shaded on the spectrum, and a hover card with the label, runners-up, evidence, last
+     heard, band plan, bookmarks, known channels and a suggested listening mode.
+   - Later: a trained model once there are labelled real captures (bookmarks with a mode are
+     the natural source), and IQ features per signal (envelope, FSK symbol rate) for finer
+     classes (SSTV, POCSAG, DMR vs. M17).
 10. **Data and pager modes** (later)
    - Pager decoding: POCSAG (512/1200/2400 baud) and FLEX on NFM, per-channel like APRS
      (multimon-ng or native); message log with capcode, function, type (numeric/alpha/tone),
@@ -250,7 +276,7 @@ Along the way (from requests during the build, and Greg's own commits):
 - **Tests:** API smoke test (`scripts/smoke-test.sh`) and Playwright layout tests at four
   screen sizes (`scripts/ui-test.sh`).
 
-## Left to do (besides M7–M9)
+## Left to do
 - **Test on the real hardware:** nothing has run against a physical dongle on the Pi 5
   yet. Check device open/retune, gain, USB passthrough, rtl_433/TPMS, APRS, an ARISS SSTV
   event and a live ISS pass, and CPU headroom (waterfall + decoders + audio listeners).

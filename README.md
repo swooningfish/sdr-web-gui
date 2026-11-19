@@ -47,7 +47,7 @@ docker compose up -d --build
 
 Details in [Deploying on a Raspberry Pi 5](#deploying-on-a-raspberry-pi-5).
 
-## Status: milestone 8 done, milestone 9 next
+## Status: milestone 9 done
 
 - [x] Rust core (`sdrd`) owns the dongle via librtlsdr (rtl-sdr-blog fork: V4, V3, generic)
 - [x] Live spectrum and waterfall in the browser over WebSocket
@@ -66,10 +66,11 @@ Details in [Deploying on a Raspberry Pi 5](#deploying-on-a-raspberry-pi-5).
   your own, CSV import/export), CW mode and Morse decoder (incl. repeater idents), RDS
 - [x] M8: ADS-B aircraft map (second dongle or rotation), type icons, altitude-coloured
   trails, range rings and range stats, aircraft database, Home Assistant sensors
-- [ ] M9: signal classifier (voice / data / broadcast labels on the spectrum)
+- [x] M9: signal classifier: carrier / CW / voice / digital voice / data / broadcast FM /
+  OFDM labels on the waterfall, and a "what's this?" card on hover
 
 Also still to do: testing on real hardware, a licence. Details in
-[SPEC.md](SPEC.md#left-to-do-besides-m7m9).
+[SPEC.md](SPEC.md#left-to-do).
 
 ## Prerequisites
 
@@ -591,6 +592,24 @@ one line (**Compact**), and you drag and pinch-zoom the spectrum with your finge
   §15.231(b); spurs still there when the device stops are marked as someone else's, and
   an evenly spaced comb is called out. The simulator has an SRD on 434.2 MHz with
   harmonics and a 50 kHz spur comb to try it on.
+- **Signal labels:** sdrd finds the signals in the capture and labels each one along the
+  top of the waterfall, with its share of confidence: **Carrier**, **CW**, **Voice**
+  (NFM/AM/SSB), **DV** (digital voice: DMR, D-STAR, M17 ...), **Data** (packet, telemetry,
+  sensors, LoRa), **WFM** (broadcast FM) or **OFDM** (DAB, DVB-T). Signals on now are
+  shaded on the spectrum. Hover over one for a **what's this?** card: the label and the
+  runners-up, what it was measured from (width, level above the noise, bursts or keying, a
+  flat or peaky top, drift), when it was last heard, the band plan there, bookmarks on it,
+  and a mode to listen in. A narrow line that keys with a stronger signal is called out as
+  probably a spur or harmonic of it. Bursty signals (packet, sensors) stay labelled for two
+  minutes after they stop. **Signals** in the toolbar turns the labels off.
+
+  It works from short spectra (20 a second, about 250 Hz resolution) rather than
+  demodulating, so one pass covers the whole capture for little CPU, and only while someone
+  is watching. A small hand-set model scores bandwidth, duty cycle, keying, transmission
+  length, flatness, how the shape changes (speech) and steadiness; the browser then weighs
+  in the band plan and any bookmark on the signal. Labels are a good guess, not a decode:
+  SSTV, for example, shows as unidentified. Every signal in the simulator is labelled
+  correctly (and tested in `cargo test`).
 
 ## Settings
 
@@ -716,6 +735,7 @@ All settings are `SDRD_*` environment variables. See [.env.example](.env.example
 | `SDRD_SAMPLE_RATE` | `2048000` | Startup sample rate |
 | `SDRD_GAIN` | `auto` | `auto` or dB |
 | `SDRD_FFT_SIZE` / `SDRD_FPS` | `2048` / `20` | Waterfall resolution and rate |
+| `SDRD_CLASSIFIER` | `true` | Label the signals on the spectrum (runs only while someone is watching it) |
 | `SDRD_COOKIE_SECURE` | `true` | Must stay `true` when served over HTTPS |
 | `SDRD_TRUST_PROXY` | `false` | Trust `X-Forwarded-*` headers (set by compose behind Caddy) |
 | `SDRD_MQTT_HOST` | (off) | MQTT broker; also `_PORT`, `_USER`, `_PASSWORD`, `_PREFIX`, `_DISCOVERY_PREFIX` |
@@ -730,6 +750,7 @@ All settings are `SDRD_*` environment variables. See [.env.example](.env.example
 
 ```
 RTL-SDR ─USB─► radio thread (librtlsdr) ─► IQ broadcast ─┬► waterfall FFT ─────────────────► WebSocket ─► browser
+                                                          ├► classifier (short FFTs) ─► signal labels ─► WebSocket
                     ▲ retune                              ├► DDC 433.92 → rtl_433 ──────────┐
                REST /api/radio  ◄── admin UI             ├► DDC 144.800 → FM → Direwolf ───┼► events ─► SQLite, WebSocket, MQTT
                                                           ├► DDC 145.825 → FM → Direwolf ───┤

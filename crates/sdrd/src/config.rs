@@ -53,6 +53,8 @@ pub struct Config {
 
     pub fft_size: usize,
     pub fps: u32,
+    /// Label the signals on the spectrum (M9 classifier).
+    pub classifier: bool,
 
     pub admin_user: String,
     pub admin_password: Option<String>,
@@ -192,6 +194,7 @@ impl Config {
             bias_tee: parse_bool("SDRD_BIAS_TEE", false)?,
             fft_size,
             fps,
+            classifier: parse_bool("SDRD_CLASSIFIER", true)?,
             admin_user: var("SDRD_ADMIN_USER").unwrap_or_else(|| "admin".into()),
             admin_password: var("SDRD_ADMIN_PASSWORD"),
             cookie_secure: parse_bool("SDRD_COOKIE_SECURE", true)?,

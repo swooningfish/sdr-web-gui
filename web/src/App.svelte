@@ -2,6 +2,7 @@
   import { onDestroy, onMount, untrack } from 'svelte';
   import { api, type RadioState, type User } from './lib/api';
   import { Stream } from './lib/stream';
+  import type { SignalsMsg } from './lib/signals';
   import { formatMHz } from './lib/format';
   import Login from './components/Login.svelte';
   import Settings from './components/Settings.svelte';
@@ -38,6 +39,8 @@
   /** Which part of the Satellites page is showing. */
   let satTab = $state<SatTab>('passes');
   let waterfall = $state<ReturnType<typeof Waterfall> | undefined>();
+  /** Latest signal labels (replaced whole each time, so not deeply reactive). */
+  let signals = $state.raw<SignalsMsg | null>(null);
   let harmonics = $state<ReturnType<typeof HarmonicsPanel> | undefined>();
   let listen = $state<Listen>({ on: false, hz: 145_800_000, mode: 'nfm' });
   const ALL_BANDS = new Set(ALL_GROUPS);
@@ -150,6 +153,7 @@
       onAudio: (f) => rx.feed(f),
       onAudioStatus: (kind, message) => rx.status(kind, message),
       onDecoded: (m) => rx.decoded(m),
+      onSignals: (m) => (signals = m),
       onConnection: (c) => {
         wsUp = c;
         if (c) rx.reconnected();
@@ -390,6 +394,7 @@
           onpick={pick}
           bookmarks={bookmarks.list}
           onbookmark={selectBookmark}
+          {signals}
           ranges={radio?.ranges ?? []}
           directSampling={radio?.settings.direct_sampling ?? 0}
           sampleRates={radio?.sample_rates ?? []}
