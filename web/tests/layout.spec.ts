@@ -78,11 +78,14 @@ test('spectrum toolbar does not move when hovering the spectrum', async ({ page 
 
 test('settings are split into tabs', async ({ page }) => {
   await openTab(page, 'Settings');
-  const tabs = page.getByRole('tab');
-  await expect(tabs).toHaveCount(7);
-  for (const name of ['Receiver', 'Decoders', 'Rotation', 'Passes', 'Integrations', 'Users', 'System']) {
-    await page.getByRole('tab', { name }).click();
-    await expect(page.getByRole('tab', { name })).toHaveAttribute('aria-selected', 'true');
+  // Only the top-level sections; Decoders has its own sub-tablist.
+  const tablist = page.getByRole('tablist', { name: 'Settings sections' });
+  const names = ['Receiver', 'Decoders', 'Rotation', 'Passes', 'Integrations', 'Users', 'System', 'Help & about'];
+  await expect(tablist.getByRole('tab')).toHaveCount(names.length);
+  for (const name of names) {
+    const tab = tablist.getByRole('tab', { name, exact: true });
+    await tab.click();
+    await expect(tab).toHaveAttribute('aria-selected', 'true');
     await expect(page.locator('#settings-panel .panel').first()).toBeVisible();
     expect(await overflow(page), `Settings → ${name} is wider than the window`).toBeLessThanOrEqual(0);
   }
